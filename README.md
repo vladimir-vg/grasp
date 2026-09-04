@@ -29,6 +29,11 @@ mkdir -p vendor && ln -sfn ~/repos/feldera vendor/feldera
 
 Then `cargo build` works normally, including offline.
 
+The toolchain is pinned by `rust-toolchain.toml`. This is not a formality:
+`dbsp` declares `rust-version = "1.93.1"`, and rustc 1.98.1 hits an internal
+compiler error generating code for it. The pin records the working version so
+that is not rediscovered.
+
 The symlink keeps the checkout's location out of the tracked manifest, so the
 build is not tied to one machine while still pointing at a working tree you can
 edit alongside this crate. Git dependencies were considered and rejected: cargo

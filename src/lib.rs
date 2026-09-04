@@ -8,6 +8,13 @@
 //! - `overview.md`  — goals, scope, future work, architecture
 //! - `language.md`  — the source language (types, operators, builtins)
 //! - `mapping.md`   — how the language maps onto the `dbsp` crate
+//!
+//! This is a walking skeleton: a narrow but complete path from program text to
+//! JSON deltas. See `overview.md` for what is deliberately not implemented yet.
 
-// Implementation modules will be added here as the project grows:
-// lang, typecheck, value, expr, json, lower, runtime, serve.
+pub mod expr;
+pub mod json;
+pub mod lang;
+pub mod lower;
+pub mod typecheck;
+pub mod value;

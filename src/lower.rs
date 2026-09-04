@@ -1,0 +1,293 @@
+//! Lowering a checked [`Plan`] onto a `dbsp` circuit, and driving it.
+//!
+//! Every node is one of two Rust types — `OrdZSet<DynValue>` or
+//! `OrdIndexedZSet<DynValue, DynValue>` — so the whole program is expressible
+//! through `dbsp`'s ordinary typed API. Operator functions become closures
+//! capturing an `Arc<TypedExpr>`, which is the only thing that has to be built
+//! at runtime.
+
+use crate::expr::{eval, is_true};
+use crate::typecheck::{Agg, Plan, PlanOp};
+use crate::value::{BatchType, DynValue};
+use dbsp::operator::{Max, Min};
+use dbsp::{
+    DBSPHandle, IndexedZSetReader, OrdIndexedZSet, OrdZSet, OutputHandle, RootCircuit, Runtime,
+    Stream, ZSetHandle, ZWeight,
+};
+use std::collections::HashMap;
+use std::fmt;
+
+#[derive(Debug)]
+pub struct LowerError(pub String);
+
+impl fmt::Display for LowerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for LowerError {}
+
+type Flat = Stream<RootCircuit, OrdZSet<DynValue>>;
+type Indexed = Stream<RootCircuit, OrdIndexedZSet<DynValue, DynValue>>;
+
+/// A lowered node. The two shapes correspond exactly to the language's two
+/// batch types.
+#[derive(Clone)]
+enum Node {
+    Flat(Flat),
+    Indexed(Indexed),
+}
+
+impl Node {
+    fn flat(&self, what: &str) -> Result<&Flat, LowerError> {
+        match self {
+            Node::Flat(s) => Ok(s),
+            Node::Indexed(_) => Err(LowerError(format!("{what}: expected a flat OrdZSet"))),
+        }
+    }
+    fn indexed(&self, what: &str) -> Result<&Indexed, LowerError> {
+        match self {
+            Node::Indexed(s) => Ok(s),
+            Node::Flat(_) => Err(LowerError(format!("{what}: expected an OrdIndexedZSet"))),
+        }
+    }
+}
+
+/// An output handle, in whichever shape its node has.
+enum Out {
+    Flat(OutputHandle<OrdZSet<DynValue>>),
+    Indexed(OutputHandle<OrdIndexedZSet<DynValue, DynValue>>),
+}
+
+/// One change: a value, and the weight by which its multiplicity changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delta {
+    /// For an indexed stream this is the key; for a flat one, the row.
+    pub key: DynValue,
+    /// `None` for a flat stream.
+    pub value: Option<DynValue>,
+    pub weight: ZWeight,
+}
+
+/// A built circuit, its input handles, and the outputs that were selected.
+pub struct Runner {
+    dbsp: DBSPHandle,
+    inputs: HashMap<String, ZSetHandle<DynValue>>,
+    outputs: Vec<(String, Out)>,
+}
+
+impl Runner {
+    /// Builds the circuit for `plan`, exposing the nodes named in `outputs`.
+    ///
+    /// Nodes that are not named are still constructed — there is no dead-code
+    /// elimination.
+    pub fn build(plan: &Plan, outputs: &[String]) -> Result<Runner, LowerError> {
+        for name in outputs {
+            if !plan.by_name.contains_key(name) {
+                return Err(LowerError(format!("no node named `{name}` to output")));
+            }
+        }
+
+        let plan = plan.clone();
+        let wanted = outputs.to_vec();
+
+        // `Runtime::init_circuit` runs this closure once per worker and asserts
+        // the circuits match, so it must be deterministic: nodes are visited in
+        // plan order and nothing here iterates a hash map.
+        let (dbsp, (inputs, outs)) = Runtime::init_circuit(1, move |circuit| {
+            let mut nodes: Vec<Node> = Vec::with_capacity(plan.nodes.len());
+            let mut inputs: Vec<(String, ZSetHandle<DynValue>)> = Vec::new();
+
+            for node in &plan.nodes {
+                let built = build_node(circuit, &plan, &nodes, node, &mut inputs)?;
+                nodes.push(built);
+            }
+
+            let mut outs: Vec<(String, Out)> = Vec::new();
+            for name in &wanted {
+                let idx = plan.by_name[name];
+                outs.push((
+                    name.clone(),
+                    match &nodes[idx] {
+                        Node::Flat(s) => Out::Flat(s.output()),
+                        Node::Indexed(s) => Out::Indexed(s.output()),
+                    },
+                ));
+            }
+            Ok((inputs, outs))
+        })
+        .map_err(|e| LowerError(format!("building the circuit: {e}")))?;
+
+        Ok(Runner { dbsp, inputs: inputs.into_iter().collect(), outputs: outs })
+    }
+
+    /// Queues a change to an input table. Applied at the next [`Self::step`].
+    pub fn push(&self, table: &str, row: DynValue, weight: ZWeight) -> Result<(), LowerError> {
+        let handle = self
+            .inputs
+            .get(table)
+            .ok_or_else(|| LowerError(format!("no input table `{table}`")))?;
+        handle.push(row, weight);
+        Ok(())
+    }
+
+    /// Runs one transaction and drains the output deltas it produced.
+    ///
+    /// A transaction is the semantic unit: the logical clock advances between
+    /// transactions, not within them.
+    pub fn step(&mut self) -> Result<Vec<(String, Vec<Delta>)>, LowerError> {
+        self.dbsp
+            .transaction()
+            .map_err(|e| LowerError(format!("running a transaction: {e}")))?;
+
+        let mut out = Vec::new();
+        for (name, handle) in &self.outputs {
+            let deltas = match handle {
+                Out::Flat(h) => h
+                    .consolidate()
+                    .iter()
+                    .map(|(k, (), w)| Delta { key: k, value: None, weight: w })
+                    .collect(),
+                Out::Indexed(h) => h
+                    .consolidate()
+                    .iter()
+                    .map(|(k, v, w)| Delta { key: k, value: Some(v), weight: w })
+                    .collect(),
+            };
+            out.push((name.clone(), deltas));
+        }
+        Ok(out)
+    }
+
+    pub fn kill(self) {
+        let _ = self.dbsp.kill();
+    }
+}
+
+fn build_node(
+    circuit: &mut RootCircuit,
+    plan: &Plan,
+    built: &[Node],
+    node: &crate::typecheck::PlanNode,
+    inputs: &mut Vec<(String, ZSetHandle<DynValue>)>,
+) -> Result<Node, anyhow::Error> {
+    let _ = plan;
+    let name = &node.name;
+    let dep = |i: usize| -> &Node { &built[i] };
+
+    Ok(match &node.op {
+        PlanOp::Input { table } => {
+            let (stream, handle) = circuit.add_input_zset::<DynValue>();
+            inputs.push((table.clone(), handle));
+            Node::Flat(stream)
+        }
+
+        PlanOp::Map { input, f } => {
+            let f = f.clone();
+            Node::Flat(dep(*input).flat(name)?.map(move |r: &DynValue| eval(&f, &[r])))
+        }
+
+        PlanOp::Filter { input, f } => {
+            let f = f.clone();
+            Node::Flat(
+                dep(*input)
+                    .flat(name)?
+                    .filter(move |r: &DynValue| is_true(&eval(&f, &[r]))),
+            )
+        }
+
+        PlanOp::MapIndex { input, key, value } => {
+            let (key, value) = (key.clone(), value.clone());
+            Node::Indexed(
+                dep(*input)
+                    .flat(name)?
+                    .map_index(move |r: &DynValue| (eval(&key, &[r]), eval(&value, &[r]))),
+            )
+        }
+
+        PlanOp::Join { left, right, f } => {
+            let f = f.clone();
+            Node::Flat(dep(*left).indexed(name)?.join(
+                dep(*right).indexed(name)?,
+                move |k: &DynValue, a: &DynValue, b: &DynValue| eval(&f, &[k, a, b]),
+            ))
+        }
+
+        PlanOp::Antijoin { left, right } => Node::Indexed(
+            dep(*left)
+                .indexed(name)?
+                .antijoin(dep(*right).indexed(name)?),
+        ),
+
+        PlanOp::Distinct { input } => match dep(*input) {
+            Node::Flat(s) => Node::Flat(s.distinct()),
+            Node::Indexed(s) => Node::Indexed(s.distinct()),
+        },
+
+        PlanOp::Aggregate { input, agg, f } => {
+            // `Stream::aggregate` has no projection argument: it aggregates over
+            // the value directly. So re-project the value first, then aggregate.
+            let f = f.clone();
+            let projected = dep(*input)
+                .indexed(name)?
+                .map_index(move |(k, v): (&DynValue, &DynValue)| (k.clone(), eval(&f, &[v])));
+            Node::Indexed(match agg {
+                Agg::Min => projected.aggregate(Min),
+                Agg::Max => projected.aggregate(Max),
+            })
+        }
+
+        PlanOp::WeightedCount { input } => {
+            // `weighted_count` yields `OrdIndexedZSet<K, ZWeight>` — the value is
+            // a raw i64, off the uniform shape — so box it back into a DynValue.
+            let counted = dep(*input).flat(name)?.weighted_count();
+            Node::Indexed(
+                counted.map_index(|(k, w): (&DynValue, &ZWeight)| (k.clone(), DynValue::I64(*w))),
+            )
+        }
+
+        PlanOp::Neg { input } => match dep(*input) {
+            Node::Flat(s) => Node::Flat(s.neg()),
+            Node::Indexed(s) => Node::Indexed(s.neg()),
+        },
+
+        PlanOp::Plus { left, right } => match (dep(*left), dep(*right)) {
+            (Node::Flat(a), Node::Flat(b)) => Node::Flat(a.plus(b)),
+            (Node::Indexed(a), Node::Indexed(b)) => Node::Indexed(a.plus(b)),
+            _ => return Err(LowerError(format!("{name}: mismatched shapes in `plus`")).into()),
+        },
+
+        PlanOp::Minus { left, right } => match (dep(*left), dep(*right)) {
+            (Node::Flat(a), Node::Flat(b)) => Node::Flat(a.minus(b)),
+            (Node::Indexed(a), Node::Indexed(b)) => Node::Indexed(a.minus(b)),
+            _ => return Err(LowerError(format!("{name}: mismatched shapes in `minus`")).into()),
+        },
+
+        PlanOp::Sum { inputs: ins } => {
+            let head = dep(ins[0]);
+            match head {
+                Node::Flat(first) => {
+                    let rest: Vec<&Flat> = ins[1..]
+                        .iter()
+                        .map(|i| dep(*i).flat(name))
+                        .collect::<Result<_, _>>()?;
+                    Node::Flat(first.sum(rest))
+                }
+                Node::Indexed(first) => {
+                    let rest: Vec<&Indexed> = ins[1..]
+                        .iter()
+                        .map(|i| dep(*i).indexed(name))
+                        .collect::<Result<_, _>>()?;
+                    Node::Indexed(first.sum(rest))
+                }
+            }
+        }
+    })
+}
+
+/// The batch shape of a node, for the JSON codec to know whether a delta has a
+/// value half.
+pub fn shape<'a>(plan: &'a Plan, name: &str) -> Option<&'a BatchType> {
+    plan.node(name).map(|n| &n.ty)
+}

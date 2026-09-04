@@ -163,6 +163,14 @@ let idx = input.map_index(move |row| (eval(&key, row), eval(&val, row)));
 let j   = idx.join(&other, move |k, l, r| eval3(&f, k, l, r));
 ```
 
+Circuits must be built through `Runtime::init_circuit`, not `RootCircuit::build`.
+The bare builder produces a circuit that panics at the first transaction with
+*"Attempting to create a spine merger outside of a DBSP runtime"* as soon as any
+stateful operator is present — `join`, `aggregate` and `distinct` all maintain
+traces, so in practice that is every non-trivial program. The runtime's
+constructor closure must therefore be `Clone + Send + 'static` and its return
+value `Send`.
+
 It is also the only layer at which the full operator set is available.
 `integrate`, `differentiate`, `delay` and `delta0` all require `HasZero`, which
 the erased batch types do not implement — constructing an empty dynamic batch

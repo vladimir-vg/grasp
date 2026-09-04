@@ -1,0 +1,11 @@
+# dbsp declares `rust-version = "1.93.1"`, and newer toolchains are not simply
+# "newer than the minimum" here: rustc 1.98.1 hits an internal compiler error
+# while generating code for `dbsp`, in `first_method_vtable_slot` for
+# `operator::dynamic::multijoin::star_join::StarJoinFuncTrait`'s `DynClone`
+# vtable. The ICE reproduces building `dbsp` alone in the Feldera workspace, so
+# it is not specific to this crate.
+#
+# Pinning keeps that from being rediscovered. Revisit when upgrading the vendored
+# Feldera revision.
+[toolchain]
+channel = "1.93.1"
