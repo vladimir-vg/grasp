@@ -10,4 +10,4 @@
 //! - `mapping.md`   — how the language maps onto the `dbsp` crate
 
 // Implementation modules will be added here as the project grows:
-// lang, typecheck, value, json, lower, runtime, serve.
+// lang, typecheck, value, expr, json, lower, runtime, serve.

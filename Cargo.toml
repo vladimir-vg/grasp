@@ -3,15 +3,28 @@ name = "dbsp-runner"
 version = "0.1.0"
 edition = "2024"
 
+# Feldera crates, resolved through `vendor/feldera` — a gitignored symlink to a
+# local checkout of https://github.com/feldera/feldera. See README.md.
+#
+# These are path dependencies rather than git or crates.io dependencies because
+# `dbsp-runner` is developed against a Feldera working tree, and because a git
+# dependency cannot be resolved offline even when `[patch]` redirects it to a
+# local path. Do not write a machine-specific absolute path here: it makes the
+# crate unbuildable for anyone else.
 [dependencies]
-# Feldera crates (path dependencies on the local checkout).
-dbsp = { path = "/home/vladimir/repos/feldera/crates/dbsp" }
-feldera-sqllib = { path = "/home/vladimir/repos/feldera/crates/sqllib" }
-feldera-fxp = { path = "/home/vladimir/repos/feldera/crates/fxp" }
-feldera-types = { path = "/home/vladimir/repos/feldera/crates/feldera-types" }
-feldera-macros = { path = "/home/vladimir/repos/feldera/crates/feldera-macros" }
+dbsp = { path = "vendor/feldera/crates/dbsp" }
+feldera-sqllib = { path = "vendor/feldera/crates/sqllib" }
+feldera-fxp = { path = "vendor/feldera/crates/fxp" }
+feldera-types = { path = "vendor/feldera/crates/feldera-types" }
+# Provides the `IsNone` derive, which also supplies `SupportsRoaring` — both are
+# required for `DynValue` to satisfy `DBData`.
+feldera-macros = { path = "vendor/feldera/crates/feldera-macros" }
 
-rkyv = "0.7"
-size-of = "0.1"
+# These must match the versions `dbsp` builds against, or the derived trait
+# impls will not unify with the ones its bounds require. Note that `size-of` is
+# a renamed fork (`feldera-size-of`) — the crates.io `size-of` crate defines a
+# different `SizeOf` trait and will not satisfy `DBData`.
+rkyv = "0.7.45"
+size-of = { version = "0.1.7", features = ["time-std", "ordered-float"], package = "feldera-size-of" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
