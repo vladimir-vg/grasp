@@ -125,6 +125,25 @@ pub fn decode_value(j: &J, ty: &TypeDesc) -> JResult<DynValue> {
 // Deltas
 // ---------------------------------------------------------------------------
 
+/// Decodes one input delta in [`Format::InsertDelete`]: `{"insert": {…}}` is
+/// weight `+1`, `{"delete": {…}}` is `-1`. The format cannot express any other
+/// magnitude, so a row with weight 2 arrives as two records.
+pub fn decode_delta_insert_delete(j: &J, row_type: &TypeDesc) -> JResult<(DynValue, ZWeight)> {
+    let Some(obj) = j.as_object() else {
+        return bad(format!("expected an insert/delete object, found `{j}`"));
+    };
+    let (weight, body) = match (obj.get("insert"), obj.get("delete")) {
+        (Some(v), None) => (1, v),
+        (None, Some(v)) => (-1, v),
+        (Some(_), Some(_)) => return bad("a record has both `insert` and `delete`"),
+        (None, None) => return bad(format!("expected `insert` or `delete`, found `{j}`")),
+    };
+    if obj.len() != 1 {
+        return bad("an insert/delete record has exactly one key");
+    }
+    Ok((decode_value(body, row_type)?, weight))
+}
+
 /// Decodes one input delta: `{"weight": w, "data": {…}}`.
 pub fn decode_delta(j: &J, row_type: &TypeDesc) -> JResult<(DynValue, ZWeight)> {
     let Some(obj) = j.as_object() else {

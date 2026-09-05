@@ -126,10 +126,11 @@ impl DynValue {
 /// additive, with a zero — which [`DynValue`] cannot be: there is no sensible
 /// `String + String`. Hence a separate type, which never enters a stream.
 ///
-/// It carries both an integer and a float sum rather than being an enum that
-/// picks one, because `HasZero::zero()` takes no context and so could not
-/// choose a variant. Only the field matching the projection's statically-known
-/// type is ever read; the other stays zero and is added harmlessly.
+/// The sum is integral because floating point is excluded from the linear path:
+/// fp addition is not associative, so an incrementally maintained fp sum would
+/// depend on the order additions and retractions arrive in. The type checker
+/// rejects a floating-point projection for `sum` and `avg`. `avg` still yields
+/// `f64` — the division happens in the postprocess, not the accumulator.
 ///
 /// `rows` is what lets a linear aggregate tell "the group summed to zero" from
 /// "the group is empty" — see the aggregation section of `docs/design/mapping.md`.
@@ -152,33 +153,28 @@ impl DynValue {
 )]
 #[archive_attr(derive(Eq, Ord, PartialEq, PartialOrd))]
 pub struct Acc {
-    pub sum_int: i64,
-    pub sum_float: F64,
-    /// Rows contributing a non-null projection. This is `count`, and it is what
-    /// separates "summed to zero" from "every row was null".
+    pub sum: i64,
+    /// Rows contributing a projection that is not `NONE`. This is `count`, and
+    /// it is what separates "summed to zero" from "every row was `NONE`".
     pub rows: i64,
-    /// Every row in the group, null projection or not.
+    /// Every row in the group, `NONE` projection or not.
     ///
     /// `dbsp` drops a group whose accumulator is zero, so without this a group
-    /// of entirely null projections would sum to zero in every field and
-    /// disappear rather than reporting null. Feldera's SQL compiler carries the
-    /// same extra counter, for the same reason.
+    /// of entirely `NONE` projections would sum to zero in every field and
+    /// disappear rather than reporting `NONE`. Feldera's SQL compiler carries
+    /// the same extra counter, for the same reason.
     pub present: i64,
 }
 
 impl Acc {
-    pub fn int(v: i64) -> Acc {
-        Acc { sum_int: v, sum_float: F64::new(0.0), rows: 1, present: 1 }
+    pub fn value(v: i64) -> Acc {
+        Acc { sum: v, rows: 1, present: 1 }
     }
 
-    pub fn float(v: f64) -> Acc {
-        Acc { sum_int: 0, sum_float: F64::new(v), rows: 1, present: 1 }
-    }
-
-    /// A row whose projection was null: counted by neither `sum` nor `count`,
+    /// A row whose projection was `NONE`: counted by neither `sum` nor `count`,
     /// but still present, so the group does not vanish.
-    pub fn null() -> Acc {
-        Acc { sum_int: 0, sum_float: F64::new(0.0), rows: 0, present: 1 }
+    pub fn none() -> Acc {
+        Acc { sum: 0, rows: 0, present: 1 }
     }
 }
 
@@ -188,18 +184,14 @@ impl HasZero for Acc {
     }
 
     fn is_zero(&self) -> bool {
-        self.sum_int == 0
-            && self.sum_float == F64::new(0.0)
-            && self.rows == 0
-            && self.present == 0
+        self.sum == 0 && self.rows == 0 && self.present == 0
     }
 }
 
 impl AddByRef for Acc {
     fn add_by_ref(&self, other: &Acc) -> Acc {
         Acc {
-            sum_int: self.sum_int.wrapping_add(other.sum_int),
-            sum_float: F64::new(self.sum_float.into_inner() + other.sum_float.into_inner()),
+            sum: self.sum.wrapping_add(other.sum),
             rows: self.rows.wrapping_add(other.rows),
             present: self.present.wrapping_add(other.present),
         }
@@ -219,8 +211,7 @@ impl MulByRef<ZWeight> for Acc {
 
     fn mul_by_ref(&self, w: &ZWeight) -> Acc {
         Acc {
-            sum_int: self.sum_int.wrapping_mul(*w),
-            sum_float: F64::new(self.sum_float.into_inner() * (*w as f64)),
+            sum: self.sum.wrapping_mul(*w),
             rows: self.rows.wrapping_mul(*w),
             present: self.present.wrapping_mul(*w),
         }

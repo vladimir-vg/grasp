@@ -14,8 +14,6 @@ edition = "2024"
 [dependencies]
 dbsp = { path = "vendor/feldera/crates/dbsp" }
 feldera-sqllib = { path = "vendor/feldera/crates/sqllib" }
-feldera-fxp = { path = "vendor/feldera/crates/fxp" }
-feldera-types = { path = "vendor/feldera/crates/feldera-types" }
 # Provides the `IsNone` derive, which also supplies `SupportsRoaring` — both are
 # required for `DynValue` to satisfy `DBData`.
 feldera-macros = { path = "vendor/feldera/crates/feldera-macros" }

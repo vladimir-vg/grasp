@@ -75,9 +75,6 @@ pub enum PlanOp {
         input: usize,
         agg: Agg,
         f: Arc<TypedExpr>,
-        /// Whether the projection is floating point, so lowering knows which
-        /// half of the accumulator to read.
-        float: bool,
     },
     WeightedCount { input: usize },
     Neg { input: usize },
@@ -621,7 +618,6 @@ fn check_op(
             let (f, out) = check_fun(fun_arg(2)?, &[v], span)?;
             let out = out.into_known(span, "the body of `aggregate`")?;
             let optional_in = out.is_optional();
-            let float = out.non_null() == &TypeDesc::F64;
 
             // `min`/`max` return the projected value; the linear aggregators
             // impose their own result types.
@@ -635,6 +631,21 @@ fn check_op(
                             format!("`{agg_name}` needs a numeric projection, found `{out}`"),
                         );
                     }
+                    // Floating point is excluded from the linear aggregation
+                    // path: fp addition is not associative, so an incrementally
+                    // maintained sum would depend on the order additions and
+                    // retractions arrive in. `min`/`max` over `f64` are fine —
+                    // they are the non-linear path.
+                    if out.non_null() == &TypeDesc::F64 {
+                        return err(
+                            span,
+                            format!(
+                                "`{agg_name}` cannot be applied to `f64`: floating-point \
+                                 addition is not associative, so an incrementally maintained \
+                                 sum would depend on the order rows arrive in"
+                            ),
+                        );
+                    }
                     // `avg` always yields f64 rather than truncating.
                     let base = if agg == Agg::Avg { TypeDesc::F64 } else { out.non_null().clone() };
                     // A projection that can be null can leave a group with no
@@ -644,7 +655,7 @@ fn check_op(
             };
             Ok((
                 BatchType::IndexedZSet(k, result),
-                PlanOp::Aggregate { input, agg, f: Arc::new(f), float },
+                PlanOp::Aggregate { input, agg, f: Arc::new(f) },
             ))
         }
 

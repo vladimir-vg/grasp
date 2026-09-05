@@ -11,7 +11,9 @@
 //! decoder here, so a fixture cannot drift from the real wire format.
 
 use dbsp_runner::diag::Diagnostic;
-use dbsp_runner::json::{Format, decode_value, encode_delta_insert_delete, encode_value};
+use dbsp_runner::json::{
+    Format, decode_delta_insert_delete, decode_value, encode_delta_insert_delete, encode_value,
+};
 use dbsp_runner::lower::Runner;
 use dbsp_runner::value::{BatchType, TypeDesc};
 use libtest_mimic::{Arguments, Failed, Trial};
@@ -61,6 +63,9 @@ struct Case {
     /// `weighted` (the default) or `insert_delete`.
     #[serde(default)]
     output_format: Option<String>,
+    /// Same, for the rows fed into `input`.
+    #[serde(default)]
+    input_format: Option<String>,
 }
 
 /// Only the fields a fixture actually writes are checked, so new diagnostic
@@ -254,6 +259,11 @@ fn check_output(
     let mut runner = Runner::build(&plan, &outputs)
         .map_err(|d| format!("{where_}: building the circuit failed:\n{}", indent(&render_diags(&d))))?;
 
+    let in_format = parse_format(case.input_format.as_deref(), "input_format")
+        .map_err(|e| format!("{where_}: {e}"))?;
+    let out_format = parse_format(case.output_format.as_deref(), "output_format")
+        .map_err(|e| format!("{where_}: {e}"))?;
+
     for (epoch_idx, (inputs, want)) in case.input.iter().zip(expected).enumerate() {
         // Feed this transaction.
         for (table, rows) in inputs {
@@ -272,7 +282,7 @@ fn check_output(
                 }
             };
             for row in rows {
-                let (value, weight) = decode_input_row(row, &row_type)
+                let (value, weight) = decode_input_row(row, &row_type, in_format)
                     .map_err(|e| format!("{where_}, epoch {epoch_idx}, table `{table}`: {e}"))?;
                 runner
                     .push(table, value, weight)
@@ -280,22 +290,11 @@ fn check_output(
             }
         }
 
-        let format = match case.output_format.as_deref() {
-            None | Some("weighted") => Format::Weighted,
-            Some("insert_delete") => Format::InsertDelete,
-            Some(other) => {
-                return Err(format!(
-                    "{where_}: unknown output_format `{other}`; \
-                     expected `weighted` or `insert_delete`"
-                ));
-            }
-        };
-
         let produced = runner.step().map_err(|e| format!("{where_}: {e}"))?;
 
         for (name, deltas) in &produced {
             let ty = &plan.node(name).expect("output exists").ty;
-            let mut actual: Vec<J> = match format {
+            let mut actual: Vec<J> = match out_format {
                 Format::Weighted => deltas
                     .iter()
                     .map(|d| {
@@ -369,7 +368,14 @@ fn key_type(ty: &BatchType) -> &TypeDesc {
 }
 
 /// `[weight, row]` for a flat input table.
-fn decode_input_row(row: &Row, ty: &TypeDesc) -> Result<(dbsp_runner::value::DynValue, i64), String> {
+fn decode_input_row(
+    row: &Row,
+    ty: &TypeDesc,
+    format: Format,
+) -> Result<(dbsp_runner::value::DynValue, i64), String> {
+    if format == Format::InsertDelete {
+        return decode_delta_insert_delete(&yaml_to_json(row), ty).map_err(|e| e.to_string());
+    }
     let row = row
         .as_sequence()
         .ok_or_else(|| "an input row is [weight, row]".to_string())?;
@@ -381,6 +387,16 @@ fn decode_input_row(row: &Row, ty: &TypeDesc) -> Result<(dbsp_runner::value::Dyn
         .ok_or_else(|| "the first element of a row must be an integer weight".to_string())?;
     let value = decode_value(&yaml_to_json(&row[1]), ty).map_err(|e| e.to_string())?;
     Ok((value, weight))
+}
+
+fn parse_format(name: Option<&str>, what: &str) -> Result<Format, String> {
+    match name {
+        None | Some("weighted") => Ok(Format::Weighted),
+        Some("insert_delete") => Ok(Format::InsertDelete),
+        Some(other) => Err(format!(
+            "unknown {what} `{other}`; expected `weighted` or `insert_delete`"
+        )),
+    }
 }
 
 // ---------------------------------------------------------------------------

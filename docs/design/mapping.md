@@ -14,22 +14,27 @@ of `TypeDesc`, which the type checker computes per node and the JSON codec reads
 
 ### `DynValue`
 
-A single recursive enum covering the whole value vocabulary, modeled on
-`feldera_sqllib::Variant` (`sqllib/src/variant.rs:29-83`) with a record variant
-added:
+A single recursive enum, modeled on `feldera_sqllib::Variant`
+(`sqllib/src/variant.rs:29-83`) with a record variant added. What is
+implemented:
 
-- **Plain builtins**: `bool`, `i8..i64`, `u8..u64`, `f32`/`f64` (as
-  `dbsp::algebra::F32`/`F64`, since `f32`/`f64` are not `Ord`), `String`,
-  `Vec<DynValue>`, `Option<Box<DynValue>>`, and `Tuple` (for `Tup0..Tup10`).
-- **`sql.*` types**: each wraps the actual `feldera-sqllib` type —
-  `SqlString`, `ByteArray`, `Date`, `Time`, `Timestamp`, `TimestampTz`,
-  `LongInterval`, `ShortInterval`, `Uuid`, `Variant`.
-- **`sql.SqlDecimal(p,s)`**: the runtime value is `feldera_fxp::DynamicDecimal`
-  (an integer plus a scale). Precision and scale are not part of the value;
-  they are schema metadata (see `TypeDesc`).
-- **`sql.Array(T)`** / **`sql.Map(K,V)`**: `Arc<Vec<DynValue>>` /
-  `Arc<BTreeMap<DynValue, DynValue>>`, distinct from the plain `Vec` variant.
-- **`Record(Vec<DynValue>)`**: the language's `record(...)` type. **Positional.**
+- `None` — no value. Variant 0, so it sorts before everything; see
+  [`language.md`](language.md) for why it is a value rather than SQL's
+  propagating `NULL`.
+- `Bool(bool)`, `I64(i64)`, `F64(F64)` — `dbsp::algebra::F64`, since bare
+  `f64` is not `Ord`.
+- `String(String)` and `SqlString(SqlString)` — `std::String` and sqllib's
+  cheaply-cloned `ArcStr`.
+- `Record(Vec<DynValue>)` — the language's `record(...)`. **Positional.**
+
+The rest of the vocabulary — the other integer widths, `f32`, a list value, and
+every `sql.*` type but `SqlString` — is future work, listed in
+[`overview.md`](overview.md). **Append new variants at the end**: the variant
+order is the archived discriminant, which is a storage format.
+
+There is no tuple variant, and there will not be one for the language's
+`(key, value)` pairs: those are syntax, destructured by the type checker, and
+never streamed.
 
 ### Records are positional
 
@@ -42,27 +47,28 @@ Field access is resolved at lowering time: the type checker knows the record's
 `TypeDesc` at each expression position, so `row.name` becomes a constant index
 and the hot path does no string comparison.
 
-`Record` and `Tuple` have the same runtime representation and are distinguished
-only by `TypeDesc`. That distinction is what drives the JSON codec: a record
-encodes as a JSON object, a tuple as a JSON array.
+`TypeDesc` is what drives the JSON codec: a record encodes as a JSON object,
+with the field names coming from the schema rather than the value.
 
 ### `TypeDesc`
 
-The schema, carried alongside the value: a tree mirroring the value grammar
-(`Builtin`, `Sql`, `Vec`, `Option`, `Tuple`, `Record`, `Array`, `Map`), with
-extra parameters where the value grammar needs them (decimal precision/scale,
-tuple arity, record field names and types). The type checker produces a
+The schema, carried alongside the value: a tree mirroring the value grammar —
+`Bool | I64 | F64 | String | SqlString | Optional(T) | Record(fields)` — and
+growing alongside `DynValue`. The type checker produces a
 `TypeDesc` for every node; the JSON codec uses it to know which `DynValue`
 variant is expected at each position. This is what makes I/O schema-driven
 without compile-time code generation.
 
 `TypeDesc` is our own type rather than `feldera_types::program_schema::ColumnType`
-because `ColumnType` cannot express `Vec`, `Tup*`, or `Option` as a wrapper — it
-models nullability as a flag on the type. Two things from `feldera-types` are
-reused as-is: `serde_with_context::SqlSerdeConfig`
-(`feldera-types/src/serde_with_context/serde_config.rs:123`) for the codec's
-date/time/decimal/binary/uuid/variant formats, and `program_schema::{Relation,
-Field}` for reporting input and output relation schemas on the API surface.
+because `ColumnType` cannot express a list, a tuple, or `optional` as a wrapper —
+it models nullability as a flag on the type.
+
+Two things from `feldera-types` are *candidates* for reuse, not currently used:
+`serde_with_context::SqlSerdeConfig`
+(`feldera-types/src/serde_with_context/serde_config.rs:123`) for the
+date/time/decimal/binary/uuid formats, once those types exist; and
+`program_schema::{Relation, Field}` for reporting relation schemas, once there is
+an API surface. The crate is not a dependency today.
 
 ### What `DynValue` must implement
 
@@ -244,10 +250,22 @@ Feldera's SQL compiler uses for every aggregate it can.
   so linear aggregation uses a **separate numeric accumulator type**, not
   `DynValue`.
 - A linear aggregate cannot tell "the group summed to zero" from "the group is
-  empty", because `post_fn` is not invoked for a zero result. The accumulator
-  therefore carries an extra row counter, and `post_fn` reports an empty group
-  when that counter is zero. This is exactly the shape Feldera uses
-  (`sql-to-dbsp-compiler/.../ir/aggregate/LinearAggregate.java:29-45`).
+  empty", because `post_fn` is not invoked for a zero result. This needs **two**
+  counters, which is easy to get wrong:
+  - `rows` counts projections that are not `NONE`. It is `count` itself, and
+    `post_fn` reports `NONE` when it is zero.
+  - `present` counts *every* row. Without it, a group whose projections are all
+    `NONE` zeroes every field, and `dbsp` drops the group entirely rather than
+    reporting `NONE`. Feldera carries the same extra counter for the same reason
+    (`sql-to-dbsp-compiler/.../ir/aggregate/LinearAggregate.java:29-45`).
+
+  This was found by a fixture, not by reasoning — the first version had only
+  `rows`, and an all-`NONE` group silently vanished.
+
+- Floating point is **rejected** for `sum` and `avg`, at type-check time. fp
+  addition is not associative, so an incrementally maintained sum would depend
+  on the order additions and retractions arrive in. `min`/`max` over `f64` are
+  fine: they are the non-linear path and compare rather than accumulate.
 
 **Non-linear**, via `aggregate(aggregator)`. `min` and `max` lower here, to
 `dbsp`'s ready-made `Min` and `Max` (`dbsp/src/operator/dynamic/aggregate/min.rs:31`,
@@ -291,15 +309,46 @@ At each clock cycle the handle exposes the deltas produced by the circuit,
 encoded back to JSON. The runner emits these deltas as they are produced; it does
 not materialize a final table.
 
-**Encodings.** Two formats, both Feldera-native
+**Encodings.** Two formats, both Feldera-native, and both implemented for input
+and output. See <https://docs.feldera.com/formats/json/>
 (`feldera-types/src/format/json.rs:79-120`):
 
 - `weighted` — `{"weight": 2, "data": {…}}`. This represents a Z-set delta
   exactly, including weights whose magnitude is greater than one, and is the
   **default for output**.
-- `insert_delete` — `{"insert": {…}}` / `{"delete": {…}}`. A compatibility
-  format. It has no way to express a weight of 3 other than repeating the row
-  three times, so the encoder must expand by `|w|`.
+- `insert_delete` — `{"insert": {…}}` / `{"delete": {…}}`. Feldera's own
+  default. It has no way to express a weight of 3 other than repeating the row
+  three times, so the encoder expands by `|w|` and the decoder reads each record
+  as `±1`.
+
+`weighted` is the default **here**, because this runner's output is a stream of
+Z-set deltas and `weighted` is the only format that represents one exactly. A
+future API surface should default to `insert_delete`, matching Feldera, whose
+connectors speak it.
+
+**The two envelopes differ in shape, deliberately.** `weighted` has three
+top-level slots, so an indexed delta spreads across them; `insert_delete` has
+exactly one slot whose body *is* the payload, so an indexed delta nests inside
+it:
+
+```
+flat      {"weight": 1, "data": {"id": 1}}      {"insert": {"id": 1}}
+indexed   {"weight": 1, "key": 10,              {"insert": {"key": 10,
+                        "value": {"id": 1}}                  "value": {"id": 1}}}
+```
+
+The indexed encoding is **ours**, not a Feldera convention: Feldera's relations
+are flat, so it has nothing to say about a keyed stream.
+
+**Conventions Feldera fixes, which this codec follows.** A null may be written
+as JSON `null` *or by omitting the column entirely*; both decode to `NONE`.
+When the deferred types land they encode as: `DATE` `YYYY-MM-DD`, `TIME`
+`HH:MM:SS.fff`, `TIMESTAMP` `YYYY-MM-DD HH:MM:SS.fff` or RFC3339, `DECIMAL`
+preferably a **string** so precision survives, `VARIANT` any JSON value.
+
+Two further Feldera formats are not implemented: `raw`, where a bare object
+means an insert, and the `update` operation for keyed partial updates, which
+needs primary keys the language does not have.
 
 ## Execution model
 

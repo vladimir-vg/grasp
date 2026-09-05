@@ -184,3 +184,24 @@
   expected_exact_output:
     - total:
         - [1, 10, null]
+
+- name: min and max over floats still work
+  source: |
+    a := input("a")
+    a :: zset(record(k: i64, x: f64))
+    idx := map_index(a, fun((r) -> (r.k, r)))
+    lo := aggregate(idx, min, fun((v) -> v.x))
+    hi := aggregate(idx, max, fun((v) -> v.x))
+
+  # The exclusion is scoped to the linear path; min and max compare rather than
+  # accumulate, so associativity does not arise.
+  input:
+    - a:
+        - [1, {k: 1, x: 2.5}]
+        - [1, {k: 1, x: -1.5}]
+
+  expected_exact_output:
+    - lo:
+        - [1, 1, -1.5]
+      hi:
+        - [1, 1, 2.5]

@@ -35,8 +35,9 @@ the circuit and output changes are emitted as they are produced.
   value types). The value vocabulary implemented so far is `bool`, `i64`,
   `f64`, `String`, `sql.SqlString`, `optional(T)` and `record(...)`.
 - The value model described in [`mapping.md`](mapping.md).
-- Feldera-native JSON input/output, emitting deltas — `weighted` by default,
-  `insert_delete` for compatibility.
+- Feldera-native JSON input and output, emitting deltas — `weighted` by default
+  here because it represents a Z-set delta exactly, `insert_delete` for
+  compatibility with Feldera's own default. Both work in both directions.
 
 Outputs are **not** part of the source language. A program declares streams; the
 set of nodes to observe is supplied when the runner starts, by node name.
@@ -76,6 +77,10 @@ set of nodes to observe is supplied when the runner starts, by node name.
   (`e[0]`), and data-dependent fan-out. Today `[…]` and `(key, value)` are
   syntax rather than values, which is why `flat_map`'s fan-out is fixed by the
   source; see [`language.md`](language.md).
+
+- **The `raw` JSON format** (a bare object meaning insert) and the `update`
+  operation for keyed partial updates, which needs primary keys the language
+  does not have. Both are Feldera-native; neither is implemented.
 
 - **Conditionals** — `if`/`then`/`else`, which shipped ahead of their design and
   were withdrawn. They are also what a propagating form of arithmetic would need:
@@ -120,11 +125,11 @@ A single crate with these logical layers:
 | `lang` | lexing and parsing the source language |
 | `typecheck` | type inference/checking; produces the schema (`TypeDesc`) |
 | `value` | the runtime value model (`DynValue`, `TypeDesc`) |
-| `expr` | compiling expressions into closures over `DynValue` |
+| `diag` | one `Diagnostic` type for every pass, with severity, pass and span |
+| `expr` | type-checked expressions and their tree-walking evaluator |
 | `json` | the Feldera JSON codec (`weighted`, `insert_delete`) |
-| `lower` | mapping the program onto `dbsp` operators |
-| `runtime` | circuit construction, input/output handles, transactions |
-| `serve` / CLI | process entry points (`validate` / `run` / `serve`) |
+| `lower` | mapping the program onto `dbsp` operators; also circuit construction, input/output handles and transactions (`Runner`) |
+| `serve` / CLI | *not implemented* — `src/main.rs` is a placeholder. YAML fixtures are the surface for now |
 
 The layered mapping is: source text → AST → typed AST (`TypeDesc`) → `dbsp`
 circuit, with values flowing through a single runtime value type.

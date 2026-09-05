@@ -261,7 +261,7 @@ fn build_node(
             Node::Indexed(s) => Node::Indexed(s.distinct()),
         },
 
-        PlanOp::Aggregate { input, agg, f, float } => match agg {
+        PlanOp::Aggregate { input, agg, f } => match agg {
             // `Stream::aggregate` has no projection argument: it aggregates over
             // the value directly. So re-project the value first, then aggregate.
             Agg::Min | Agg::Max => {
@@ -280,29 +280,23 @@ fn build_node(
             // maintain them without replaying the group.
             Agg::Sum | Agg::Avg | Agg::Count => {
                 let proj = f.clone();
-                let (agg, float) = (*agg, *float);
+                let agg = *agg;
                 Node::Indexed(dep(*input).indexed(node)?.aggregate_linear_postprocess(
                     move |v: &DynValue| match eval(&proj, &[v]) {
-                        DynValue::I64(n) => Acc::int(n),
-                        DynValue::F64(x) => Acc::float(x.into_inner()),
-                        // A null projection contributes to no sum and to no
+                        DynValue::I64(n) => Acc::value(n),
+                        // A `NONE` projection contributes to no sum and to no
                         // count, which is what separates `count` from
-                        // `weighted_count`.
-                        _ => Acc::null(),
+                        // `weighted_count`. The type checker rejects a
+                        // floating-point projection, so nothing else arrives.
+                        _ => Acc::none(),
                     },
                     move |acc: Acc| match agg {
                         Agg::Count => DynValue::I64(acc.rows),
                         _ if acc.rows == 0 => DynValue::None,
-                        Agg::Sum if float => DynValue::F64(acc.sum_float),
-                        Agg::Sum => DynValue::I64(acc.sum_int),
-                        Agg::Avg => {
-                            let total = if float {
-                                acc.sum_float.into_inner()
-                            } else {
-                                acc.sum_int as f64
-                            };
-                            DynValue::F64(F64::new(total / acc.rows as f64))
-                        }
+                        Agg::Sum => DynValue::I64(acc.sum),
+                        // The division happens here, not in the accumulator, so
+                        // integer inputs still give a fractional mean.
+                        Agg::Avg => DynValue::F64(F64::new(acc.sum as f64 / acc.rows as f64)),
                         Agg::Min | Agg::Max => unreachable!("handled above"),
                     },
                 ))

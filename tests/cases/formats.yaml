@@ -52,3 +52,62 @@
         - {insert: {v: 1}}
     - out:
         - {delete: {v: 1}}
+
+- name: insert_delete on input
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    out := map(a, fun((r) -> r))
+
+  input_format: insert_delete
+  input:
+    - a:
+        - {insert: {v: 1}}
+        - {insert: {v: 2}}
+    - a:
+        - {delete: {v: 1}}
+
+  expected_exact_output:
+    - out:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+    - out:
+        - [-1, {v: 1}]
+
+- name: two inserts of one row are a weight of two
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    out := map(a, fun((r) -> r))
+
+  # insert_delete has no magnitude, so repetition is how it says "weight 2" --
+  # and the weighted output shows it arriving as exactly that.
+  input_format: insert_delete
+  input:
+    - a:
+        - {insert: {v: 1}}
+        - {insert: {v: 1}}
+
+  expected_exact_output:
+    - out:
+        - [2, {v: 1}]
+
+- name: an omitted column decodes as NONE
+  source: |
+    a := input("a")
+    a :: zset(record(id: i64, bonus: optional(i64)))
+    out := map(a, fun((r) -> record(id: r.id, missing: r.bonus == NONE)))
+
+  # Feldera allows a null to be written as JSON null or by leaving the column
+  # out entirely; both must mean the same thing.
+  input:
+    - a:
+        - [1, {id: 1, bonus: null}]
+        - [1, {id: 2}]
+        - [1, {id: 3, bonus: 7}]
+
+  expected_exact_output:
+    - out:
+        - [1, {id: 1, missing: true}]
+        - [1, {id: 2, missing: true}]
+        - [1, {id: 3, missing: false}]

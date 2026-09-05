@@ -1118,11 +1118,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dbsp",
- "feldera-fxp",
  "feldera-macros",
  "feldera-size-of",
  "feldera-sqllib",
- "feldera-types",
  "libtest-mimic",
  "proptest",
  "rkyv",
