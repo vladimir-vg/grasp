@@ -8,8 +8,9 @@ the circuit and output changes are emitted as they are produced.
 
 ## What it is
 
-- A **single Rust crate** (`dbsp-runner`) linking against `dbsp` and Feldera's
-  value libraries (`feldera-sqllib`, `feldera-fxp`, `feldera-types`).
+- A **single Rust crate** (`dbsp-runner`) linking against `dbsp`,
+  `feldera-sqllib` for the `sql.*` value types, and `feldera-macros` for the
+  `IsNone` derive `dbsp`'s `DBData` bound requires.
 - A **runtime interpreter**: the program is parsed at startup and the circuit
   is assembled at startup, through `dbsp`'s ordinary operator API instantiated
   at a single universal value type. There is **no code generation and no Rust
@@ -23,15 +24,19 @@ the circuit and output changes are emitted as they are produced.
 ## Scope (v1)
 
 - The source language described in [`language.md`](language.md).
-- `circuit` definitions, instantiated by macro expansion or by `fixpoint`.
+- `circuit` definitions, instantiated either by expansion at the call site —
+  including a circuit instantiated inside another — or by `fixpoint`.
+- Content-addressed nodes: identical operator, inputs and parameters means one
+  node, however many times it is written.
 - The operator set listed there: inputs; the mapping family (`map`, `filter`,
   `flat_map`, `map_index`, `flat_map_index`); the join family (`join`,
   `join_index`, `antijoin`); `distinct`; `aggregate` over
   `min`/`max`/`sum`/`avg`/`count`; `weighted_count`; the algebraic operators
   (`neg`, `plus`, `minus`, `sum`); and `integrate`, `differentiate`, `delay`.
-- Expressions in function bodies: field and element access, record and tuple
-  construction, arithmetic and comparison, conditionals, and a small builtin
-  library.
+- Expressions in function bodies: literals, parameters, record field access,
+  `record(...)` construction, arithmetic, comparison and logic, and a small
+  builtin library. `(k, v)` pairs and `[…]` lists are syntax rather than
+  values; see [`language.md`](language.md).
 - The type system described in [`language.md`](language.md) (batch types and
   value types). The value vocabulary implemented so far is `bool`, `i64`,
   `f64`, `String`, `sql.SqlString`, `optional(T)` and `record(...)`.
@@ -51,13 +56,6 @@ set of nodes to observe is supplied when the runner starts, by node name.
 
 ## Future work
 
-- **`fixpoint`** — iterating a circuit to convergence, mapped onto
-  `RootCircuit::recursive_dynamic`, which takes a runtime arity. Circuit
-  definitions and macro expansion are implemented; only the fixpoint mode is
-  not. It is the one place the flat node list stops being flat, since the body
-  builds inside a nested circuit of a different Rust type. The `Vec<Stream>` form of the underlying
-  `dyn_recursive` allows a runtime-determined number of mutually recursive
-  streams, which is the shape this runtime needs.
 - **Checkpoint and restore.** Every stateful `dbsp` operator takes a
   `persistent_id`; wiring node names through as stable ids is what makes
   checkpoints restorable. See [`mapping.md`](mapping.md).
@@ -66,8 +64,9 @@ set of nodes to observe is supplied when the runner starts, by node name.
 - **`left_join`.** `dbsp` has one, but its right-hand input must be
   `Option`-valued, so exposing it needs either a language-level constraint or a
   wrapping step in the lowering. See [`mapping.md`](mapping.md).
-- **`consolidate`.** Applies to trace-carrying streams, which this language does
-  not yet produce; it becomes meaningful together with recursion.
+- **`consolidate`.** Applies to trace-carrying streams. Recursion has landed
+  and this still does not apply, because no operator in the language produces a
+  stream carrying a trace rather than a batch. See [`mapping.md`](mapping.md).
 - **Windowing and ranking operators** — `window`, `waterline`, `topk`, `rank`,
   `row_number`, `lag`, `asof_join`, `star_join`. All exist in `dbsp`; none are
   in v1.
@@ -138,8 +137,3 @@ A single crate with these logical layers:
 The layered mapping is: source text → AST → typed AST (`TypeDesc`) → `dbsp`
 circuit, with values flowing through a single runtime value type.
 
-Two types are reused from `feldera-types` rather than rebuilt:
-`SqlSerdeConfig` for the JSON codec's format options, and `program_schema::
-{Relation, Field}` for reporting relation schemas on the API surface. `TypeDesc`
-itself is our own, because `ColumnType` cannot express the plain-builtin half of
-the type vocabulary.

@@ -127,30 +127,31 @@ map(s, fun((row) -> record(id: row.id, name: row.name)))   # a value
 ## Operators
 
 Operators are `dbsp` primitives exposed as-is. The reference below gives each
-operator's input batch shape(s), its result batch shape, and the `dbsp` method
-it lowers to. `X` means the shape is preserved.
+operator's input batch shape(s) and its result batch shape; `X` means the shape
+is preserved. Which `dbsp` method each lowers to is in
+[`mapping.md`](mapping.md), which is where that mapping is maintained.
 
-| operator | signature | `dbsp` method |
-|---|---|---|
-| `input("t")` | → `zset(T)` | `add_input_zset` |
-| `map(s, f)` | `zset(T) → zset(U)`, `f : T → U` | `map` |
-| `filter(s, f)` | `X → X`, `f : T → bool` | `filter` |
-| `flat_map(s, f)` | `zset(T) → zset(U)`, `f : T → [U, …]` | `flat_map` |
-| `map_index(s, f)` | `zset(T) → indexed_zset(K,V)`, `f : T → (K,V)` | `map_index` |
-| `flat_map_index(s, f)` | `zset(T) → indexed_zset(K,V)`, `f : T → [(K,V), …]` | `flat_map_index` |
-| `join(l, r, f)` | `indexed_zset(K,V₁) × indexed_zset(K,V₂) → zset(OV)`, `f : (K,V₁,V₂) → OV` | `join` |
-| `join_index(l, r, f)` | as `join`, but `f : (K,V₁,V₂) → (OK,OV)` → `indexed_zset(OK,OV)` | `join_index` |
-| `antijoin(l, r)` | `indexed_zset(K,V) × indexed_zset(K,V₂) → indexed_zset(K,V)` | `antijoin` |
-| `distinct(s)` | `X → X` (deduplicated) | `distinct` |
-| `aggregate(s, agg, f)` | `indexed_zset(K,V) → indexed_zset(K,A)` | see [Aggregators](#aggregators) |
-| `weighted_count(s)` | `zset(T) → indexed_zset(T, i64)` | `weighted_count` |
-| `neg(s)` | `X → X` | `neg` |
-| `plus(a, b)` | `X × X → X` | `plus` |
-| `minus(a, b)` | `X × X → X` | `minus` |
-| `sum(a, b, …)` | `X⁺ → X` | `sum` |
-| `integrate(s)` | `X → X` (running sum) | `integrate` |
-| `differentiate(s)` | `X → X` | `differentiate` |
-| `delay(s)` | `X → X` | `delay` |
+| operator | signature |
+|---|---|
+| `input("t")` | → `zset(T)` |
+| `map(s, f)` | `zset(T) → zset(U)`, `f : T → U` |
+| `filter(s, f)` | `X → X`, `f : T → bool` |
+| `flat_map(s, f)` | `zset(T) → zset(U)`, `f : T → [U, …]` |
+| `map_index(s, f)` | `zset(T) → indexed_zset(K,V)`, `f : T → (K,V)` |
+| `flat_map_index(s, f)` | `zset(T) → indexed_zset(K,V)`, `f : T → [(K,V), …]` |
+| `join(l, r, f)` | `indexed_zset(K,V₁) × indexed_zset(K,V₂) → zset(OV)`, `f : (K,V₁,V₂) → OV` |
+| `join_index(l, r, f)` | as `join`, but `f : (K,V₁,V₂) → (OK,OV)` → `indexed_zset(OK,OV)` |
+| `antijoin(l, r)` | `indexed_zset(K,V) × indexed_zset(K,V₂) → indexed_zset(K,V)` |
+| `distinct(s)` | `X → X` (deduplicated) |
+| `aggregate(s, agg, f)` | `indexed_zset(K,V) → indexed_zset(K,A)`, `f : V → A` — see [Aggregators](#aggregators) |
+| `weighted_count(s)` | `zset(T) → indexed_zset(T, i64)` |
+| `neg(s)` | `X → X` |
+| `plus(a, b)` | `X × X → X` |
+| `minus(a, b)` | `X × X → X` |
+| `sum(a, b, …)` | `X⁺ → X` |
+| `integrate(s)` | `X → X` (running sum) |
+| `differentiate(s)` | `X → X` |
+| `delay(s)` | `X → X` |
 
 Operator arity follows `dbsp`: `plus` and `minus` are binary, `sum` is n-ary.
 
@@ -188,6 +189,38 @@ that each contain a row with weight 1 produce that row with weight 2. Follow the
 with `distinct` for set semantics.
 
 There is no `output` operator. Outputs are named when the runner starts.
+
+## Aggregators
+
+`aggregate(s, agg, f)` takes an aggregator name and a projection `f : V → A`
+applied to each value in the group. Aggregators are bare names:
+
+```
+aggregate(idx, max, fun((v) -> v.salary))
+```
+
+| aggregator | result | lowering |
+|---|---|---|
+| `min` / `max` | `A` — the minimum/maximum projected value in the group | `map_index` to re-project the value, then `aggregate(Min)` / `aggregate(Max)` |
+| `sum` | the sum of the projected values | `aggregate_linear_postprocess` |
+| `avg` | their mean | `aggregate_linear_postprocess` |
+| `count` | the number of rows whose projected value is non-null | `aggregate_linear_postprocess` |
+
+`sum` yields the projection's own type; `avg` always yields `f64`, so averaging
+integers does not truncate. Both yield null for a group in which every
+projection was null.
+
+Two consequences worth stating explicitly:
+
+- **`min` and `max` compare with the runtime value type's ordering.** That
+  ordering is therefore load-bearing for query results, not merely for batch
+  layout — see the invariants section of [`mapping.md`](mapping.md).
+- **`sum`, `avg` and `count` are linear aggregates**, and a linear aggregate
+  cannot distinguish "the group summed to zero" from "the group is empty". They
+  carry an extra row counter for that reason; see [`mapping.md`](mapping.md).
+
+To count rows regardless of nullability, use the `weighted_count` operator
+rather than the `count` aggregator — it sums Z-weights directly and is exact.
 
 ## Functions and expressions
 
@@ -378,9 +411,9 @@ from where it sits:
 
 Anywhere else it is an error saying so, rather than guessing.
 
-### Reserved words
+## Reserved words
 
-These may not name a node or a `fun` parameter: the 19 operator names, the 5
+These may not name a node or a `fun` parameter: the 20 operator names, the 5
 aggregator names, the builtin names, the type constructors (`bool`, `i64`,
 `f64`, `String`, `optional`, `record`, `sql`, `zset`, `indexed_zset`), and
 `true`, `false`, `NONE`, `null`, `fun`, `and`, `or`, `not`, `if`, `then`,
@@ -389,38 +422,6 @@ aggregator names, the builtin names, the type constructors (`bool`, `i64`,
 `if`, `then` and `else` are reserved although there are no conditionals yet, so
 adding them later will not break existing programs. Record *field* names are
 unrestricted — they are their own namespace and can be quoted.
-
-### Aggregators
-
-`aggregate(s, agg, f)` takes an aggregator name and a projection `f : V → A`
-applied to each value in the group. Aggregators are bare names:
-
-```
-aggregate(idx, max, fun((v) -> v.salary))
-```
-
-| aggregator | result | lowering |
-|---|---|---|
-| `min` / `max` | `A` — the minimum/maximum projected value in the group | `map_index` to re-project the value, then `aggregate(Min)` / `aggregate(Max)` |
-| `sum` | the sum of the projected values | `aggregate_linear_postprocess` |
-| `avg` | their mean | `aggregate_linear_postprocess` |
-| `count` | the number of rows whose projected value is non-null | `aggregate_linear_postprocess` |
-
-`sum` yields the projection's own type; `avg` always yields `f64`, so averaging
-integers does not truncate. Both yield null for a group in which every
-projection was null.
-
-Two consequences worth stating explicitly:
-
-- **`min` and `max` compare with the runtime value type's ordering.** That
-  ordering is therefore load-bearing for query results, not merely for batch
-  layout — see the invariants section of [`mapping.md`](mapping.md).
-- **`sum`, `avg` and `count` are linear aggregates**, and a linear aggregate
-  cannot distinguish "the group summed to zero" from "the group is empty". They
-  carry an extra row counter for that reason; see [`mapping.md`](mapping.md).
-
-To count rows regardless of nullability, use the `weighted_count` operator
-rather than the `count` aggregator — it sums Z-weights directly and is exact.
 
 ## Example
 

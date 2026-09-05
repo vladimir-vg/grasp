@@ -113,8 +113,10 @@ becomes non-transitive and rkyv's `ArchivedBTreeMap` binary search breaks.
 The robust fix is to make them agree by construction rather than deriving them
 independently, as `FlatVariant` does: it routes `Eq`, `Ord` and `Hash` through
 one set of functions over its byte encoding, and its archived form *is* that
-encoding (`sqllib/src/flat_variant.rs:325-352`, `:1129-1155`). Worth a proptest
-asserting `a.cmp(b) == archived(a).cmp(archived(b))` over generated values.
+encoding (`sqllib/src/flat_variant.rs:325-352`, `:1129-1155`). `DynValue` derives
+the two independently, so the agreement is asserted rather than constructed: a
+proptest in `tests/invariants.rs` checks
+`a.cmp(b) == archived(a).cmp(archived(b))` over generated values.
 
 **2. `Eq` and `Hash` must agree, including `-0.0` and `NaN`.** Batches are sharded
 across workers by `key.default_hash() % num_workers`
@@ -177,12 +179,43 @@ traces, so in practice that is every non-trivial program. The runtime's
 constructor closure must therefore be `Clone + Send + 'static` and its return
 value `Send`.
 
-It is also the only layer at which the full operator set is available.
-`integrate`, `differentiate`, `delay` and `delta0` all require `HasZero`, which
-the erased batch types do not implement — constructing an empty dynamic batch
-needs factories — but `TypedBatch` does (`dbsp/src/typed_batch.rs:272`). Built
-directly on `Stream<RootCircuit, MonoZSet>`, `delay` and `integrate` would not
-compile, and recursive circuits would be unreachable.
+The typed layer is also the only one at which the full operator set is
+available. `integrate`, `differentiate`, `delay` and `delta0` all require
+`HasZero`, which the erased batch types do not implement — constructing an empty
+dynamic batch needs factories — but `TypedBatch` does
+(`dbsp/src/typed_batch.rs:272`). Built directly on
+`Stream<RootCircuit, MonoZSet>`, `delay` and `integrate` would not compile, and
+recursive circuits would be unreachable.
+
+### Nodes are deduplicated before the circuit is built
+
+`push_node` (`typecheck/mod.rs`) returns an existing node whenever one already
+has the same batch type and the same `PlanOp`. `PlanOp` holds the operator's
+input *indices* and its parameters — including the compiled `Arc<TypedExpr>`
+function bodies, compared structurally — so equal `PlanOp`s mean genuinely the
+same computation over genuinely the same operands.
+
+Because it runs at plan time, `dbsp` never sees the duplicates: the operator
+graph handed to `Runtime::init_circuit` is already deduplicated, and nothing in
+the lowering has to know the rule exists. It is also why deduplication cannot
+change results — it changes which nodes are built, not what any of them
+compute.
+
+`Fixpoint` is the one exclusion. Its `PlanOp` carries a whole sub-plan, whose
+body nodes hold slot indices meaningful only within their own fixpoint, so
+structural equality between two of them would not mean what it means everywhere
+else.
+
+### An ordinary `circuit` has no runtime form
+
+"Nested circuit" means different things in the language and in `dbsp`, and only
+one of them reaches `dbsp`. Instantiating a `circuit` is inlining at plan time:
+the body becomes ordinary nodes in the enclosing node list, and by the time
+lowering runs there is nothing left to say it was ever a circuit. That holds for
+a circuit instantiated inside another.
+
+`fixpoint` is the sole construct that builds a real nested `dbsp` circuit; see
+[Fixpoint](#fixpoint) below.
 
 ## Operator mapping
 
@@ -207,6 +240,7 @@ Each language operator lowers to one typed `dbsp` method.
 | `integrate(s)` | `integrate` | running sum |
 | `differentiate(s)` | `differentiate` | |
 | `delay(s)` | `delay` | `z⁻¹` |
+| `empty()` | `add_source(Generator::new(HasZero::zero))` | a source yielding the zero batch every cycle |
 
 These are the methods `dbsp` exposes under its default `backend-mode` feature,
 where they come from `dbsp/src/mono.rs`; with that feature off, the equivalent
