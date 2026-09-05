@@ -92,5 +92,11 @@ fn operands(op: &PlanOp) -> Vec<usize> {
         | PlanOp::Plus { left, right }
         | PlanOp::Minus { left, right } => vec![*left, *right],
         PlanOp::Sum { inputs } => inputs.clone(),
+        // A fixpoint's body has its own index space, so only the export's
+        // reference to the fixpoint node itself is an operand here.
+        PlanOp::Fixpoint { .. } => vec![],
+        PlanOp::FixpointExport { fixpoint, .. } => vec![*fixpoint],
+        // Body-only, and never reached at the top level.
+        PlanOp::Import { .. } | PlanOp::RecVar { .. } => vec![],
     }
 }

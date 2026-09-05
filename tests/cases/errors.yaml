@@ -445,15 +445,43 @@
     - pass: typecheck
       message: "`empty()` takes no arguments"
 
-- name: fixpoint is not implemented yet
+- name: a fixpoint needs something to iterate
   source: |
     a := input("a")
     a :: zset(record(v: i64))
-    circuit loop_(src: s) {
+    circuit nothing(src: s) {
         out := distinct(s)
     }
-    fp := fixpoint(loop_(src: a))
+    fp := fixpoint(nothing(src: a))
+
+  # No body node shares a parameter label, so no parameter is recursive.
+  expected_diagnostics:
+    - pass: typecheck
+      message: "has no recursive parameter"
+
+- name: a recursive parameter needs a typespec
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    circuit c(src: s, out: o) {
+        out := plus(s, o)
+    }
+    fp := fixpoint(c(src: a, out: empty()))
 
   expected_diagnostics:
     - pass: typecheck
-      message: "`fixpoint` is not implemented yet"
+      message: "is recursive and needs a typespec"
+
+- name: a recursive parameter must start empty
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    circuit c(src: s, out: o) {
+        out :: zset(record(v: i64))
+        out := plus(s, o)
+    }
+    fp := fixpoint(c(src: a, out: a))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "so it starts empty: pass `empty()`"

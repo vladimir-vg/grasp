@@ -1,0 +1,100 @@
+# `fixpoint` iterates a circuit body to convergence. A parameter is recursive
+# when a body node shares its label; inside the body its internal name is the
+# previous round's value. Recursive streams start empty, so `empty()` is what
+# the call site passes, and the base case belongs in the body.
+#
+# An entry `(k, {src: v})` reads "v reaches k".
+
+- name: transitive closure over a path graph
+  source: |
+    edges := input("edges")
+    edges :: zset(record(src: i64, dst: i64))
+    # keyed by the far end, so a path and an outgoing edge meet on that node
+    base  := map_index(edges, fun((r) -> (r.dst, record(src: r.src))))
+    fwd   := map_index(edges, fun((r) -> (r.src, record(dst: r.dst))))
+
+    circuit tc(base: b, fwd: f, path: p) {
+        path :: indexed_zset(i64, record(src: i64))
+        step := join_index(p, f, fun((k, a, e) -> (e.dst, record(src: a.src))))
+        path := plus(b, step)
+    }
+
+    fp      := fixpoint(tc(base: base, fwd: fwd, path: empty()))
+    closure := fp.path
+
+  # 1 -> 2 -> 3 -> 4
+  input:
+    - edges:
+        - [1, {src: 1, dst: 2}]
+        - [1, {src: 2, dst: 3}]
+        - [1, {src: 3, dst: 4}]
+
+  # Reachability by hand: 1->2, 2->3, 3->4, 1->3, 2->4, 1->4.
+  expected_exact_output:
+    - closure:
+        - [1, 2, {src: 1}]
+        - [1, 3, {src: 2}]
+        - [1, 4, {src: 3}]
+        - [1, 3, {src: 1}]
+        - [1, 4, {src: 2}]
+        - [1, 4, {src: 1}]
+
+- name: a single edge converges in one round
+  source: |
+    edges := input("edges")
+    edges :: zset(record(src: i64, dst: i64))
+    # keyed by the far end, so a path and an outgoing edge meet on that node
+    base  := map_index(edges, fun((r) -> (r.dst, record(src: r.src))))
+    fwd   := map_index(edges, fun((r) -> (r.src, record(dst: r.dst))))
+
+    circuit tc(base: b, fwd: f, path: p) {
+        path :: indexed_zset(i64, record(src: i64))
+        step := join_index(p, f, fun((k, a, e) -> (e.dst, record(src: a.src))))
+        path := plus(b, step)
+    }
+
+    fp      := fixpoint(tc(base: base, fwd: fwd, path: empty()))
+    closure := fp.path
+
+  input:
+    - edges:
+        - [1, {src: 1, dst: 2}]
+
+  expected_exact_output:
+    - closure:
+        - [1, 2, {src: 1}]
+
+- name: removing an edge shrinks the closure
+  source: |
+    edges := input("edges")
+    edges :: zset(record(src: i64, dst: i64))
+    # keyed by the far end, so a path and an outgoing edge meet on that node
+    base  := map_index(edges, fun((r) -> (r.dst, record(src: r.src))))
+    fwd   := map_index(edges, fun((r) -> (r.src, record(dst: r.dst))))
+
+    circuit tc(base: b, fwd: f, path: p) {
+        path :: indexed_zset(i64, record(src: i64))
+        step := join_index(p, f, fun((k, a, e) -> (e.dst, record(src: a.src))))
+        path := plus(b, step)
+    }
+
+    fp      := fixpoint(tc(base: base, fwd: fwd, path: empty()))
+    closure := fp.path
+
+  # Incremental maintenance across a fixpoint is the property most likely to be
+  # subtly wrong, so it gets its own case.
+  input:
+    - edges:
+        - [1, {src: 1, dst: 2}]
+        - [1, {src: 2, dst: 3}]
+    - edges:
+        - [-1, {src: 2, dst: 3}]
+
+  expected_exact_output:
+    - closure:
+        - [1, 2, {src: 1}]
+        - [1, 3, {src: 2}]
+        - [1, 3, {src: 1}]
+    - closure:
+        - [-1, 3, {src: 2}]
+        - [-1, 3, {src: 1}]

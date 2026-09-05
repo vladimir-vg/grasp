@@ -95,6 +95,20 @@ pub enum PlanOp {
     Delay { input: usize },
     /// An empty stream. Its type is fixed by where it is used.
     Empty,
+
+    /// Iterate a circuit body to convergence.
+    ///
+    /// The body is a sub-plan built inside a nested circuit, so this is the one
+    /// place the node list stops being flat. It yields one stream per recursive
+    /// parameter; `FixpointExport` picks them out.
+    Fixpoint { body: Vec<PlanNode>, outputs: Vec<usize> },
+    /// One convergent stream of a `Fixpoint` node.
+    FixpointExport { fixpoint: usize, slot: usize },
+
+    /// Body-only: a parent stream imported into the nested circuit (`delta0`).
+    Import { outer: usize },
+    /// Body-only: the previous round's value of recursive slot `slot`.
+    RecVar { slot: usize },
 }
 
 #[derive(Debug, Clone)]
@@ -301,13 +315,7 @@ fn check_decl(
 
         Rhs::Instantiate(inst) => expand(name, inst, plan, circuits, scope),
 
-        Rhs::Fixpoint(inst) => err(
-            inst.span,
-            format!(
-                "`fixpoint` is not implemented yet; `{}` can only be expanded",
-                inst.circuit
-            ),
-        ),
+        Rhs::Fixpoint(inst) => check_fixpoint(name, inst, plan, circuits, scope),
     }
 }
 
@@ -378,6 +386,136 @@ fn expand(
         // so later body nodes see it by its short name.
         let idx = plan.by_name[&mangled];
         scope.insert(bname.clone(), idx);
+    }
+    Ok(())
+}
+
+/// Builds a `fixpoint` instantiation: the body becomes a sub-plan whose
+/// parameters are either imported from the parent or bound to a recursive slot.
+fn check_fixpoint(
+    instance: &str,
+    inst: &Instantiation,
+    plan: &mut Plan,
+    circuits: &HashMap<&str, &CircuitDef>,
+    outer: &Scope,
+) -> TResult<()> {
+    let Some(def) = circuits.get(inst.circuit.as_str()) else {
+        return err(inst.span, format!("unknown circuit `{}`", inst.circuit));
+    };
+    for (label, _) in &inst.args {
+        if !def.params.iter().any(|(l, _)| l == label) {
+            return err(inst.span, format!("`{}` has no parameter `{label}`", inst.circuit));
+        }
+    }
+    let group = collect(&def.body)?;
+
+    let mut sub = Plan { nodes: Vec::new(), by_name: HashMap::new() };
+    let mut scope = Scope::new();
+    let mut recs: Vec<(String, BatchType)> = Vec::new();
+
+    for (label, internal) in &def.params {
+        let Some((_, arg)) = inst.args.iter().find(|(l, _)| l == label) else {
+            return err(inst.span, format!("missing argument `{label}` for `{}`", inst.circuit));
+        };
+        // A parameter is self-referential when a body node shares its label.
+        let recursive = group.nodes.iter().any(|(n, _, _)| n.as_str() == label);
+
+        if recursive {
+            if !matches!(arg, Arg::Op(c) if c.op == "empty") {
+                return err(
+                    inst.span,
+                    format!(
+                        "`{label}` is recursive, so it starts empty: pass `empty()`. \
+                         A base case belongs in the circuit body."
+                    ),
+                );
+            }
+            let Some((ty, _)) = group.specs.get(label.as_str()) else {
+                return err(
+                    inst.span,
+                    format!(
+                        "`{label}` is recursive and needs a typespec: add `{label} :: ...` \
+                         to the body of `{}`, since its type cannot be inferred from a \
+                         body that consumes it",
+                        inst.circuit
+                    ),
+                );
+            };
+            let slot = recs.len();
+            sub.nodes.push(PlanNode {
+                name: format!("<{label}>"),
+                ty: (*ty).clone(),
+                op: PlanOp::RecVar { slot },
+                span: inst.span,
+            });
+            scope.insert(internal.clone(), sub.nodes.len() - 1);
+            recs.push((label.clone(), (*ty).clone()));
+        } else {
+            let idx = match resolve_arg(arg, plan, &Specs::new(), outer)? {
+                RArg::Stream(i) => i,
+                RArg::Name(n) => return err(inst.span, format!("unknown stream `{n}`")),
+                _ => return err(inst.span, format!("argument `{label}` must be a stream")),
+            };
+            sub.nodes.push(PlanNode {
+                name: format!("<import {internal}>"),
+                ty: plan.nodes[idx].ty.clone(),
+                op: PlanOp::Import { outer: idx },
+                span: inst.span,
+            });
+            scope.insert(internal.clone(), sub.nodes.len() - 1);
+        }
+    }
+
+    if recs.is_empty() {
+        return err(
+            inst.span,
+            format!(
+                "`{}` has no recursive parameter, so there is nothing to iterate; \
+                 a parameter is recursive when a body node shares its label",
+                inst.circuit
+            ),
+        );
+    }
+    // One nested batch type serves every recursive stream, so they must agree
+    // on shape.
+    let flat = matches!(recs[0].1, BatchType::ZSet(_));
+    for (label, ty) in &recs {
+        if matches!(ty, BatchType::ZSet(_)) != flat {
+            return err(
+                inst.span,
+                format!("`{label}` has a different shape from the other recursive streams"),
+            );
+        }
+    }
+
+    for i in topo_order(&group.nodes)? {
+        let (bname, rhs, bspan) = group.nodes[i];
+        check_decl(bname, rhs, bspan, &mut sub, &group.specs, circuits, &scope)?;
+        let idx = sub.by_name[bname.as_str()];
+        scope.insert(bname.clone(), idx);
+    }
+
+    let outputs: Vec<usize> = recs.iter().map(|(l, _)| sub.by_name[l.as_str()]).collect();
+    let first = recs[0].1.clone();
+    plan.nodes.push(PlanNode {
+        name: instance.to_string(),
+        ty: first,
+        op: PlanOp::Fixpoint { body: sub.nodes, outputs },
+        span: inst.span,
+    });
+    let fixpoint = plan.nodes.len() - 1;
+
+    // Only the recursive streams leave the nested circuit; other body nodes
+    // exist only inside it.
+    for (slot, (label, ty)) in recs.into_iter().enumerate() {
+        let name = format!("{instance}.{label}");
+        plan.by_name.insert(name.clone(), plan.nodes.len());
+        plan.nodes.push(PlanNode {
+            name,
+            ty,
+            op: PlanOp::FixpointExport { fixpoint, slot },
+            span: inst.span,
+        });
     }
     Ok(())
 }

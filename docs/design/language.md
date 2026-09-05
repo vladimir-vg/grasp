@@ -313,6 +313,36 @@ node becomes selectable as a program output, since only declared names can be.
 Expansion is per instantiation: two instantiations of one circuit produce two
 independent sets of nodes, exactly as writing the body twice would.
 
+### `fixpoint`
+
+`fixpoint` iterates a circuit body to convergence. A parameter is
+**self-referential** when a body node shares its label; inside the body its
+internal name is the *previous round's* value.
+
+```
+circuit tc(base: b, fwd: f, path: p) {
+    path :: indexed_zset(i64, record(src: i64))
+    step := join_index(p, f, fun((k, a, e) -> (e.dst, record(src: a.src))))
+    path := plus(b, step)
+}
+
+fp      := fixpoint(tc(base: base, fwd: fwd, path: empty()))
+closure := fp.path
+```
+
+- **A recursive stream starts empty**, so the call site passes `empty()`. There
+  is no seeding: the base case belongs in the body, as `plus(b, step)` here.
+- **A recursive body node needs a typespec.** Its type cannot be inferred,
+  because the body that computes it also consumes it — `join_index` needs the
+  parameter's value type before `plus` determines it.
+- **Only recursive members leave the fixpoint.** `fp.path` works; other body
+  nodes exist only inside the nested circuit.
+- **`distinct` is applied for you** to each recursive stream, on every round.
+  That is what makes the iteration terminate, and writing your own would lower
+  a redundant second one.
+- Every recursive stream in one `fixpoint` must have the same shape, since one
+  nested batch type serves them all.
+
 ## `empty()`
 
 `empty()` is a stream with no rows. It carries no type of its own — it takes one

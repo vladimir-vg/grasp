@@ -23,6 +23,7 @@ the circuit and output changes are emitted as they are produced.
 ## Scope (v1)
 
 - The source language described in [`language.md`](language.md).
+- `circuit` definitions, instantiated by macro expansion or by `fixpoint`.
 - The operator set listed there: inputs; the mapping family (`map`, `filter`,
   `flat_map`, `map_index`, `flat_map_index`); the join family (`join`,
   `join_index`, `antijoin`); `distinct`; `aggregate` over

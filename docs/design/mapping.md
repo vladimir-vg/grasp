@@ -277,6 +277,35 @@ builder, not an aggregator, and there is no `Sum`, `Count` or `Avg`.
 `DynValue`'s `Ord` — see invariant 1 above, which is why that ordering matters
 for results and not only for storage layout.
 
+## Fixpoint
+
+`fixpoint` lowers to `RootCircuit::recursive_dynamic(arity, f)`
+(`dbsp/src/operator/recursive.rs:448`), which takes a **runtime** arity — the
+shape a runtime-defined circuit needs — and returns one convergent stream per
+recursive parameter. `dbsp` applies `distinct` to each recursive stream itself,
+which is what makes the iteration terminate.
+
+Base parameters are carried into the nested circuit with `delta0`, which needs
+`HasZero` — another thing `TypedBatch` has and the erased batches do not.
+
+**This is the one place the node list stops being flat.** A fixpoint node holds
+a sub-plan whose `Import` and `RecVar` operators stand for an imported parent
+stream and a recursive slot. They are resolved where both the parent's streams
+and the child circuit are in scope, rather than in the body builder.
+
+**The lowering is instantiated twice.** The nested circuit is `NestedCircuit`,
+a different Rust type from `RootCircuit`, and `mono.rs` exposes operators as
+inherent methods on concrete circuit types rather than through a trait — so a
+function generic over `C: Circuit` cannot call them. The shared operator arms
+live in one macro used by both builders, which is what keeps the copies from
+drifting. This is a limitation of `dbsp`'s API surface, not of the design.
+
+One wrinkle: `recursive_dynamic`'s closure returns `Result<_, SchedulerError>`
+and cannot carry a `Diagnostic` out. A build failure inside it means the checker
+and the lowering disagree, so it is parked in a slot and the closure returns its
+inputs unchanged to keep the arity right; the diagnostic surfaces after the
+call.
+
 ## Incrementalization principle
 
 The language does **not** insert `integrate`/`differentiate` around non-linear
