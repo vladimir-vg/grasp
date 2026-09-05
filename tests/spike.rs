@@ -53,26 +53,26 @@ fn typed_api_instantiates_at_one_value_type() {
 
         // map_index: key on field 1 (dept_id), value is the whole row.
         let emp_idx = emp.map_index(|r: &DynValue| {
-            (r.field(1).cloned().unwrap_or(DynValue::Null), r.clone())
+            (r.field(1).cloned().unwrap_or(DynValue::Absent), r.clone())
         });
         // dept rows are (id, name); key on field 0.
         let dept_idx = dept.map_index(|r: &DynValue| {
-            (r.field(0).cloned().unwrap_or(DynValue::Null), r.clone())
+            (r.field(0).cloned().unwrap_or(DynValue::Absent), r.clone())
         });
 
         // join: build an output record from both sides.
         let joined = emp_idx.join(&dept_idx, |_k, e: &DynValue, d: &DynValue| {
             DynValue::record([
-                e.field(0).cloned().unwrap_or(DynValue::Null),
-                d.field(1).cloned().unwrap_or(DynValue::Null),
+                e.field(0).cloned().unwrap_or(DynValue::Absent),
+                d.field(1).cloned().unwrap_or(DynValue::Absent),
             ])
         });
 
         // aggregate: max salary per department.
         let salaries = emp.map_index(|r: &DynValue| {
             (
-                r.field(1).cloned().unwrap_or(DynValue::Null),
-                r.field(2).cloned().unwrap_or(DynValue::Null),
+                r.field(1).cloned().unwrap_or(DynValue::Absent),
+                r.field(2).cloned().unwrap_or(DynValue::Absent),
             )
         });
         let agg = salaries.aggregate(Max);
@@ -111,8 +111,8 @@ fn retractions_cancel() {
         let (s, handle) = circuit.add_input_zset::<DynValue>();
         let idx = s.map_index(|r: &DynValue| {
             (
-                r.field(1).cloned().unwrap_or(DynValue::Null),
-                r.field(2).cloned().unwrap_or(DynValue::Null),
+                r.field(1).cloned().unwrap_or(DynValue::Absent),
+                r.field(2).cloned().unwrap_or(DynValue::Absent),
             )
         });
         Ok((handle, idx.aggregate(Min).output()))

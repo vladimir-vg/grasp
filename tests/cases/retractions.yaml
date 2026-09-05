@@ -4,7 +4,7 @@
 - name: a retraction cancels an insertion
   source: |
     a := input("a")
-    a :: OrdZSet(record(v: i64))
+    a :: zset(record(v: i64))
     d := distinct(a)
 
   input:
@@ -24,7 +24,7 @@
 - name: insert and retract within one transaction produce nothing
   source: |
     a := input("a")
-    a :: OrdZSet(record(v: i64))
+    a :: zset(record(v: i64))
     d := distinct(a)
 
   input:
@@ -40,9 +40,9 @@
 - name: retracting the left side of a join retracts the joined row
   source: |
     l := input("l")
-    l :: OrdZSet(record(k: i64, a: i64))
+    l :: zset(record(k: i64, a: i64))
     r := input("r")
-    r :: OrdZSet(record(k: i64, b: i64))
+    r :: zset(record(k: i64, b: i64))
     li := map_index(l, fun((x) -> (x.k, record(a: x.a))))
     ri := map_index(r, fun((x) -> (x.k, record(b: x.b))))
     j  := join(li, ri, fun((k, x, y) -> record(a: x.a, b: y.b)))
@@ -64,20 +64,20 @@
 - name: retracting the excluded side of an antijoin admits the row
   source: |
     pos := input("pos")
-    pos :: OrdZSet(record(k: i64, a: i64))
-    neg := input("neg")
-    neg :: OrdZSet(record(k: i64))
+    pos :: zset(record(k: i64, a: i64))
+    excluded := input("excluded")
+    excluded :: zset(record(k: i64))
     pi := map_index(pos, fun((x) -> (x.k, record(a: x.a))))
-    ni := map_index(neg, fun((x) -> (x.k, record(k: x.k))))
+    ni := map_index(excluded, fun((x) -> (x.k, record(k: x.k))))
     out := antijoin(pi, ni)
 
   input:
     - pos:
         - [1, {k: 1, a: 100}]
         - [1, {k: 2, a: 200}]
-      neg:
+      excluded:
         - [1, {k: 1}]
-    - neg:
+    - excluded:
         - [-1, {k: 1}]
 
   expected_exact_output:

@@ -4,7 +4,7 @@
 - name: integrate accumulates a running total
   source: |
     a := input("a")
-    a :: OrdZSet(record(v: i64))
+    a :: zset(record(v: i64))
     total := integrate(a)
 
   input:
@@ -29,7 +29,7 @@
 - name: delay holds each transaction back by one
   source: |
     a := input("a")
-    a :: OrdZSet(record(v: i64))
+    a :: zset(record(v: i64))
     previous := delay(a)
 
   input:
@@ -49,7 +49,7 @@
 - name: differentiate undoes integrate
   source: |
     a := input("a")
-    a :: OrdZSet(record(v: i64))
+    a :: zset(record(v: i64))
     total := integrate(a)
     back := differentiate(total)
 
@@ -69,7 +69,7 @@
 - name: integrate cancels a retraction
   source: |
     a := input("a")
-    a :: OrdZSet(record(v: i64))
+    a :: zset(record(v: i64))
     total := integrate(a)
 
   input:

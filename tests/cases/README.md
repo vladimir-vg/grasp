@@ -42,7 +42,7 @@ arity is what distinguishes them.
 - name: max salary per department
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64, dept_id: i64, salary: i64))
+    emp :: zset(record(id: i64, dept_id: i64, salary: i64))
     idx := map_index(emp, fun((r) -> (r.dept_id, r)))
     by_dept := aggregate(idx, max, fun((v) -> v.salary))
 
@@ -75,7 +75,7 @@ rows nobody expected, which is the bug class these tests exist to catch.
 - name: unknown field
   source: |
     a := input("a")
-    a :: OrdZSet(record(id: i64))
+    a :: zset(record(id: i64))
     b := filter(a, fun((r) -> r.nope > 1))
 
   expected_diagnostics:

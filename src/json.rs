@@ -37,7 +37,7 @@ fn bad<T>(msg: impl Into<String>) -> JResult<T> {
 // ---------------------------------------------------------------------------
 
 pub fn encode_value(v: &DynValue, ty: &TypeDesc) -> JResult<J> {
-    if v.is_null() {
+    if v.is_absent() {
         return Ok(J::Null);
     }
     let ty = ty.non_null();
@@ -69,10 +69,10 @@ pub fn encode_value(v: &DynValue, ty: &TypeDesc) -> JResult<J> {
 
 pub fn decode_value(j: &J, ty: &TypeDesc) -> JResult<DynValue> {
     if j.is_null() {
-        return if ty.is_nullable() {
-            Ok(DynValue::Null)
+        return if ty.is_optional() {
+            Ok(DynValue::Absent)
         } else {
-            bad(format!("null where `{ty}` was expected"))
+            bad(format!("null where `{ty}` was expected; the column is not optional"))
         };
     }
     let ty = ty.non_null();
@@ -117,7 +117,7 @@ pub fn decode_value(j: &J, ty: &TypeDesc) -> JResult<DynValue> {
             }
             DynValue::Record(fields)
         }
-        TypeDesc::Option(_) => unreachable!("stripped by non_null"),
+        TypeDesc::Optional(_) => unreachable!("stripped by non_null"),
     })
 }
 

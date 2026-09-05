@@ -18,8 +18,6 @@ use feldera_sqllib::SqlString;
 /// A builtin function. `cast` is not implemented in this cut.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Builtin {
-    IsNull,
-    IsNotNull,
     Coalesce,
     Abs,
     Floor,
@@ -35,8 +33,6 @@ pub enum Builtin {
 impl Builtin {
     pub fn from_name(name: &str) -> Option<Builtin> {
         Some(match name {
-            "is_null" => Builtin::IsNull,
-            "is_not_null" => Builtin::IsNotNull,
             "coalesce" => Builtin::Coalesce,
             "abs" => Builtin::Abs,
             "floor" => Builtin::Floor,
@@ -50,6 +46,11 @@ impl Builtin {
             _ => return None,
         })
     }
+
+    /// Every builtin name, so the reserved-word list cannot drift from it.
+    pub const ALL: &'static [&'static str] = &[
+        "coalesce", "abs", "floor", "ceil", "round", "length", "concat", "lower", "upper", "trim",
+    ];
 
     /// Number of arguments, or `None` if variadic.
     pub fn arity(self) -> Option<usize> {
@@ -73,22 +74,22 @@ pub enum TypedExpr {
     Unary(UnOp, Box<TypedExpr>),
     Binary(BinOp, Box<TypedExpr>, Box<TypedExpr>),
     Call(Builtin, Vec<TypedExpr>),
-    If(Box<TypedExpr>, Box<TypedExpr>, Box<TypedExpr>),
 }
 
 /// Evaluate an expression against positionally-bound arguments.
 ///
-/// Null propagates: any null operand yields null, except through `is_null`,
-/// `is_not_null` and `coalesce`. Callers that need a decision from a possibly
-/// null result — `filter`, say — treat anything other than `Bool(true)` as
-/// false, so a null predicate excludes the row.
+/// **Absence does not propagate.** `ABSENT` is a value: comparisons against it
+/// yield a definite `bool`, and it sorts before every other value. Arithmetic
+/// on an optional operand is rejected by the type checker rather than yielding
+/// absence, so this evaluator should never see one — the fallbacks below are
+/// defensive.
 pub fn eval(e: &TypedExpr, args: &[&DynValue]) -> DynValue {
     match e {
         TypedExpr::Const(v) => v.clone(),
         TypedExpr::Var(i) => args[*i].clone(),
         TypedExpr::Field(base, index) => match eval(base, args) {
-            DynValue::Record(fields) => fields.get(*index).cloned().unwrap_or(DynValue::Null),
-            _ => DynValue::Null,
+            DynValue::Record(fields) => fields.get(*index).cloned().unwrap_or(DynValue::Absent),
+            _ => DynValue::Absent,
         },
         TypedExpr::Record(fields) => {
             DynValue::Record(fields.iter().map(|f| eval(f, args)).collect())
@@ -96,30 +97,23 @@ pub fn eval(e: &TypedExpr, args: &[&DynValue]) -> DynValue {
         TypedExpr::Unary(op, inner) => eval_unary(*op, eval(inner, args)),
         TypedExpr::Binary(op, l, r) => eval_binary(*op, l, r, args),
         TypedExpr::Call(f, call_args) => eval_call(*f, call_args, args),
-        TypedExpr::If(cond, then, els) => {
-            if is_true(&eval(cond, args)) {
-                eval(then, args)
-            } else {
-                eval(els, args)
-            }
-        }
     }
 }
 
-/// Whether a value counts as true. Null is not true.
+/// Whether a value counts as true. `ABSENT` is not true.
 pub fn is_true(v: &DynValue) -> bool {
     matches!(v, DynValue::Bool(true))
 }
 
 fn eval_unary(op: UnOp, v: DynValue) -> DynValue {
-    if v.is_null() {
-        return DynValue::Null;
+    if v.is_absent() {
+        return DynValue::Absent;
     }
     match (op, v) {
         (UnOp::Neg, DynValue::I64(n)) => DynValue::I64(-n),
         (UnOp::Neg, DynValue::F64(f)) => DynValue::F64(Flt::new(-f.into_inner())),
         (UnOp::Not, DynValue::Bool(b)) => DynValue::Bool(!b),
-        _ => DynValue::Null,
+        _ => DynValue::Absent,
     }
 }
 
@@ -135,7 +129,7 @@ fn eval_binary(op: BinOp, l: &TypedExpr, r: &TypedExpr, args: &[&DynValue]) -> D
             return match (&lhs, &rhs) {
                 (DynValue::Bool(a), DynValue::Bool(b)) => DynValue::Bool(*a && *b),
                 _ if matches!(rhs, DynValue::Bool(false)) => DynValue::Bool(false),
-                _ => DynValue::Null,
+                _ => DynValue::Absent,
             };
         }
         BinOp::Or => {
@@ -147,7 +141,7 @@ fn eval_binary(op: BinOp, l: &TypedExpr, r: &TypedExpr, args: &[&DynValue]) -> D
             return match (&lhs, &rhs) {
                 (DynValue::Bool(a), DynValue::Bool(b)) => DynValue::Bool(*a || *b),
                 _ if matches!(rhs, DynValue::Bool(true)) => DynValue::Bool(true),
-                _ => DynValue::Null,
+                _ => DynValue::Absent,
             };
         }
         _ => {}
@@ -155,11 +149,9 @@ fn eval_binary(op: BinOp, l: &TypedExpr, r: &TypedExpr, args: &[&DynValue]) -> D
 
     let lhs = eval(l, args);
     let rhs = eval(r, args);
-    if lhs.is_null() || rhs.is_null() {
-        return DynValue::Null;
-    }
 
     match op {
+        // Comparisons are total: `ABSENT` is a value, so they always decide.
         BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
             match compare(&lhs, &rhs) {
                 Some(ord) => DynValue::Bool(match op {
@@ -171,19 +163,31 @@ fn eval_binary(op: BinOp, l: &TypedExpr, r: &TypedExpr, args: &[&DynValue]) -> D
                     BinOp::Ge => ord != std::cmp::Ordering::Less,
                     _ => unreachable!(),
                 }),
-                None => DynValue::Null,
+                None => DynValue::Absent,
             }
         }
+        // The type checker rejects arithmetic on an optional operand, so this
+        // is defensive rather than a propagation rule.
+        _ if lhs.is_absent() || rhs.is_absent() => DynValue::Absent,
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => arith(op, &lhs, &rhs),
         BinOp::And | BinOp::Or => unreachable!("handled above"),
     }
 }
 
-/// Compares two values, promoting integers to floats when mixed. Returns `None`
-/// for combinations with no meaningful ordering, which becomes null.
+/// Compares two values, promoting integers to floats when mixed.
+///
+/// Total wherever `ABSENT` is involved: it equals itself and sorts before every
+/// other value, matching `DynValue`'s own ordering — which is what `min`/`max`
+/// use, so expressions and aggregates agree about where absence sits.
+///
+/// `None` means the two are not comparable at all, which the type checker
+/// rejects before evaluation.
 fn compare(l: &DynValue, r: &DynValue) -> Option<std::cmp::Ordering> {
     use DynValue::*;
     match (l, r) {
+        (Absent, Absent) => Some(std::cmp::Ordering::Equal),
+        (Absent, _) => Some(std::cmp::Ordering::Less),
+        (_, Absent) => Some(std::cmp::Ordering::Greater),
         (I64(a), I64(b)) => Some(a.cmp(b)),
         (F64(a), F64(b)) => Some(a.cmp(b)),
         (I64(a), F64(b)) => Flt::new(*a as f64).partial_cmp(b),
@@ -206,12 +210,12 @@ fn arith(op: BinOp, l: &DynValue, r: &DynValue) -> DynValue {
     }
     match (l, r) {
         (I64(a), I64(b)) => match op {
-            BinOp::Add => a.checked_add(*b).map(I64).unwrap_or(Null),
-            BinOp::Sub => a.checked_sub(*b).map(I64).unwrap_or(Null),
-            BinOp::Mul => a.checked_mul(*b).map(I64).unwrap_or(Null),
-            BinOp::Div => a.checked_div(*b).map(I64).unwrap_or(Null),
-            BinOp::Rem => a.checked_rem(*b).map(I64).unwrap_or(Null),
-            _ => Null,
+            BinOp::Add => a.checked_add(*b).map(I64).unwrap_or(Absent),
+            BinOp::Sub => a.checked_sub(*b).map(I64).unwrap_or(Absent),
+            BinOp::Mul => a.checked_mul(*b).map(I64).unwrap_or(Absent),
+            BinOp::Div => a.checked_div(*b).map(I64).unwrap_or(Absent),
+            BinOp::Rem => a.checked_rem(*b).map(I64).unwrap_or(Absent),
+            _ => Absent,
         },
         _ => match (as_f64(l), as_f64(r)) {
             (Some(a), Some(b)) => {
@@ -221,11 +225,11 @@ fn arith(op: BinOp, l: &DynValue, r: &DynValue) -> DynValue {
                     BinOp::Mul => a * b,
                     BinOp::Div => a / b,
                     BinOp::Rem => a % b,
-                    _ => return Null,
+                    _ => return Absent,
                 };
                 F64(Flt::new(v))
             }
-            _ => Null,
+            _ => Absent,
         },
     }
 }
@@ -249,25 +253,21 @@ fn as_str(v: &DynValue) -> Option<&str> {
 fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValue {
     let vals: Vec<DynValue> = call_args.iter().map(|a| eval(a, args)).collect();
 
-    // These three see nulls rather than propagating them.
-    match f {
-        Builtin::IsNull => return DynValue::Bool(vals[0].is_null()),
-        Builtin::IsNotNull => return DynValue::Bool(!vals[0].is_null()),
-        Builtin::Coalesce => {
-            return if vals[0].is_null() { vals[1].clone() } else { vals[0].clone() };
-        }
-        _ => {}
+    // `coalesce` is the one builtin that inspects absence rather than being
+    // rejected for it; everything else needs a definite value.
+    if f == Builtin::Coalesce {
+        return if vals[0].is_absent() { vals[1].clone() } else { vals[0].clone() };
     }
 
-    if vals.iter().any(|v| v.is_null()) {
-        return DynValue::Null;
+    if vals.iter().any(|v| v.is_absent()) {
+        return DynValue::Absent;
     }
 
     match f {
         Builtin::Abs => match &vals[0] {
-            DynValue::I64(n) => n.checked_abs().map(DynValue::I64).unwrap_or(DynValue::Null),
+            DynValue::I64(n) => n.checked_abs().map(DynValue::I64).unwrap_or(DynValue::Absent),
             DynValue::F64(v) => DynValue::F64(Flt::new(v.into_inner().abs())),
-            _ => DynValue::Null,
+            _ => DynValue::Absent,
         },
         Builtin::Floor | Builtin::Ceil | Builtin::Round => match &vals[0] {
             DynValue::I64(n) => DynValue::I64(*n),
@@ -279,17 +279,17 @@ fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValu
                     _ => x.round(),
                 }))
             }
-            _ => DynValue::Null,
+            _ => DynValue::Absent,
         },
         Builtin::Length => match &vals[0] {
             DynValue::String(s) => DynValue::I64(s.chars().count() as i64),
             DynValue::SqlString(s) => DynValue::I64(s.str().chars().count() as i64),
             DynValue::Record(fields) => DynValue::I64(fields.len() as i64),
-            _ => DynValue::Null,
+            _ => DynValue::Absent,
         },
         Builtin::Concat => match (as_str(&vals[0]), as_str(&vals[1])) {
             (Some(a), Some(b)) => DynValue::str(&format!("{a}{b}")),
-            _ => DynValue::Null,
+            _ => DynValue::Absent,
         },
         Builtin::Lower | Builtin::Upper | Builtin::Trim => match as_str(&vals[0]) {
             Some(s) => {
@@ -300,8 +300,8 @@ fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValu
                 };
                 DynValue::SqlString(SqlString::from_ref(&out))
             }
-            None => DynValue::Null,
+            None => DynValue::Absent,
         },
-        Builtin::IsNull | Builtin::IsNotNull | Builtin::Coalesce => unreachable!("handled above"),
+        Builtin::Coalesce => unreachable!("handled above"),
     }
 }

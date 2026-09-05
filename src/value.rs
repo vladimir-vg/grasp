@@ -24,7 +24,7 @@ use size_of::SizeOf;
 /// discriminant, which is a persisted storage format. **Append new variants at
 /// the end.**
 ///
-/// Nullability is represented by [`DynValue::Null`] rather than by an `Option`
+/// Nullability is represented by [`DynValue::Absent`] rather than by an `Option`
 /// variant, matching `Variant`'s `SqlNull`.
 #[derive(
     Debug,
@@ -51,8 +51,12 @@ use size_of::SizeOf;
 ))]
 #[archive_attr(derive(Eq, Ord, PartialEq, PartialOrd))]
 pub enum DynValue {
+    /// No value. Written `ABSENT` in source; encoded as JSON `null`.
+    ///
+    /// Being variant 0 makes it sort before every value, which is what both
+    /// `min`/`max` and the language's comparison operators rely on.
     #[default]
-    Null,
+    Absent,
     Bool(bool),
     I64(i64),
     F64(F64),
@@ -75,8 +79,8 @@ pub enum DynValue {
 }
 
 impl DynValue {
-    pub fn is_null(&self) -> bool {
-        matches!(self, DynValue::Null)
+    pub fn is_absent(&self) -> bool {
+        matches!(self, DynValue::Absent)
     }
 
     pub fn record(fields: impl IntoIterator<Item = DynValue>) -> Self {
@@ -104,7 +108,7 @@ impl DynValue {
     /// The name of this value's variant, for error messages.
     pub fn type_name(&self) -> &'static str {
         match self {
-            DynValue::Null => "null",
+            DynValue::Absent => "ABSENT",
             DynValue::Bool(_) => "bool",
             DynValue::I64(_) => "i64",
             DynValue::F64(_) => "f64",
@@ -236,8 +240,8 @@ pub enum TypeDesc {
     String,
     /// `sql.SqlString`.
     SqlString,
-    /// `Option(T)`. `T` may not itself be an `Option`.
-    Option(Box<TypeDesc>),
+    /// `optional(T)`. `T` may not itself be optional.
+    Optional(Box<TypeDesc>),
     /// `record(name: T, ...)`, in declaration order.
     Record(Vec<(String, TypeDesc)>),
 }
@@ -268,13 +272,13 @@ impl TypeDesc {
     /// at every comparison site.
     pub fn non_null(&self) -> &TypeDesc {
         match self {
-            TypeDesc::Option(inner) => inner,
+            TypeDesc::Optional(inner) => inner,
             other => other,
         }
     }
 
-    pub fn is_nullable(&self) -> bool {
-        matches!(self, TypeDesc::Option(_))
+    pub fn is_optional(&self) -> bool {
+        matches!(self, TypeDesc::Optional(_))
     }
 }
 
@@ -286,7 +290,7 @@ impl std::fmt::Display for TypeDesc {
             TypeDesc::F64 => write!(f, "f64"),
             TypeDesc::String => write!(f, "String"),
             TypeDesc::SqlString => write!(f, "sql.SqlString"),
-            TypeDesc::Option(inner) => write!(f, "Option({inner})"),
+            TypeDesc::Optional(inner) => write!(f, "optional({inner})"),
             TypeDesc::Record(fields) => {
                 write!(f, "record(")?;
                 for (i, (name, ty)) in fields.iter().enumerate() {
@@ -311,8 +315,8 @@ pub enum BatchType {
 impl std::fmt::Display for BatchType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BatchType::ZSet(t) => write!(f, "OrdZSet({t})"),
-            BatchType::IndexedZSet(k, v) => write!(f, "OrdIndexedZSet({k}, {v})"),
+            BatchType::ZSet(t) => write!(f, "zset({t})"),
+            BatchType::IndexedZSet(k, v) => write!(f, "indexed_zset({k}, {v})"),
         }
     }
 }

@@ -4,7 +4,7 @@
 - name: one row fans out into two
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64))
+    emp :: zset(record(id: i64))
     tags := flat_map(emp, fun((r) ->
         [record(id: r.id, tag: "primary"),
          record(id: r.id, tag: "backup")]))
@@ -21,7 +21,7 @@
 - name: a single-element list is just map
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64))
+    emp :: zset(record(id: i64))
     out := flat_map(emp, fun((r) -> [record(id: r.id)]))
 
   input:
@@ -35,7 +35,7 @@
 - name: fan-out multiplies weights
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64))
+    emp :: zset(record(id: i64))
     two := flat_map(emp, fun((r) -> [record(v: r.id), record(v: r.id + 100)]))
 
   input:
@@ -50,7 +50,7 @@
 - name: identical rows in one list consolidate
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64))
+    emp :: zset(record(id: i64))
     dup := flat_map(emp, fun((r) -> [record(id: r.id), record(id: r.id)]))
 
   input:
@@ -65,7 +65,7 @@
 - name: flat_map_index emits several keys per row
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64, dept_id: i64, mgr_id: i64))
+    emp :: zset(record(id: i64, dept_id: i64, mgr_id: i64))
     both := flat_map_index(emp, fun((r) ->
         [(r.dept_id, record(id: r.id)),
          (r.mgr_id, record(id: r.id))]))
@@ -82,9 +82,9 @@
 - name: a flat_map_index result joins like any other indexed stream
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64, dept_id: i64, mgr_id: i64))
+    emp :: zset(record(id: i64, dept_id: i64, mgr_id: i64))
     dept := input("dept")
-    dept :: OrdZSet(record(id: i64, dname: sql.SqlString))
+    dept :: zset(record(id: i64, dname: sql.SqlString))
     ei := flat_map_index(emp, fun((r) ->
         [(r.dept_id, record(id: r.id)), (r.mgr_id, record(id: r.id))]))
     di := map_index(dept, fun((r) -> (r.id, record(dname: r.dname))))

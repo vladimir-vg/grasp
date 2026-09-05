@@ -1,9 +1,9 @@
-# The expression language: precedence, null propagation, and the builtins.
+# The expression language: precedence, absence, and the builtins.
 
 - name: arithmetic respects precedence
   source: |
     a := input("a")
-    a :: OrdZSet(record(x: i64, y: i64))
+    a :: zset(record(x: i64, y: i64))
     out := map(a, fun((r) -> record(v: r.x + r.y * 2)))
 
   input:
@@ -17,7 +17,7 @@
 - name: parentheses override precedence
   source: |
     a := input("a")
-    a :: OrdZSet(record(x: i64, y: i64))
+    a :: zset(record(x: i64, y: i64))
     out := map(a, fun((r) -> record(v: (r.x + r.y) * 2)))
 
   input:
@@ -28,26 +28,10 @@
     - out:
         - [1, {v: 22}]
 
-- name: if then else
+- name: an absent value compares as less than every value
   source: |
     a := input("a")
-    a :: OrdZSet(record(x: i64))
-    out := map(a, fun((r) -> record(label: if r.x > 5 then "big" else "small")))
-
-  input:
-    - a:
-        - [1, {x: 10}]
-        - [1, {x: 1}]
-
-  expected_exact_output:
-    - out:
-        - [1, {label: "big"}]
-        - [1, {label: "small"}]
-
-- name: null propagates through arithmetic and excludes the row from a filter
-  source: |
-    a := input("a")
-    a :: OrdZSet(record(id: i64, x: Option(i64)))
+    a :: zset(record(id: i64, x: optional(i64)))
     kept := filter(a, fun((r) -> r.x > 5))
 
   input:
@@ -55,16 +39,17 @@
         - [1, {id: 1, x: 10}]
         - [1, {id: 2, x: null}]
 
-  # `null > 5` is null, and a filter keeps only `true`.
+  # Not propagation: `ABSENT > 5` is a definite `false`, because ABSENT sorts
+  # before every value. The comparison yields a plain bool either way.
   expected_exact_output:
     - kept:
         - [1, {id: 1, x: 10}]
 
-- name: is_null and coalesce see nulls instead of propagating them
+- name: ABSENT is compared like any other value
   source: |
     a := input("a")
-    a :: OrdZSet(record(id: i64, x: Option(i64)))
-    out := map(a, fun((r) -> record(missing: is_null(r.x), v: coalesce(r.x, 0))))
+    a :: zset(record(id: i64, x: optional(i64)))
+    out := map(a, fun((r) -> record(missing: r.x == ABSENT, v: coalesce(r.x, 0))))
 
   input:
     - a:
@@ -76,10 +61,29 @@
         - [1, {missing: false, v: 10}]
         - [1, {missing: true, v: 0}]
 
+- name: two absent values are equal
+  source: |
+    a := input("a")
+    a :: zset(record(id: i64, x: optional(i64), y: optional(i64)))
+    out := map(a, fun((r) -> record(id: r.id, same: r.x == r.y)))
+
+  input:
+    - a:
+        - [1, {id: 1, x: null, y: null}]
+        - [1, {id: 2, x: 5, y: null}]
+        - [1, {id: 3, x: 5, y: 5}]
+
+  # This is the sharpest departure from SQL, where NULL = NULL is unknown.
+  expected_exact_output:
+    - out:
+        - [1, {id: 1, same: true}]
+        - [1, {id: 2, same: false}]
+        - [1, {id: 3, same: true}]
+
 - name: string and numeric builtins
   source: |
     a := input("a")
-    a :: OrdZSet(record(name: sql.SqlString, n: i64))
+    a :: zset(record(name: sql.SqlString, n: i64))
     out := map(a, fun((r) -> record(
         shout: upper(r.name),
         size: length(r.name),
@@ -96,7 +100,7 @@
 - name: not and or
   source: |
     a := input("a")
-    a :: OrdZSet(record(id: i64, p: bool, q: bool))
+    a :: zset(record(id: i64, p: bool, q: bool))
     out := filter(a, fun((r) -> not r.p or r.q))
 
   input:

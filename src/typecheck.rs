@@ -25,6 +25,34 @@ fn err<T>(span: Span, message: impl Into<String>) -> TResult<T> {
 // Plan
 // ---------------------------------------------------------------------------
 
+/// Every operator name. The reserved-word list is built from this, and a test
+/// asserts `check_op` accepts each one, so the two cannot drift apart.
+pub const OPERATORS: &[&str] = &[
+    "input",
+    "map",
+    "filter",
+    "flat_map",
+    "map_index",
+    "flat_map_index",
+    "join",
+    "join_index",
+    "antijoin",
+    "distinct",
+    "aggregate",
+    "weighted_count",
+    "neg",
+    "plus",
+    "minus",
+    "sum",
+    "integrate",
+    "differentiate",
+    "delay",
+];
+
+/// Every aggregator name. These appear as bare names in argument position, so a
+/// node named `min` would be silently shadowed if they were not reserved.
+pub const AGGREGATORS: &[&str] = &["min", "max", "sum", "avg", "count"];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Agg {
     Min,
@@ -104,38 +132,38 @@ impl Plan {
 // Expression types
 // ---------------------------------------------------------------------------
 
-/// The type of an expression. `Null` is the type of a bare `null` literal: it
+/// The type of an expression. `Absent` is the type of a bare `null` literal: it
 /// has no type of its own and takes one from context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Ty {
     Known(TypeDesc),
-    Null,
+    Absent,
 }
 
 impl Ty {
     fn into_known(self, span: Span, what: impl fmt::Display) -> TResult<TypeDesc> {
         match self {
             Ty::Known(t) => Ok(t),
-            Ty::Null => err(span, format!("cannot infer a type for `null` in {what}")),
+            Ty::Absent => err(span, format!("cannot infer a type for `ABSENT` in {what}")),
         }
     }
 }
 
-/// Unifies two branch types, as `if`/`coalesce` need. A null branch makes the
-/// other branch's type nullable.
+/// Unifies two types, as `coalesce` needs. An absent side makes the other
+/// side's type optional.
 fn unify(a: Ty, b: Ty, span: Span) -> TResult<Ty> {
     Ok(match (a, b) {
-        (Ty::Null, Ty::Null) => Ty::Null,
-        (Ty::Null, Ty::Known(t)) | (Ty::Known(t), Ty::Null) => Ty::Known(nullable(t)),
+        (Ty::Absent, Ty::Absent) => Ty::Absent,
+        (Ty::Absent, Ty::Known(t)) | (Ty::Known(t), Ty::Absent) => Ty::Known(optional(t)),
         (Ty::Known(x), Ty::Known(y)) => {
             if x == y {
                 Ty::Known(x)
             } else if x.non_null() == y.non_null() {
-                Ty::Known(nullable(x.non_null().clone()))
+                Ty::Known(optional(x.non_null().clone()))
             } else if is_numeric(&x) && is_numeric(&y) {
                 // Mixing i64 and f64 promotes to f64.
-                let t = if x.is_nullable() || y.is_nullable() {
-                    nullable(TypeDesc::F64)
+                let t = if x.is_optional() || y.is_optional() {
+                    optional(TypeDesc::F64)
                 } else {
                     TypeDesc::F64
                 };
@@ -147,8 +175,8 @@ fn unify(a: Ty, b: Ty, span: Span) -> TResult<Ty> {
     })
 }
 
-fn nullable(t: TypeDesc) -> TypeDesc {
-    if t.is_nullable() { t } else { TypeDesc::Option(Box::new(t)) }
+fn optional(t: TypeDesc) -> TypeDesc {
+    if t.is_optional() { t } else { TypeDesc::Optional(Box::new(t)) }
 }
 
 fn is_numeric(t: &TypeDesc) -> bool {
@@ -303,7 +331,7 @@ impl Ctx<'_> {
             BatchType::ZSet(t) => Ok((i, t.clone())),
             other => err(
                 self.span,
-                format!("`{name}` is `{other}`, but a flat OrdZSet is required here"),
+                format!("`{name}` is `{other}`, but a flat zset is required here"),
             ),
         }
     }
@@ -314,7 +342,7 @@ impl Ctx<'_> {
             BatchType::IndexedZSet(k, v) => Ok((i, k.clone(), v.clone())),
             other => err(
                 self.span,
-                format!("`{name}` is `{other}`, but an OrdIndexedZSet is required here"),
+                format!("`{name}` is `{other}`, but an indexed_zset is required here"),
             ),
         }
     }
@@ -366,7 +394,7 @@ fn check_op(
                     return err(
                         span,
                         format!(
-                            "an input must be `OrdZSet(record(...))`, found `{other}`"
+                            "an input must be `zset(record(...))`, found `{other}`"
                         ),
                     );
                 }
@@ -592,7 +620,7 @@ fn check_op(
             };
             let (f, out) = check_fun(fun_arg(2)?, &[v], span)?;
             let out = out.into_known(span, "the body of `aggregate`")?;
-            let nullable_in = out.is_nullable();
+            let optional_in = out.is_optional();
             let float = out.non_null() == &TypeDesc::F64;
 
             // `min`/`max` return the projected value; the linear aggregators
@@ -611,7 +639,7 @@ fn check_op(
                     let base = if agg == Agg::Avg { TypeDesc::F64 } else { out.non_null().clone() };
                     // A projection that can be null can leave a group with no
                     // contributing rows, and then there is no sum to report.
-                    if nullable_in { nullable(base) } else { base }
+                    if optional_in { optional(base) } else { base }
                 }
             };
             Ok((
@@ -725,7 +753,7 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)]) -> TResult<(TypedExpr, Ty)> {
     // the enclosing declaration.
     let span = e.span;
     Ok(match &e.kind {
-        ExprKind::Null => (TypedExpr::Const(DynValue::Null), Ty::Null),
+        ExprKind::Absent => (TypedExpr::Const(DynValue::Absent), Ty::Absent),
         ExprKind::Bool(b) => (TypedExpr::Const(DynValue::Bool(*b)), Ty::Known(TypeDesc::Bool)),
         ExprKind::Int(v) => (TypedExpr::Const(DynValue::I64(*v)), Ty::Known(TypeDesc::I64)),
         ExprKind::Float(v) => (
@@ -751,7 +779,7 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)]) -> TResult<(TypedExpr, Ty)> {
             let fty = rec.field_type(field).unwrap().clone();
             // Reading a field of a possibly-null record yields a possibly-null
             // value.
-            let fty = if bt.is_nullable() { nullable(fty) } else { fty };
+            let fty = if bt.is_optional() { optional(fty) } else { fty };
             (TypedExpr::Field(Box::new(be), index), Ty::Known(fty))
         }
 
@@ -785,15 +813,31 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)]) -> TResult<(TypedExpr, Ty)> {
 
         ExprKind::Unary(op, inner) => {
             let (ie, it) = infer(inner, env)?;
+            // Like arithmetic, both unary operators need a definite value.
+            let name = match op {
+                UnOp::Neg => "-",
+                UnOp::Not => "not",
+            };
             let ty = match it {
-                Ty::Null => Ty::Null,
+                Ty::Absent => {
+                    return err(span, format!("`{name}` needs a value, but this is `ABSENT`"));
+                }
+                Ty::Known(t) if t.is_optional() => {
+                    return err(
+                        span,
+                        format!(
+                            "`{name}` needs a value, but `{t}` may be absent; \
+                             use `coalesce` to supply a default first"
+                        ),
+                    );
+                }
                 Ty::Known(t) => {
                     let ok = match op {
                         UnOp::Neg => is_numeric(&t),
-                        UnOp::Not => t.non_null() == &TypeDesc::Bool,
+                        UnOp::Not => t == TypeDesc::Bool,
                     };
                     if !ok {
-                        return err(span, format!("cannot apply this operator to `{t}`"));
+                        return err(span, format!("cannot apply `{name}` to `{t}`"));
                     }
                     Ty::Known(t)
                 }
@@ -806,18 +850,6 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)]) -> TResult<(TypedExpr, Ty)> {
             let (re, rt) = infer(r, env)?;
             let ty = infer_binop(*op, lt, rt, span)?;
             (TypedExpr::Binary(*op, Box::new(le), Box::new(re)), ty)
-        }
-
-        ExprKind::If(c, t, f) => {
-            let (ce, ct) = infer(c, env)?;
-            if let Ty::Known(ct) = &ct
-                && ct.non_null() != &TypeDesc::Bool {
-                    return err(span, format!("`if` condition must be bool, found `{ct}`"));
-                }
-            let (te, tt) = infer(t, env)?;
-            let (fe, ft) = infer(f, env)?;
-            let ty = unify(tt, ft, span)?;
-            (TypedExpr::If(Box::new(ce), Box::new(te), Box::new(fe)), ty)
         }
 
         ExprKind::Call(name, args) => {
@@ -846,20 +878,43 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)]) -> TResult<(TypedExpr, Ty)> {
 
 fn infer_binop(op: BinOp, lt: Ty, rt: Ty, span: Span) -> TResult<Ty> {
     use BinOp::*;
-    let nullable_result = matches!(lt, Ty::Null) || matches!(rt, Ty::Null) || {
-        matches!((&lt, &rt), (Ty::Known(a), Ty::Known(b)) if a.is_nullable() || b.is_nullable())
-    };
+
+    /// Operators that need a definite value reject an optional operand rather
+    /// than yielding absence, which would be propagation by another name.
+    fn definite(t: &Ty, op: &str, span: Span) -> TResult<()> {
+        match t {
+            Ty::Absent => err(
+                span,
+                format!("`{op}` needs a value, but this is `ABSENT`"),
+            ),
+            Ty::Known(t) if t.is_optional() => err(
+                span,
+                format!(
+                    "`{op}` needs a value, but `{t}` may be absent; \
+                     use `coalesce` to supply a default first"
+                ),
+            ),
+            Ty::Known(_) => Ok(()),
+        }
+    }
 
     match op {
         And | Or => {
             for t in [&lt, &rt] {
+                definite(t, if op == And { "and" } else { "or" }, span)?;
                 if let Ty::Known(t) = t
-                    && t.non_null() != &TypeDesc::Bool {
-                        return err(span, format!("`and`/`or` need bool operands, found `{t}`"));
-                    }
+                    && t != &TypeDesc::Bool
+                {
+                    return err(span, format!("`and`/`or` need bool operands, found `{t}`"));
+                }
             }
-            Ok(Ty::Known(maybe_null(TypeDesc::Bool, nullable_result)))
+            Ok(Ty::Known(TypeDesc::Bool))
         }
+
+        // Comparisons are total. `ABSENT` is a value: it equals itself, sorts
+        // before every other value, and comparing against it always decides.
+        // So the result is a plain bool even when an operand is optional, and
+        // `filter` can consume it directly.
         Eq | Ne | Lt | Le | Gt | Ge => {
             if let (Ty::Known(a), Ty::Known(b)) = (&lt, &rt) {
                 let comparable = a.non_null() == b.non_null()
@@ -869,48 +924,49 @@ fn infer_binop(op: BinOp, lt: Ty, rt: Ty, span: Span) -> TResult<Ty> {
                     return err(span, format!("cannot compare `{a}` with `{b}`"));
                 }
             }
-            Ok(Ty::Known(maybe_null(TypeDesc::Bool, nullable_result)))
+            Ok(Ty::Known(TypeDesc::Bool))
         }
+
         Add | Sub | Mul | Div | Rem => {
-            match (&lt, &rt) {
-                (Ty::Known(a), Ty::Known(b)) => {
-                    // `+` doubles as string concatenation.
-                    if op == Add && is_stringy(a) && is_stringy(b) {
-                        return Ok(Ty::Known(maybe_null(TypeDesc::SqlString, nullable_result)));
-                    }
-                    if !is_numeric(a) || !is_numeric(b) {
-                        return err(
-                            span,
-                            format!("cannot apply this arithmetic operator to `{a}` and `{b}`"),
-                        );
-                    }
-                    let base = if a.non_null() == &TypeDesc::F64 || b.non_null() == &TypeDesc::F64 {
-                        TypeDesc::F64
-                    } else {
-                        TypeDesc::I64
-                    };
-                    Ok(Ty::Known(maybe_null(base, nullable_result)))
-                }
-                // Arithmetic on an untyped `null` has no inferable type.
-                _ => Ok(Ty::Null),
+            let name = match op {
+                Add => "+",
+                Sub => "-",
+                Mul => "*",
+                Div => "/",
+                _ => "%",
+            };
+            definite(&lt, name, span)?;
+            definite(&rt, name, span)?;
+            let (Ty::Known(a), Ty::Known(b)) = (&lt, &rt) else {
+                unreachable!("definite() rejected the absent cases");
+            };
+            // `+` doubles as string concatenation.
+            if op == Add && is_stringy(a) && is_stringy(b) {
+                return Ok(Ty::Known(TypeDesc::SqlString));
             }
+            if !is_numeric(a) || !is_numeric(b) {
+                return err(
+                    span,
+                    format!("cannot apply `{name}` to `{a}` and `{b}`"),
+                );
+            }
+            Ok(Ty::Known(if a == &TypeDesc::F64 || b == &TypeDesc::F64 {
+                TypeDesc::F64
+            } else {
+                TypeDesc::I64
+            }))
         }
     }
-}
-
-fn maybe_null(t: TypeDesc, null: bool) -> TypeDesc {
-    if null { nullable(t) } else { t }
 }
 
 fn infer_builtin(b: Builtin, name: &str, args: &[Ty], span: Span) -> TResult<Ty> {
     let known = |i: usize| -> Option<&TypeDesc> {
         match &args[i] {
             Ty::Known(t) => Some(t),
-            Ty::Null => None,
+            Ty::Absent => None,
         }
     };
     Ok(match b {
-        Builtin::IsNull | Builtin::IsNotNull => Ty::Known(TypeDesc::Bool),
         Builtin::Coalesce => {
             // The result is non-null when the fallback is.
             let a = args[0].clone();
@@ -924,7 +980,7 @@ fn infer_builtin(b: Builtin, name: &str, args: &[Ty], span: Span) -> TResult<Ty>
                         span,
                     )?
                 }
-                (Ty::Null, other) | (other, Ty::Null) => other,
+                (Ty::Absent, other) | (other, Ty::Absent) => other,
             }
         }
         Builtin::Length => Ty::Known(TypeDesc::I64),
@@ -938,7 +994,7 @@ fn infer_builtin(b: Builtin, name: &str, args: &[Ty], span: Span) -> TResult<Ty>
         Builtin::Abs | Builtin::Floor | Builtin::Ceil | Builtin::Round => match known(0) {
             Some(t) if is_numeric(t) => Ty::Known(t.clone()),
             Some(t) => return err(span, format!("`{name}` needs a number, found `{t}`")),
-            None => Ty::Null,
+            None => Ty::Absent,
         },
     })
 }

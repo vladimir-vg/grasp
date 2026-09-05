@@ -3,7 +3,7 @@
 - name: weighted keeps a weight of three as one record
   source: |
     a := input("a")
-    a :: OrdZSet(record(v: i64))
+    a :: zset(record(v: i64))
     out := map(a, fun((r) -> r))
 
   input:
@@ -18,7 +18,7 @@
 - name: insert_delete has to repeat the record once per unit of weight
   source: |
     a := input("a")
-    a :: OrdZSet(record(v: i64))
+    a :: zset(record(v: i64))
     out := map(a, fun((r) -> r))
 
   input:
@@ -37,7 +37,7 @@
 - name: a retraction becomes a delete
   source: |
     a := input("a")
-    a :: OrdZSet(record(v: i64))
+    a :: zset(record(v: i64))
     out := map(a, fun((r) -> r))
 
   input:

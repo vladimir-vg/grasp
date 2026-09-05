@@ -3,7 +3,7 @@
 - name: filter on a comparison
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64, salary: i64))
+    emp :: zset(record(id: i64, salary: i64))
     rich := filter(emp, fun((r) -> r.salary > 100))
 
   input:
@@ -18,7 +18,7 @@
 - name: filter on a conjunction
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64, salary: i64, active: bool))
+    emp :: zset(record(id: i64, salary: i64, active: bool))
     hits := filter(emp, fun((r) -> r.salary > 100 and r.active))
 
   input:
@@ -34,7 +34,7 @@
 - name: map projects a record
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64, name: sql.SqlString, salary: i64))
+    emp :: zset(record(id: i64, name: sql.SqlString, salary: i64))
     small := map(emp, fun((r) -> record(id: r.id, name: r.name)))
 
   input:
@@ -48,7 +48,7 @@
 - name: map to a bare scalar
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64, dept_id: i64))
+    emp :: zset(record(id: i64, dept_id: i64))
     depts := map(emp, fun((r) -> r.dept_id))
 
   input:
@@ -64,7 +64,7 @@
 - name: filter on an indexed stream sees the key and the value
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64, dept_id: i64, salary: i64))
+    emp :: zset(record(id: i64, dept_id: i64, salary: i64))
     idx := map_index(emp, fun((r) -> (r.dept_id, record(id: r.id, salary: r.salary))))
     # Two parameters here, because an indexed stream's element is the pair.
     picked := filter(idx, fun((k, v) -> k == 10 and v.salary > 100))

@@ -54,7 +54,8 @@ pub struct Expr {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
-    Null,
+    /// The `ABSENT` literal: a value meaning "this field has none".
+    Absent,
     Bool(bool),
     Int(i64),
     Float(f64),
@@ -79,7 +80,6 @@ pub enum ExprKind {
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Call(String, Vec<Expr>),
-    If(Box<Expr>, Box<Expr>, Box<Expr>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +113,33 @@ type PResult<T> = Result<T, Diagnostic>;
 
 fn parse_error<T>(span: Span, message: impl Into<String>) -> PResult<T> {
     Err(Diagnostic::error(Pass::Parse, span, message))
+}
+
+// ---------------------------------------------------------------------------
+// Reserved words
+// ---------------------------------------------------------------------------
+
+/// Type constructors and namespaces.
+const TYPE_NAMES: &[&str] = &[
+    "bool", "i64", "f64", "String", "optional", "record", "sql", "zset", "indexed_zset",
+];
+
+/// Literals and keywords. `if`/`then`/`else` are reserved although the language
+/// has no conditionals yet, so adding them later is not a breaking change.
+const KEYWORDS: &[&str] =
+    &["true", "false", "ABSENT", "null", "fun", "and", "or", "not", "if", "then", "else"];
+
+/// Whether `name` is reserved, and so may not name a node or a parameter.
+///
+/// Assembled from the operator, aggregator and builtin lists rather than
+/// duplicating them, because a reserved list that drifts from the real names is
+/// worse than none.
+pub fn is_reserved(name: &str) -> bool {
+    crate::typecheck::OPERATORS.contains(&name)
+        || crate::typecheck::AGGREGATORS.contains(&name)
+        || crate::expr::Builtin::ALL.contains(&name)
+        || TYPE_NAMES.contains(&name)
+        || KEYWORDS.contains(&name)
 }
 
 // ---------------------------------------------------------------------------
@@ -449,6 +476,12 @@ impl Parser {
     fn decl(&mut self) -> PResult<Decl> {
         let span = self.span();
         let name = self.ident()?;
+        if is_reserved(&name) {
+            return parse_error(
+                span,
+                format!("`{name}` is a reserved word and cannot name a node"),
+            );
+        }
         if self.eat(&Tok::HasType) {
             let ty = self.batch_type()?;
             Ok(Decl::TypeSpec { name, ty, span })
@@ -505,7 +538,15 @@ impl Parser {
         let mut params = Vec::new();
         if !self.eat(&Tok::RParen) {
             loop {
-                params.push(self.ident()?);
+                let span = self.span();
+                let name = self.ident()?;
+                if is_reserved(&name) {
+                    return parse_error(
+                        span,
+                        format!("`{name}` is a reserved word and cannot name a parameter"),
+                    );
+                }
+                params.push(name);
                 if self.eat(&Tok::Comma) {
                     continue;
                 }
@@ -525,20 +566,20 @@ impl Parser {
         let name = self.ident()?;
         self.expect(&Tok::LParen, "`(` after a batch type name")?;
         match name.as_str() {
-            "OrdZSet" => {
+            "zset" => {
                 let t = self.value_type()?;
-                self.expect(&Tok::RParen, "`)` closing OrdZSet")?;
+                self.expect(&Tok::RParen, "`)` closing zset")?;
                 Ok(BatchType::ZSet(t))
             }
-            "OrdIndexedZSet" => {
+            "indexed_zset" => {
                 let k = self.value_type()?;
                 self.expect(&Tok::Comma, "`,` between the key and value types")?;
                 let v = self.value_type()?;
-                self.expect(&Tok::RParen, "`)` closing OrdIndexedZSet")?;
+                self.expect(&Tok::RParen, "`)` closing indexed_zset")?;
                 Ok(BatchType::IndexedZSet(k, v))
             }
             other => self.err(format!(
-                "unknown batch type `{other}`, expected OrdZSet or OrdIndexedZSet"
+                "unknown batch type `{other}`, expected zset or indexed_zset"
             )),
         }
     }
@@ -563,17 +604,17 @@ impl Parser {
             "i64" => Ok(TypeDesc::I64),
             "f64" => Ok(TypeDesc::F64),
             "String" => Ok(TypeDesc::String),
-            "Option" => {
-                self.expect(&Tok::LParen, "`(` after Option")?;
+            "optional" => {
+                self.expect(&Tok::LParen, "`(` after optional")?;
                 let inner = self.value_type()?;
-                self.expect(&Tok::RParen, "`)` closing Option")?;
-                if inner.is_nullable() {
+                self.expect(&Tok::RParen, "`)` closing optional")?;
+                if inner.is_optional() {
                     // There is one null, so a doubly-nullable type has no
                     // values the singly-nullable one lacks. Rejecting it beats
                     // silently flattening it.
-                    return self.err("`Option(Option(T))` is not a distinct type; use `Option(T)`");
+                    return self.err("`optional(optional(T))` is not a distinct type; use `optional(T)`");
                 }
-                Ok(TypeDesc::Option(Box::new(inner)))
+                Ok(TypeDesc::Optional(Box::new(inner)))
             }
             "record" => {
                 self.expect(&Tok::LParen, "`(` after record")?;
@@ -722,20 +763,13 @@ impl Parser {
         match word.as_str() {
             "true" => return Ok(self.mk(start, ExprKind::Bool(true))),
             "false" => return Ok(self.mk(start, ExprKind::Bool(false))),
-            "null" => return Ok(self.mk(start, ExprKind::Null)),
-            "if" => {
-                let cond = self.expr()?;
-                if !matches!(self.peek(), Tok::Ident(w) if w == "then") {
-                    return self.err("expected `then`");
-                }
-                self.bump();
-                let then = self.expr()?;
-                if !matches!(self.peek(), Tok::Ident(w) if w == "else") {
-                    return self.err("expected `else`");
-                }
-                self.bump();
-                let els = self.expr()?;
-                return Ok(self.mk(start, ExprKind::If(Box::new(cond), Box::new(then), Box::new(els))));
+            "ABSENT" => return Ok(self.mk(start, ExprKind::Absent)),
+            "null" => {
+                return parse_error(
+                    start,
+                    "`null` is reserved for the JSON null value inside `sql.Variant`, \
+                     which is not implemented; write `ABSENT` for a missing value",
+                );
             }
             "record" => {
                 self.expect(&Tok::LParen, "`(` after record")?;
@@ -761,7 +795,12 @@ impl Parser {
             _ => {}
         }
 
-        // A call if followed by `(`, otherwise a parameter reference.
+        // A call if followed by `(`, otherwise a parameter reference. A bare
+        // reserved word can never resolve, since parameters cannot be named
+        // one, so say so rather than failing later and less clearly.
+        if !matches!(self.peek(), Tok::LParen) && is_reserved(&word) {
+            return parse_error(start, format!("`{word}` is a reserved word"));
+        }
         if self.eat(&Tok::LParen) {
             let mut args = Vec::new();
             if !self.eat(&Tok::RParen) {

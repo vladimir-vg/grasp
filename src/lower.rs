@@ -48,13 +48,13 @@ impl Node {
     fn flat(&self, node: &crate::typecheck::PlanNode) -> Result<&Flat, Diagnostic> {
         match self {
             Node::Flat(s) => Ok(s),
-            Node::Indexed(_) => Err(shape_error(node, "a flat OrdZSet")),
+            Node::Indexed(_) => Err(shape_error(node, "a flat zset")),
         }
     }
     fn indexed(&self, node: &crate::typecheck::PlanNode) -> Result<&Indexed, Diagnostic> {
         match self {
             Node::Indexed(s) => Ok(s),
-            Node::Flat(_) => Err(shape_error(node, "an OrdIndexedZSet")),
+            Node::Flat(_) => Err(shape_error(node, "an indexed_zset")),
         }
     }
 }
@@ -292,7 +292,7 @@ fn build_node(
                     },
                     move |acc: Acc| match agg {
                         Agg::Count => DynValue::I64(acc.rows),
-                        _ if acc.rows == 0 => DynValue::Null,
+                        _ if acc.rows == 0 => DynValue::Absent,
                         Agg::Sum if float => DynValue::F64(acc.sum_float),
                         Agg::Sum => DynValue::I64(acc.sum_int),
                         Agg::Avg => {

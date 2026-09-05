@@ -3,9 +3,9 @@
 - name: join two tables on a shared key
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64, name: sql.SqlString, dept_id: i64))
+    emp :: zset(record(id: i64, name: sql.SqlString, dept_id: i64))
     dept := input("dept")
-    dept :: OrdZSet(record(id: i64, dname: sql.SqlString))
+    dept :: zset(record(id: i64, dname: sql.SqlString))
 
     emp_idx  := map_index(emp,  fun((r) -> (r.dept_id, record(name: r.name))))
     dept_idx := map_index(dept, fun((r) -> (r.id, record(dname: r.dname))))
@@ -29,9 +29,9 @@
 - name: a row with no match on the other side produces nothing
   source: |
     l := input("l")
-    l :: OrdZSet(record(k: i64, a: i64))
+    l :: zset(record(k: i64, a: i64))
     r := input("r")
-    r :: OrdZSet(record(k: i64, b: i64))
+    r :: zset(record(k: i64, b: i64))
     li := map_index(l, fun((x) -> (x.k, record(a: x.a))))
     ri := map_index(r, fun((x) -> (x.k, record(b: x.b))))
     j  := join(li, ri, fun((k, x, y) -> record(k: k, a: x.a, b: y.b)))
@@ -50,9 +50,9 @@
 - name: the right side arriving later still joins
   source: |
     l := input("l")
-    l :: OrdZSet(record(k: i64, a: i64))
+    l :: zset(record(k: i64, a: i64))
     r := input("r")
-    r :: OrdZSet(record(k: i64, b: i64))
+    r :: zset(record(k: i64, b: i64))
     li := map_index(l, fun((x) -> (x.k, record(a: x.a))))
     ri := map_index(r, fun((x) -> (x.k, record(b: x.b))))
     j  := join(li, ri, fun((k, x, y) -> record(a: x.a, b: y.b)))
@@ -71,18 +71,18 @@
 - name: antijoin keeps only unmatched keys
   source: |
     pos := input("pos")
-    pos :: OrdZSet(record(k: i64, a: i64))
-    neg := input("neg")
-    neg :: OrdZSet(record(k: i64))
+    pos :: zset(record(k: i64, a: i64))
+    excluded := input("excluded")
+    excluded :: zset(record(k: i64))
     pi := map_index(pos, fun((x) -> (x.k, record(a: x.a))))
-    ni := map_index(neg, fun((x) -> (x.k, record(k: x.k))))
+    ni := map_index(excluded, fun((x) -> (x.k, record(k: x.k))))
     out := antijoin(pi, ni)
 
   input:
     - pos:
         - [1, {k: 1, a: 100}]
         - [1, {k: 2, a: 200}]
-      neg:
+      excluded:
         - [1, {k: 1}]
 
   expected_exact_output:
@@ -92,11 +92,11 @@
 - name: join_index keeps the result indexed for a second join
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64, dept_id: i64))
+    emp :: zset(record(id: i64, dept_id: i64))
     dept := input("dept")
-    dept :: OrdZSet(record(id: i64, region_id: i64))
+    dept :: zset(record(id: i64, region_id: i64))
     region := input("region")
-    region :: OrdZSet(record(id: i64, rname: sql.SqlString))
+    region :: zset(record(id: i64, rname: sql.SqlString))
 
     ei := map_index(emp,  fun((r) -> (r.dept_id, record(id: r.id))))
     di := map_index(dept, fun((r) -> (r.id, record(region_id: r.region_id))))

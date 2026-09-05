@@ -33,7 +33,7 @@ the circuit and output changes are emitted as they are produced.
   library.
 - The type system described in [`language.md`](language.md) (batch types and
   value types). The value vocabulary implemented so far is `bool`, `i64`,
-  `f64`, `String`, `sql.SqlString`, `Option(T)` and `record(...)`.
+  `f64`, `String`, `sql.SqlString`, `optional(T)` and `record(...)`.
 - The value model described in [`mapping.md`](mapping.md).
 - Feldera-native JSON input/output, emitting deltas — `weighted` by default,
   `insert_delete` for compatibility.
@@ -76,6 +76,11 @@ set of nodes to observe is supplied when the runner starts, by node name.
   (`e[0]`), and data-dependent fan-out. Today `[…]` and `(key, value)` are
   syntax rather than values, which is why `flat_map`'s fan-out is fixed by the
   source; see [`language.md`](language.md).
+
+- **Conditionals** — `if`/`then`/`else`, which shipped ahead of their design and
+  were withdrawn. They are also what a propagating form of arithmetic would need:
+  `optional(T)` operands are rejected today, so an expression that should be
+  absent when its input is cannot yet be written.
 
 - **`cast`**, which needs a type argument in expression position and a
   conversion matrix over the value vocabulary — so it is worth doing once that

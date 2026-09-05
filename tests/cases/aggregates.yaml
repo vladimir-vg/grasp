@@ -4,7 +4,7 @@
 - name: max salary per department
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64, dept_id: i64, salary: i64))
+    emp :: zset(record(id: i64, dept_id: i64, salary: i64))
     idx := map_index(emp, fun((r) -> (r.dept_id, r)))
     by_dept := aggregate(idx, max, fun((v) -> v.salary))
 
@@ -22,7 +22,7 @@
 - name: min over the same grouping
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(dept_id: i64, salary: i64))
+    emp :: zset(record(dept_id: i64, salary: i64))
     idx := map_index(emp, fun((r) -> (r.dept_id, r)))
     lowest := aggregate(idx, min, fun((v) -> v.salary))
 
@@ -38,7 +38,7 @@
 - name: retracting the maximum moves the aggregate down
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64, dept_id: i64, salary: i64))
+    emp :: zset(record(id: i64, dept_id: i64, salary: i64))
     idx := map_index(emp, fun((r) -> (r.dept_id, r)))
     by_dept := aggregate(idx, max, fun((v) -> v.salary))
 
@@ -59,7 +59,7 @@
 - name: removing the last row of a group retracts the group
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(dept_id: i64, salary: i64))
+    emp :: zset(record(dept_id: i64, salary: i64))
     idx := map_index(emp, fun((r) -> (r.dept_id, r)))
     by_dept := aggregate(idx, max, fun((v) -> v.salary))
 
@@ -78,7 +78,7 @@
 - name: sum over integers
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64, dept_id: i64, salary: i64))
+    emp :: zset(record(id: i64, dept_id: i64, salary: i64))
     idx := map_index(emp, fun((r) -> (r.dept_id, r)))
     total := aggregate(idx, sum, fun((v) -> v.salary))
 
@@ -96,7 +96,7 @@
 - name: sum is maintained incrementally under a retraction
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64, dept_id: i64, salary: i64))
+    emp :: zset(record(id: i64, dept_id: i64, salary: i64))
     idx := map_index(emp, fun((r) -> (r.dept_id, r)))
     total := aggregate(idx, sum, fun((v) -> v.salary))
 
@@ -117,7 +117,7 @@
 - name: a row of weight two counts twice toward the sum
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(dept_id: i64, salary: i64))
+    emp :: zset(record(dept_id: i64, salary: i64))
     idx := map_index(emp, fun((r) -> (r.dept_id, r)))
     total := aggregate(idx, sum, fun((v) -> v.salary))
 
@@ -132,7 +132,7 @@
 - name: avg over integers is fractional, not truncated
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64, dept_id: i64, salary: i64))
+    emp :: zset(record(id: i64, dept_id: i64, salary: i64))
     idx := map_index(emp, fun((r) -> (r.dept_id, r)))
     mean := aggregate(idx, avg, fun((v) -> v.salary))
 
@@ -149,7 +149,7 @@
 - name: count ignores rows whose projection is null
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64, dept_id: i64, bonus: Option(i64)))
+    emp :: zset(record(id: i64, dept_id: i64, bonus: optional(i64)))
     idx := map_index(emp, fun((r) -> (r.dept_id, r)))
     with_bonus := aggregate(idx, count, fun((v) -> v.bonus))
     depts := map(emp, fun((r) -> r.dept_id))
@@ -171,7 +171,7 @@
 - name: summing an all-null group yields null
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64, dept_id: i64, bonus: Option(i64)))
+    emp :: zset(record(id: i64, dept_id: i64, bonus: optional(i64)))
     idx := map_index(emp, fun((r) -> (r.dept_id, r)))
     total := aggregate(idx, sum, fun((v) -> v.bonus))
 

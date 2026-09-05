@@ -3,9 +3,9 @@
 - name: plus adds weights, so it is bag union
   source: |
     a := input("a")
-    a :: OrdZSet(record(v: i64))
+    a :: zset(record(v: i64))
     b := input("b")
-    b :: OrdZSet(record(v: i64))
+    b :: zset(record(v: i64))
     both := plus(a, b)
 
   input:
@@ -25,9 +25,9 @@
 - name: distinct after plus gives set union
   source: |
     a := input("a")
-    a :: OrdZSet(record(v: i64))
+    a :: zset(record(v: i64))
     b := input("b")
-    b :: OrdZSet(record(v: i64))
+    b :: zset(record(v: i64))
     both := plus(a, b)
     united := distinct(both)
 
@@ -46,9 +46,9 @@
 - name: minus subtracts weights
   source: |
     a := input("a")
-    a :: OrdZSet(record(v: i64))
+    a :: zset(record(v: i64))
     b := input("b")
-    b :: OrdZSet(record(v: i64))
+    b :: zset(record(v: i64))
     diff := minus(a, b)
 
   input:
@@ -65,7 +65,7 @@
 - name: neg flips every weight
   source: |
     a := input("a")
-    a :: OrdZSet(record(v: i64))
+    a :: zset(record(v: i64))
     inverted := neg(a)
 
   input:
@@ -81,11 +81,11 @@
 - name: sum is n-ary
   source: |
     a := input("a")
-    a :: OrdZSet(record(v: i64))
+    a :: zset(record(v: i64))
     b := input("b")
-    b :: OrdZSet(record(v: i64))
+    b :: zset(record(v: i64))
     c := input("c")
-    c :: OrdZSet(record(v: i64))
+    c :: zset(record(v: i64))
     total := sum(a, b, c)
 
   input:
@@ -103,7 +103,7 @@
 - name: distinct collapses a duplicate weight
   source: |
     a := input("a")
-    a :: OrdZSet(record(v: i64))
+    a :: zset(record(v: i64))
     d := distinct(a)
 
   input:

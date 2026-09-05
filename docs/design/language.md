@@ -49,23 +49,25 @@ A stream carries one batch per clock cycle, and the batch type is part of the
 stream's type.
 
 ```
-batch_type := "OrdZSet" "(" value_type ")"
-            | "OrdIndexedZSet" "(" value_type "," value_type ")"
+batch_type := "zset" "(" value_type ")"
+            | "indexed_zset" "(" value_type "," value_type ")"
 ```
 
-- `OrdZSet(T)` — a flat weighted set of `T`.
-- `OrdIndexedZSet(K, V)` — a keyed set: each key `K` maps to a weighted set of
+- `zset(T)` — a flat weighted set of `T`.
+- `indexed_zset(K, V)` — a keyed set: each key `K` maps to a weighted set of
   values `V`.
 
-These names are the `dbsp` type names, so a reader can map them directly to
-`dbsp::OrdZSet` / `dbsp::OrdIndexedZSet`.
+These name the *shape*, which is all the language distinguishes. `dbsp` has
+several storage representations of identical Z-set semantics — `Ord`, `Vec`,
+`File`, `Fallback` — and choosing among them is its concern, not the
+language's. [`mapping.md`](mapping.md) records which Rust types these become.
 
 ### Value types
 
 ```
 value_type := builtin | "sql" "." sql_type | record_type
 
-builtin    := bool | i64 | f64 | String | Option "(" value_type ")"
+builtin    := bool | i64 | f64 | String | optional "(" value_type ")"
 
 sql_type   := SqlString
 
@@ -80,7 +82,7 @@ more — the other integer widths, `f32`, `Vec`, `Tup*`, and the rest of the
 
 Two namespaces are deliberately separated:
 
-- **Plain builtins** (`i64`, `f64`, `bool`, `String`, `Option`) are Rust
+- **Plain builtins** (`i64`, `f64`, `bool`, `String`, `optional`) are Rust
   primitive/std types `dbsp` works with directly.
 - **`sql.*` types** mirror the Feldera SQL value types from `feldera-sqllib`
   (`SqlString`, `Date`, `SqlDecimal`, …). The `sql.` prefix says "this is a
@@ -96,8 +98,8 @@ thing they are genuinely different runtime types: `String` is `std::String`
 while `sql.SqlString` is a cheaply-cloned `ArcStr`, and `Vec(T)` is `Vec<_>`
 while `sql.Array(T)` is `Arc<Vec<_>>`.
 
-**Nullability is `Option(T)`, in both namespaces.** There is no separate nullable
-flag; a nullable SQL string is `Option(sql.SqlString)`.
+**Absence is `optional(T)`, in both namespaces.** There is no separate nullable
+flag; a SQL string that may be missing is `optional(sql.SqlString)`.
 
 `record(f: T, …)` is a named-field record. Field names are bare identifiers; quote a name that is not a valid
 identifier (`record("total count": i64)`).
@@ -106,19 +108,19 @@ Note that `record` is spelled the same way in type position and in expression
 position — the type names the fields, and the literal fills them:
 
 ```
-r :: OrdZSet(record(id: i64, name: sql.SqlString))     # the type
+r :: zset(record(id: i64, name: sql.SqlString))     # the type
 map(s, fun((row) -> record(id: row.id, name: row.name)))   # a value
 ```
 
 ### Typing rules
 
-- An **`input` node requires a `typespec`**, always `OrdZSet(record(...))`
+- An **`input` node requires a `typespec`**, always `zset(record(...))`
   (a table is a set of named-field rows). The record's field order is the
   deterministic column order used by the JSON codec.
 - **All other nodes are inferred** from the operators applied to them. An
   explicit `typespec` elsewhere is checked, not used to drive inference.
 - **Scalar value types are allowed** anywhere a `value_type` is expected
-  (for example `OrdZSet(i64)` for a projected single column); only the
+  (for example `zset(i64)` for a projected single column); only the
   `input` node is restricted to `record`.
 
 ## Operators
@@ -129,18 +131,18 @@ it lowers to. `X` means the shape is preserved.
 
 | operator | signature | `dbsp` method |
 |---|---|---|
-| `input("t")` | → `OrdZSet(T)` | `add_input_zset` |
-| `map(s, f)` | `OrdZSet(T) → OrdZSet(U)`, `f : T → U` | `map` |
+| `input("t")` | → `zset(T)` | `add_input_zset` |
+| `map(s, f)` | `zset(T) → zset(U)`, `f : T → U` | `map` |
 | `filter(s, f)` | `X → X`, `f : T → bool` | `filter` |
-| `flat_map(s, f)` | `OrdZSet(T) → OrdZSet(U)`, `f : T → [U, …]` | `flat_map` |
-| `map_index(s, f)` | `OrdZSet(T) → OrdIndexedZSet(K,V)`, `f : T → (K,V)` | `map_index` |
-| `flat_map_index(s, f)` | `OrdZSet(T) → OrdIndexedZSet(K,V)`, `f : T → [(K,V), …]` | `flat_map_index` |
-| `join(l, r, f)` | `OrdIndexedZSet(K,V₁) × OrdIndexedZSet(K,V₂) → OrdZSet(OV)`, `f : (K,V₁,V₂) → OV` | `join` |
-| `join_index(l, r, f)` | as `join`, but `f : (K,V₁,V₂) → (OK,OV)` → `OrdIndexedZSet(OK,OV)` | `join_index` |
-| `antijoin(l, r)` | `OrdIndexedZSet(K,V) × OrdIndexedZSet(K,V₂) → OrdIndexedZSet(K,V)` | `antijoin` |
+| `flat_map(s, f)` | `zset(T) → zset(U)`, `f : T → [U, …]` | `flat_map` |
+| `map_index(s, f)` | `zset(T) → indexed_zset(K,V)`, `f : T → (K,V)` | `map_index` |
+| `flat_map_index(s, f)` | `zset(T) → indexed_zset(K,V)`, `f : T → [(K,V), …]` | `flat_map_index` |
+| `join(l, r, f)` | `indexed_zset(K,V₁) × indexed_zset(K,V₂) → zset(OV)`, `f : (K,V₁,V₂) → OV` | `join` |
+| `join_index(l, r, f)` | as `join`, but `f : (K,V₁,V₂) → (OK,OV)` → `indexed_zset(OK,OV)` | `join_index` |
+| `antijoin(l, r)` | `indexed_zset(K,V) × indexed_zset(K,V₂) → indexed_zset(K,V)` | `antijoin` |
 | `distinct(s)` | `X → X` (deduplicated) | `distinct` |
-| `aggregate(s, agg, f)` | `OrdIndexedZSet(K,V) → OrdIndexedZSet(K,A)` | see [Aggregators](#aggregators) |
-| `weighted_count(s)` | `OrdZSet(T) → OrdIndexedZSet(T, i64)` | `weighted_count` |
+| `aggregate(s, agg, f)` | `indexed_zset(K,V) → indexed_zset(K,A)` | see [Aggregators](#aggregators) |
+| `weighted_count(s)` | `zset(T) → indexed_zset(T, i64)` | `weighted_count` |
 | `neg(s)` | `X → X` | `neg` |
 | `plus(a, b)` | `X × X → X` | `plus` |
 | `minus(a, b)` | `X × X → X` | `minus` |
@@ -186,13 +188,12 @@ expr       := literal
             | unop expr
             | expr binop expr
             | BUILTIN "(" [expr ("," expr)*] ")"
-            | "if" expr "then" expr "else" expr
 
 unop       := "-" | "not"
 binop      := "+" | "-" | "*" | "/" | "%"
             | "==" | "!=" | "<" | "<=" | ">" | ">="
             | "and" | "or"
-literal    := INT | FLOAT | STRING | "true" | "false" | "null"
+literal    := INT | FLOAT | STRING | "true" | "false" | "ABSENT"
 ```
 
 The parameter list binds the row(s) the operator feeds the function. `map`,
@@ -235,12 +236,53 @@ above and with each other.
 
 | builtin | signature | result |
 |---|---|---|
-| `is_null` / `is_not_null` | `(x)` | a boolean |
-| `coalesce` | `(x, y)` | `x` if non-null, else `y` |
+| `coalesce` | `(x, y)` | `x` if present, else `y` |
 | `abs` / `floor` / `ceil` / `round` | `(x)` | numeric |
 | `length` | `(x)` | length of a string, list or array |
 | `concat` | `(x, y)` | string concatenation |
 | `lower` / `upper` / `trim` | `(x)` | string |
+
+### Absence
+
+A value that may be missing has type `optional(T)`, and the literal for its
+absence is `ABSENT`.
+
+**`ABSENT` is a value, not SQL's `NULL`.** SQL propagates `NULL` because it
+means *unknown*; `ABSENT` means *this field has no value*, so it behaves the way
+Rust's `None` does:
+
+| expression | result |
+|---|---|
+| `r.x == ABSENT` | `bool` — always decides |
+| `r.a == r.b`, both absent | `true` |
+| `r.x > 5`, `r.x` absent | `false` — `ABSENT` sorts before every value |
+| `r.x + 1` | a type error — write `coalesce(r.x, 0) + 1` |
+
+Every comparison yields a plain `bool`, so `filter` accepts one directly.
+Arithmetic, `and`, `or` and `not` reject an `optional(T)` operand rather than
+returning absence, because returning it would be propagation under another name;
+`coalesce` supplies a definite value first.
+
+`ABSENT` sorting first is the same order `min` and `max` use, so expressions and
+aggregates agree about where absence sits.
+
+**`null` is not the absence literal.** It is reserved for the JSON null *value*
+inside `sql.Variant` — a distinct thing, once `sql.Variant` is implemented — so
+that JSON pasted into source keeps its meaning. On the wire it is unchanged: a
+JSON `null` in a data position still decodes to absence for an `optional(T)`
+column, and absence still encodes as JSON `null`.
+
+### Reserved words
+
+These may not name a node or a `fun` parameter: the 19 operator names, the 5
+aggregator names, the builtin names, the type constructors (`bool`, `i64`,
+`f64`, `String`, `optional`, `record`, `sql`, `zset`, `indexed_zset`), and
+`true`, `false`, `ABSENT`, `null`, `fun`, `and`, `or`, `not`, `if`, `then`,
+`else`.
+
+`if`, `then` and `else` are reserved although there are no conditionals yet, so
+adding them later will not break existing programs. Record *field* names are
+unrestricted — they are their own namespace and can be quoted.
 
 ### Aggregators
 
@@ -278,11 +320,11 @@ rather than the `count` aggregator — it sums Z-weights directly and is exact.
 
 ```
 emp := input("emp")
-emp :: OrdZSet(record(id: i64, name: sql.SqlString,
+emp :: zset(record(id: i64, name: sql.SqlString,
                       dept_id: i64, salary: i64))
 
 dept := input("dept")
-dept :: OrdZSet(record(id: i64, dname: sql.SqlString))
+dept :: zset(record(id: i64, dname: sql.SqlString))
 
 high_paid := filter(emp, fun((row) -> row.salary > 100000))
 

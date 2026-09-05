@@ -3,7 +3,7 @@
 - name: count rows per department
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64, dept_id: i64))
+    emp :: zset(record(id: i64, dept_id: i64))
     depts := map(emp, fun((r) -> r.dept_id))
     per_dept := weighted_count(depts)
 
@@ -21,7 +21,7 @@
 - name: a weight of three counts as three
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(dept_id: i64))
+    emp :: zset(record(dept_id: i64))
     depts := map(emp, fun((r) -> r.dept_id))
     per_dept := weighted_count(depts)
 
@@ -36,7 +36,7 @@
 - name: a retraction lowers the count
   source: |
     emp := input("emp")
-    emp :: OrdZSet(record(id: i64, dept_id: i64))
+    emp :: zset(record(id: i64, dept_id: i64))
     depts := map(emp, fun((r) -> r.dept_id))
     per_dept := weighted_count(depts)
 

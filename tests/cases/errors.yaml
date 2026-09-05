@@ -8,7 +8,7 @@
 - name: unknown field
   source: |
     a := input("a")
-    a :: OrdZSet(record(id: i64))
+    a :: zset(record(id: i64))
     b := filter(a, fun((r) -> r.nope > 1))
 
   expected_diagnostics:
@@ -21,7 +21,7 @@
 - name: unknown parameter
   source: |
     a := input("a")
-    a :: OrdZSet(record(id: i64))
+    a :: zset(record(id: i64))
     b := filter(a, fun((r) -> q.id > 1))
 
   expected_diagnostics:
@@ -31,9 +31,9 @@
 - name: join key types must match
   source: |
     a := input("a")
-    a :: OrdZSet(record(id: i64))
+    a :: zset(record(id: i64))
     b := input("b")
-    b :: OrdZSet(record(name: sql.SqlString))
+    b :: zset(record(name: sql.SqlString))
     ai := map_index(a, fun((r) -> (r.id, r)))
     bi := map_index(b, fun((r) -> (r.name, r)))
     j  := join(ai, bi, fun((k, x, y) -> k))
@@ -53,16 +53,16 @@
 - name: an input must be a record
   source: |
     a := input("a")
-    a :: OrdZSet(i64)
+    a :: zset(i64)
 
   expected_diagnostics:
     - pass: typecheck
-      message: "an input must be `OrdZSet(record(...))`"
+      message: "an input must be `zset(record(...))`"
 
 - name: a cycle without delay is rejected
   source: |
     a := input("a")
-    a :: OrdZSet(record(id: i64))
+    a :: zset(record(id: i64))
     b := map(c, fun((r) -> r))
     c := map(b, fun((r) -> r))
 
@@ -73,7 +73,7 @@
 - name: comparing incompatible types
   source: |
     a := input("a")
-    a :: OrdZSet(record(id: i64, name: sql.SqlString))
+    a :: zset(record(id: i64, name: sql.SqlString))
     b := filter(a, fun((r) -> r.id == r.name))
 
   expected_diagnostics:
@@ -83,7 +83,7 @@
 - name: filter must return a bool
   source: |
     a := input("a")
-    a :: OrdZSet(record(id: i64))
+    a :: zset(record(id: i64))
     b := filter(a, fun((r) -> r.id))
 
   expected_diagnostics:
@@ -93,9 +93,9 @@
 - name: a declared type that disagrees with inference
   source: |
     a := input("a")
-    a :: OrdZSet(record(id: i64))
+    a :: zset(record(id: i64))
     b := map(a, fun((r) -> r.id))
-    b :: OrdZSet(sql.SqlString)
+    b :: zset(sql.SqlString)
 
   expected_diagnostics:
     - pass: typecheck
@@ -104,7 +104,7 @@
 - name: unknown operator
   source: |
     a := input("a")
-    a :: OrdZSet(record(id: i64))
+    a :: zset(record(id: i64))
     b := frobnicate(a)
 
   expected_diagnostics:
@@ -114,7 +114,7 @@
 - name: a tuple is only allowed as a map_index body
   source: |
     a := input("a")
-    a :: OrdZSet(record(id: i64))
+    a :: zset(record(id: i64))
     b := map(a, fun((r) -> (r.id, r.id)))
 
   expected_diagnostics:
@@ -144,17 +144,17 @@
 - name: duplicate record fields are rejected at parse time
   source: |
     a := input("a")
-    a :: OrdZSet(record(id: i64))
+    a :: zset(record(id: i64))
     b := map(a, fun((r) -> record(x: r.id, x: r.id)))
 
   expected_diagnostics:
     - pass: parse
       message: "duplicate field `x`"
 
-- name: Option(Option(T)) is rejected rather than flattened
+- name: optional(optional(T)) is rejected rather than flattened
   source: |
     a := input("a")
-    a :: OrdZSet(record(x: Option(Option(i64))))
+    a :: zset(record(x: optional(optional(i64))))
 
   expected_diagnostics:
     - pass: parse
@@ -163,7 +163,7 @@
 - name: a flat_map body must be a list
   source: |
     a := input("a")
-    a :: OrdZSet(record(id: i64))
+    a :: zset(record(id: i64))
     b := flat_map(a, fun((r) -> r))
 
   expected_diagnostics:
@@ -173,7 +173,7 @@
 - name: an empty flat_map list has no inferable type
   source: |
     a := input("a")
-    a :: OrdZSet(record(id: i64))
+    a :: zset(record(id: i64))
     b := flat_map(a, fun((r) -> []))
 
   expected_diagnostics:
@@ -183,7 +183,7 @@
 - name: flat_map rows must share one type
   source: |
     a := input("a")
-    a :: OrdZSet(record(id: i64, name: sql.SqlString))
+    a :: zset(record(id: i64, name: sql.SqlString))
     b := flat_map(a, fun((r) -> [record(x: r.id), record(y: r.name)]))
 
   expected_diagnostics:
@@ -193,7 +193,7 @@
 - name: every flat_map_index element must be a pair
   source: |
     a := input("a")
-    a :: OrdZSet(record(id: i64))
+    a :: zset(record(id: i64))
     b := flat_map_index(a, fun((r) -> [record(id: r.id)]))
 
   expected_diagnostics:
@@ -203,7 +203,7 @@
 - name: a list is not a value
   source: |
     a := input("a")
-    a :: OrdZSet(record(id: i64))
+    a :: zset(record(id: i64))
     b := map(a, fun((r) -> [r.id]))
 
   expected_diagnostics:
@@ -213,7 +213,7 @@
 - name: unknown aggregator
   source: |
     a := input("a")
-    a :: OrdZSet(record(id: i64, k: i64))
+    a :: zset(record(id: i64, k: i64))
     idx := map_index(a, fun((r) -> (r.k, r)))
     b := aggregate(idx, median, fun((v) -> v.id))
 
@@ -224,7 +224,7 @@
 - name: sum needs a numeric projection
   source: |
     a := input("a")
-    a :: OrdZSet(record(k: i64, name: sql.SqlString))
+    a :: zset(record(k: i64, name: sql.SqlString))
     idx := map_index(a, fun((r) -> (r.k, r)))
     b := aggregate(idx, sum, fun((v) -> v.name))
 
@@ -235,10 +235,89 @@
 - name: filter on an indexed stream needs two parameters
   source: |
     a := input("a")
-    a :: OrdZSet(record(k: i64, v: i64))
+    a :: zset(record(k: i64, v: i64))
     idx := map_index(a, fun((r) -> (r.k, r)))
     b := filter(idx, fun((r) -> true))
 
   expected_diagnostics:
     - pass: typecheck
       message: "takes 1 parameter(s) but the operator supplies 2"
+
+- name: a node may not be named after an operator
+  source: |
+    neg := input("neg")
+    neg :: zset(record(v: i64))
+
+  expected_diagnostics:
+    - pass: parse
+      message: "`neg` is a reserved word and cannot name a node"
+      line: 1
+      column: 1
+
+- name: a node may not be named after an aggregator
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    min := map(a, fun((r) -> r))
+
+  expected_diagnostics:
+    - pass: parse
+      message: "`min` is a reserved word"
+
+- name: a node may not be named after a keyword
+  source: |
+    if := input("a")
+
+  expected_diagnostics:
+    - pass: parse
+      message: "`if` is a reserved word"
+
+- name: a parameter may not be named after a builtin
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    b := map(a, fun((abs) -> abs))
+
+  expected_diagnostics:
+    - pass: parse
+      message: "`abs` is a reserved word and cannot name a parameter"
+
+- name: null is reserved for the Variant value
+  source: |
+    a := input("a")
+    a :: zset(record(v: optional(i64)))
+    b := map(a, fun((r) -> record(v: null)))
+
+  expected_diagnostics:
+    - pass: parse
+      message: "write `ABSENT` for a missing value"
+
+- name: arithmetic needs a definite value, not an optional
+  source: |
+    a := input("a")
+    a :: zset(record(x: optional(i64)))
+    b := map(a, fun((r) -> record(v: r.x + 1)))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "may be absent"
+
+- name: not needs a definite value
+  source: |
+    a := input("a")
+    a :: zset(record(p: optional(bool)))
+    b := filter(a, fun((r) -> not r.p))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "`not` needs a value"
+
+- name: conditionals are not implemented
+  source: |
+    a := input("a")
+    a :: zset(record(x: i64))
+    b := map(a, fun((r) -> if r.x then 1 else 2))
+
+  expected_diagnostics:
+    - pass: parse
+      message: "reserved"
