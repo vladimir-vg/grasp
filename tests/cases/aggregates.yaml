@@ -74,3 +74,113 @@
         - [1, 10, 100]
     - by_dept:
         - [-1, 10, 100]
+
+- name: sum over integers
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(id: i64, dept_id: i64, salary: i64))
+    idx := map_index(emp, fun((r) -> (r.dept_id, r)))
+    total := aggregate(idx, sum, fun((v) -> v.salary))
+
+  input:
+    - emp:
+        - [1, {id: 1, dept_id: 10, salary: 100}]
+        - [1, {id: 2, dept_id: 10, salary: 200}]
+        - [1, {id: 3, dept_id: 20, salary: 70}]
+
+  expected_exact_output:
+    - total:
+        - [1, 10, 300]
+        - [1, 20, 70]
+
+- name: sum is maintained incrementally under a retraction
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(id: i64, dept_id: i64, salary: i64))
+    idx := map_index(emp, fun((r) -> (r.dept_id, r)))
+    total := aggregate(idx, sum, fun((v) -> v.salary))
+
+  input:
+    - emp:
+        - [1, {id: 1, dept_id: 10, salary: 100}]
+        - [1, {id: 2, dept_id: 10, salary: 200}]
+    - emp:
+        - [-1, {id: 2, dept_id: 10, salary: 200}]
+
+  expected_exact_output:
+    - total:
+        - [1, 10, 300]
+    - total:
+        - [-1, 10, 300]
+        - [1, 10, 100]
+
+- name: a row of weight two counts twice toward the sum
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(dept_id: i64, salary: i64))
+    idx := map_index(emp, fun((r) -> (r.dept_id, r)))
+    total := aggregate(idx, sum, fun((v) -> v.salary))
+
+  input:
+    - emp:
+        - [2, {dept_id: 10, salary: 100}]
+
+  expected_exact_output:
+    - total:
+        - [1, 10, 200]
+
+- name: avg over integers is fractional, not truncated
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(id: i64, dept_id: i64, salary: i64))
+    idx := map_index(emp, fun((r) -> (r.dept_id, r)))
+    mean := aggregate(idx, avg, fun((v) -> v.salary))
+
+  input:
+    - emp:
+        - [1, {id: 1, dept_id: 10, salary: 100}]
+        - [1, {id: 2, dept_id: 10, salary: 101}]
+
+  # 201 / 2 = 100.5, not 100.
+  expected_exact_output:
+    - mean:
+        - [1, 10, 100.5]
+
+- name: count ignores rows whose projection is null
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(id: i64, dept_id: i64, bonus: Option(i64)))
+    idx := map_index(emp, fun((r) -> (r.dept_id, r)))
+    with_bonus := aggregate(idx, count, fun((v) -> v.bonus))
+    depts := map(emp, fun((r) -> r.dept_id))
+    everyone := weighted_count(depts)
+
+  input:
+    - emp:
+        - [1, {id: 1, dept_id: 10, bonus: 50}]
+        - [1, {id: 2, dept_id: 10, bonus: null}]
+
+  # This is the whole difference between the two: `count` sees the projection,
+  # `weighted_count` sees the rows.
+  expected_exact_output:
+    - with_bonus:
+        - [1, 10, 1]
+      everyone:
+        - [1, 10, 2]
+
+- name: summing an all-null group yields null
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(id: i64, dept_id: i64, bonus: Option(i64)))
+    idx := map_index(emp, fun((r) -> (r.dept_id, r)))
+    total := aggregate(idx, sum, fun((v) -> v.bonus))
+
+  input:
+    - emp:
+        - [1, {id: 1, dept_id: 10, bonus: null}]
+
+  # No row contributed, so there is no sum to report -- which is exactly what
+  # the row counter in the accumulator exists to detect.
+  expected_exact_output:
+    - total:
+        - [1, 10, null]

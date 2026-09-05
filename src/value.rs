@@ -6,7 +6,8 @@
 //!
 //! See `docs/design/mapping.md` for the invariants this type must uphold.
 
-use dbsp::algebra::F64;
+use dbsp::ZWeight;
+use dbsp::algebra::{AddAssignByRef, AddByRef, F64, HasZero, MulByRef};
 use feldera_macros::IsNone;
 use feldera_sqllib::SqlString;
 use size_of::SizeOf;
@@ -110,6 +111,113 @@ impl DynValue {
             DynValue::String(_) => "String",
             DynValue::SqlString(_) => "sql.SqlString",
             DynValue::Record(_) => "record",
+        }
+    }
+}
+
+/// The accumulator for the linear aggregators (`sum`, `avg`, `count`).
+///
+/// `aggregate_linear_postprocess` requires an accumulator that is `DBWeight` —
+/// additive, with a zero — which [`DynValue`] cannot be: there is no sensible
+/// `String + String`. Hence a separate type, which never enters a stream.
+///
+/// It carries both an integer and a float sum rather than being an enum that
+/// picks one, because `HasZero::zero()` takes no context and so could not
+/// choose a variant. Only the field matching the projection's statically-known
+/// type is ever read; the other stays zero and is added harmlessly.
+///
+/// `rows` is what lets a linear aggregate tell "the group summed to zero" from
+/// "the group is empty" — see the aggregation section of `docs/design/mapping.md`.
+/// It is also `count` itself.
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Hash,
+    SizeOf,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    IsNone,
+)]
+#[archive_attr(derive(Eq, Ord, PartialEq, PartialOrd))]
+pub struct Acc {
+    pub sum_int: i64,
+    pub sum_float: F64,
+    /// Rows contributing a non-null projection. This is `count`, and it is what
+    /// separates "summed to zero" from "every row was null".
+    pub rows: i64,
+    /// Every row in the group, null projection or not.
+    ///
+    /// `dbsp` drops a group whose accumulator is zero, so without this a group
+    /// of entirely null projections would sum to zero in every field and
+    /// disappear rather than reporting null. Feldera's SQL compiler carries the
+    /// same extra counter, for the same reason.
+    pub present: i64,
+}
+
+impl Acc {
+    pub fn int(v: i64) -> Acc {
+        Acc { sum_int: v, sum_float: F64::new(0.0), rows: 1, present: 1 }
+    }
+
+    pub fn float(v: f64) -> Acc {
+        Acc { sum_int: 0, sum_float: F64::new(v), rows: 1, present: 1 }
+    }
+
+    /// A row whose projection was null: counted by neither `sum` nor `count`,
+    /// but still present, so the group does not vanish.
+    pub fn null() -> Acc {
+        Acc { sum_int: 0, sum_float: F64::new(0.0), rows: 0, present: 1 }
+    }
+}
+
+impl HasZero for Acc {
+    fn zero() -> Acc {
+        Acc::default()
+    }
+
+    fn is_zero(&self) -> bool {
+        self.sum_int == 0
+            && self.sum_float == F64::new(0.0)
+            && self.rows == 0
+            && self.present == 0
+    }
+}
+
+impl AddByRef for Acc {
+    fn add_by_ref(&self, other: &Acc) -> Acc {
+        Acc {
+            sum_int: self.sum_int.wrapping_add(other.sum_int),
+            sum_float: F64::new(self.sum_float.into_inner() + other.sum_float.into_inner()),
+            rows: self.rows.wrapping_add(other.rows),
+            present: self.present.wrapping_add(other.present),
+        }
+    }
+}
+
+impl AddAssignByRef for Acc {
+    fn add_assign_by_ref(&mut self, other: &Acc) {
+        *self = self.add_by_ref(other);
+    }
+}
+
+/// Scaling by a Z-weight is what makes the aggregate linear: a row with weight
+/// `w` contributes `w` times its projection, and a retraction subtracts it.
+impl MulByRef<ZWeight> for Acc {
+    type Output = Acc;
+
+    fn mul_by_ref(&self, w: &ZWeight) -> Acc {
+        Acc {
+            sum_int: self.sum_int.wrapping_mul(*w),
+            sum_float: F64::new(self.sum_float.into_inner() * (*w as f64)),
+            rows: self.rows.wrapping_mul(*w),
+            present: self.present.wrapping_mul(*w),
         }
     }
 }

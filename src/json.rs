@@ -139,6 +139,46 @@ pub fn decode_delta(j: &J, row_type: &TypeDesc) -> JResult<(DynValue, ZWeight)> 
     Ok((decode_value(data, row_type)?, weight))
 }
 
+/// Which delta encoding to emit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Format {
+    /// `{"weight": 2, "data": {…}}` — represents a Z-set delta exactly.
+    #[default]
+    Weighted,
+    /// `{"insert": {…}}` / `{"delete": {…}}`. Cannot express a weight, so a
+    /// weight of magnitude *n* becomes *n* repeated records.
+    InsertDelete,
+}
+
+/// Encodes one delta in [`Format::InsertDelete`], which needs one record per
+/// unit of weight because the format has nowhere to put a magnitude.
+pub fn encode_delta_insert_delete(d: &Delta, ty: &BatchType) -> JResult<Vec<J>> {
+    let body = match (ty, &d.value) {
+        (BatchType::ZSet(t), None) => encode_value(&d.key, t)?,
+        (BatchType::IndexedZSet(kt, vt), Some(v)) => {
+            let mut obj = Map::new();
+            obj.insert("key".into(), encode_value(&d.key, kt)?);
+            obj.insert("value".into(), encode_value(v, vt)?);
+            J::Object(obj)
+        }
+        (BatchType::ZSet(_), Some(_)) => {
+            return bad("a flat stream produced a delta with a value half");
+        }
+        (BatchType::IndexedZSet(..), None) => {
+            return bad("an indexed stream produced a delta with no value half");
+        }
+    };
+    let key = if d.weight >= 0 { "insert" } else { "delete" };
+    let count = d.weight.unsigned_abs() as usize;
+    Ok((0..count)
+        .map(|_| {
+            let mut obj = Map::new();
+            obj.insert(key.into(), body.clone());
+            J::Object(obj)
+        })
+        .collect())
+}
+
 /// Encodes one output delta.
 ///
 /// A flat stream produces `{"weight", "data"}`, matching Feldera's `weighted`

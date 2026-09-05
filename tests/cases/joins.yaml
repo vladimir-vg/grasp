@@ -88,3 +88,32 @@
   expected_exact_output:
     - out:
         - [1, 2, {a: 200}]
+
+- name: join_index keeps the result indexed for a second join
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(id: i64, dept_id: i64))
+    dept := input("dept")
+    dept :: OrdZSet(record(id: i64, region_id: i64))
+    region := input("region")
+    region :: OrdZSet(record(id: i64, rname: sql.SqlString))
+
+    ei := map_index(emp,  fun((r) -> (r.dept_id, record(id: r.id))))
+    di := map_index(dept, fun((r) -> (r.id, record(region_id: r.region_id))))
+    # Re-key onto region_id without a separate map_index step.
+    by_region := join_index(ei, di, fun((k, e, d) -> (d.region_id, record(id: e.id))))
+
+    ri := map_index(region, fun((r) -> (r.id, record(rname: r.rname))))
+    out := join(by_region, ri, fun((k, e, r) -> record(id: e.id, rname: r.rname)))
+
+  input:
+    - emp:
+        - [1, {id: 1, dept_id: 10}]
+      dept:
+        - [1, {id: 10, region_id: 100}]
+      region:
+        - [1, {id: 100, rname: "emea"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {id: 1, rname: "emea"}]

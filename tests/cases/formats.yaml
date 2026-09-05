@@ -1,0 +1,54 @@
+# The two JSON delta encodings.
+
+- name: weighted keeps a weight of three as one record
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(v: i64))
+    out := map(a, fun((r) -> r))
+
+  input:
+    - a:
+        - [3, {v: 1}]
+
+  output_format: weighted
+  expected_exact_output:
+    - out:
+        - [3, {v: 1}]
+
+- name: insert_delete has to repeat the record once per unit of weight
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(v: i64))
+    out := map(a, fun((r) -> r))
+
+  input:
+    - a:
+        - [3, {v: 1}]
+
+  # The format has nowhere to put a magnitude. This is why `weighted` is the
+  # default -- see docs/design/mapping.md.
+  output_format: insert_delete
+  expected_exact_output:
+    - out:
+        - {insert: {v: 1}}
+        - {insert: {v: 1}}
+        - {insert: {v: 1}}
+
+- name: a retraction becomes a delete
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(v: i64))
+    out := map(a, fun((r) -> r))
+
+  input:
+    - a:
+        - [1, {v: 1}]
+    - a:
+        - [-1, {v: 1}]
+
+  output_format: insert_delete
+  expected_exact_output:
+    - out:
+        - {insert: {v: 1}}
+    - out:
+        - {delete: {v: 1}}

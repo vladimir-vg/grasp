@@ -150,3 +150,95 @@
   expected_diagnostics:
     - pass: parse
       message: "duplicate field `x`"
+
+- name: Option(Option(T)) is rejected rather than flattened
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(x: Option(Option(i64))))
+
+  expected_diagnostics:
+    - pass: parse
+      message: "not a distinct type"
+
+- name: a flat_map body must be a list
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(id: i64))
+    b := flat_map(a, fun((r) -> r))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "must return a list of rows"
+
+- name: an empty flat_map list has no inferable type
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(id: i64))
+    b := flat_map(a, fun((r) -> []))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "at least one element"
+
+- name: flat_map rows must share one type
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(id: i64, name: sql.SqlString))
+    b := flat_map(a, fun((r) -> [record(x: r.id), record(y: r.name)]))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "must share one type"
+
+- name: every flat_map_index element must be a pair
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(id: i64))
+    b := flat_map_index(a, fun((r) -> [record(id: r.id)]))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "must be a `(key, value)` pair"
+
+- name: a list is not a value
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(id: i64))
+    b := map(a, fun((r) -> [r.id]))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "a list is only allowed as the body of a `flat_map`"
+
+- name: unknown aggregator
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(id: i64, k: i64))
+    idx := map_index(a, fun((r) -> (r.k, r)))
+    b := aggregate(idx, median, fun((v) -> v.id))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "expected min, max, sum, avg or count"
+
+- name: sum needs a numeric projection
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(k: i64, name: sql.SqlString))
+    idx := map_index(a, fun((r) -> (r.k, r)))
+    b := aggregate(idx, sum, fun((v) -> v.name))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "needs a numeric projection"
+
+- name: filter on an indexed stream needs two parameters
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(k: i64, v: i64))
+    idx := map_index(a, fun((r) -> (r.k, r)))
+    b := filter(idx, fun((r) -> true))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "takes 1 parameter(s) but the operator supplies 2"

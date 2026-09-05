@@ -9,7 +9,8 @@
 use crate::diag::{Diagnostic, Pass};
 use crate::expr::{eval, is_true};
 use crate::typecheck::{Agg, Plan, PlanOp};
-use crate::value::{BatchType, DynValue};
+use crate::value::{Acc, BatchType, DynValue};
+use dbsp::algebra::F64;
 use dbsp::operator::{Max, Min};
 use dbsp::{
     DBSPHandle, IndexedZSetReader, OrdIndexedZSet, OrdZSet, OutputHandle, RootCircuit, Runtime,
@@ -221,11 +222,15 @@ fn build_node(
 
         PlanOp::Filter { input, f } => {
             let f = f.clone();
-            Node::Flat(
-                dep(*input)
-                    .flat(node)?
-                    .filter(move |r: &DynValue| is_true(&eval(&f, &[r]))),
-            )
+            match dep(*input) {
+                Node::Flat(s) => {
+                    Node::Flat(s.filter(move |r: &DynValue| is_true(&eval(&f, &[r]))))
+                }
+                // An indexed stream's element is the (key, value) pair.
+                Node::Indexed(s) => Node::Indexed(
+                    s.filter(move |(k, v): (&DynValue, &DynValue)| is_true(&eval(&f, &[k, v]))),
+                ),
+            }
         }
 
         PlanOp::MapIndex { input, key, value } => {
@@ -256,18 +261,53 @@ fn build_node(
             Node::Indexed(s) => Node::Indexed(s.distinct()),
         },
 
-        PlanOp::Aggregate { input, agg, f } => {
+        PlanOp::Aggregate { input, agg, f, float } => match agg {
             // `Stream::aggregate` has no projection argument: it aggregates over
             // the value directly. So re-project the value first, then aggregate.
-            let f = f.clone();
-            let projected = dep(*input)
-                .indexed(node)?
-                .map_index(move |(k, v): (&DynValue, &DynValue)| (k.clone(), eval(&f, &[v])));
-            Node::Indexed(match agg {
-                Agg::Min => projected.aggregate(Min),
-                Agg::Max => projected.aggregate(Max),
-            })
-        }
+            Agg::Min | Agg::Max => {
+                let f = f.clone();
+                let projected = dep(*input)
+                    .indexed(node)?
+                    .map_index(move |(k, v): (&DynValue, &DynValue)| (k.clone(), eval(&f, &[v])));
+                Node::Indexed(match agg {
+                    Agg::Min => projected.aggregate(Min),
+                    _ => projected.aggregate(Max),
+                })
+            }
+
+            // `sum`, `avg` and `count` are linear: each row contributes
+            // independently, scaled by its weight, which is what lets `dbsp`
+            // maintain them without replaying the group.
+            Agg::Sum | Agg::Avg | Agg::Count => {
+                let proj = f.clone();
+                let (agg, float) = (*agg, *float);
+                Node::Indexed(dep(*input).indexed(node)?.aggregate_linear_postprocess(
+                    move |v: &DynValue| match eval(&proj, &[v]) {
+                        DynValue::I64(n) => Acc::int(n),
+                        DynValue::F64(x) => Acc::float(x.into_inner()),
+                        // A null projection contributes to no sum and to no
+                        // count, which is what separates `count` from
+                        // `weighted_count`.
+                        _ => Acc::null(),
+                    },
+                    move |acc: Acc| match agg {
+                        Agg::Count => DynValue::I64(acc.rows),
+                        _ if acc.rows == 0 => DynValue::Null,
+                        Agg::Sum if float => DynValue::F64(acc.sum_float),
+                        Agg::Sum => DynValue::I64(acc.sum_int),
+                        Agg::Avg => {
+                            let total = if float {
+                                acc.sum_float.into_inner()
+                            } else {
+                                acc.sum_int as f64
+                            };
+                            DynValue::F64(F64::new(total / acc.rows as f64))
+                        }
+                        Agg::Min | Agg::Max => unreachable!("handled above"),
+                    },
+                ))
+            }
+        },
 
         PlanOp::WeightedCount { input } => {
             // `weighted_count` yields `OrdIndexedZSet<K, ZWeight>` — the value is
@@ -293,6 +333,50 @@ fn build_node(
             (Node::Flat(a), Node::Flat(b)) => Node::Flat(a.minus(b)),
             (Node::Indexed(a), Node::Indexed(b)) => Node::Indexed(a.minus(b)),
             _ => return Err(shape_error(node, "matching shapes in `minus`").into()),
+        },
+
+        PlanOp::FlatMap { input, outputs } => {
+            let outputs = outputs.clone();
+            Node::Flat(dep(*input).flat(node)?.flat_map(move |r: &DynValue| {
+                outputs.iter().map(|e| eval(e, &[r])).collect::<Vec<_>>()
+            }))
+        }
+
+        PlanOp::FlatMapIndex { input, pairs } => {
+            let pairs = pairs.clone();
+            Node::Indexed(dep(*input).flat(node)?.flat_map_index(move |r: &DynValue| {
+                pairs
+                    .iter()
+                    .map(|(k, v)| (eval(k, &[r]), eval(v, &[r])))
+                    .collect::<Vec<_>>()
+            }))
+        }
+
+        PlanOp::JoinIndex { left, right, key, value } => {
+            let (key, value) = (key.clone(), value.clone());
+            Node::Indexed(dep(*left).indexed(node)?.join_index(
+                dep(*right).indexed(node)?,
+                move |k: &DynValue, a: &DynValue, b: &DynValue| {
+                    // `join_index` takes an iterator of pairs; ours is always
+                    // exactly one, since the body is a single `(key, value)`.
+                    std::iter::once((eval(&key, &[k, a, b]), eval(&value, &[k, a, b])))
+                },
+            ))
+        }
+
+        PlanOp::Integrate { input } => match dep(*input) {
+            Node::Flat(s) => Node::Flat(s.integrate()),
+            Node::Indexed(s) => Node::Indexed(s.integrate()),
+        },
+
+        PlanOp::Differentiate { input } => match dep(*input) {
+            Node::Flat(s) => Node::Flat(s.differentiate()),
+            Node::Indexed(s) => Node::Indexed(s.differentiate()),
+        },
+
+        PlanOp::Delay { input } => match dep(*input) {
+            Node::Flat(s) => Node::Flat(s.delay()),
+            Node::Indexed(s) => Node::Indexed(s.delay()),
         },
 
         PlanOp::Sum { inputs: ins } => {

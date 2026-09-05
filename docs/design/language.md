@@ -65,28 +65,28 @@ These names are the `dbsp` type names, so a reader can map them directly to
 ```
 value_type := builtin | "sql" "." sql_type | record_type
 
-builtin    := u8 | u16 | u32 | u64 | i8 | i16 | i32 | i64 | f32 | f64 | bool
-            | String | Vec "(" value_type ")" | Option "(" value_type ")"
-            | Tup0 | Tup1 | ... | Tup10  (each with the matching number of type arguments)
+builtin    := bool | i64 | f64 | String | Option "(" value_type ")"
 
-sql_type   := SqlString | ByteArray | SqlDecimal "(" precision "," scale ")"
-            | Date | Time | Timestamp | TimestampTz
-            | LongInterval | ShortInterval
-            | Uuid | Variant
-            | Array "(" value_type ")" | Map "(" value_type "," value_type ")"
+sql_type   := SqlString
 
 record_type := "record" "(" field ("," field)* ")"
 field       := FIELD_NAME ":" value_type
 ```
 
+The set above is what is implemented. The namespaces below are designed to hold
+more — the other integer widths, `f32`, `Vec`, `Tup*`, and the rest of the
+`sql.*` types — and those are listed under future work in
+[`overview.md`](overview.md).
+
 Two namespaces are deliberately separated:
 
-- **Plain builtins** (`u64`, `i64`, `String`, `Vec`, `Option`, `Tup*`) are Rust
+- **Plain builtins** (`i64`, `f64`, `bool`, `String`, `Option`) are Rust
   primitive/std types `dbsp` works with directly.
 - **`sql.*` types** mirror the Feldera SQL value types from `feldera-sqllib`
   (`SqlString`, `Date`, `SqlDecimal`, …). The `sql.` prefix says "this is a
-  `sqllib` type, not a plain Rust type". `sql.Array(T)` is `Arc<Vec<T>>` (not
-  `Vec<T>`); `sql.SqlDecimal(p,s)` is a fixed-point type (not `f64`).
+  `sqllib` type, not a plain Rust type". For example `sql.Array(T)`
+  would be `Arc<Vec<T>>` rather than `Vec<T>`, and `sql.SqlDecimal(p,s)` a
+  fixed-point type rather than `f64`.
 
 The two namespaces do not overlap. `feldera-sqllib` has no integer, float or
 boolean types of its own — in Feldera, SQL `BIGINT` *is* `i64` and SQL `DOUBLE`
@@ -99,8 +99,7 @@ while `sql.Array(T)` is `Arc<Vec<_>>`.
 **Nullability is `Option(T)`, in both namespaces.** There is no separate nullable
 flag; a nullable SQL string is `Option(sql.SqlString)`.
 
-`record(f: T, …)` is a named-field record. `Tup*` is the positional
-alternative. Field names are bare identifiers; quote a name that is not a valid
+`record(f: T, …)` is a named-field record. Field names are bare identifiers; quote a name that is not a valid
 identifier (`record("total count": i64)`).
 
 Note that `record` is spelled the same way in type position and in expression
@@ -133,9 +132,9 @@ it lowers to. `X` means the shape is preserved.
 | `input("t")` | → `OrdZSet(T)` | `add_input_zset` |
 | `map(s, f)` | `OrdZSet(T) → OrdZSet(U)`, `f : T → U` | `map` |
 | `filter(s, f)` | `X → X`, `f : T → bool` | `filter` |
-| `flat_map(s, f)` | `OrdZSet(T) → OrdZSet(U)`, `f : T → Vec(U)` | `flat_map` |
+| `flat_map(s, f)` | `OrdZSet(T) → OrdZSet(U)`, `f : T → [U, …]` | `flat_map` |
 | `map_index(s, f)` | `OrdZSet(T) → OrdIndexedZSet(K,V)`, `f : T → (K,V)` | `map_index` |
-| `flat_map_index(s, f)` | `OrdZSet(T) → OrdIndexedZSet(K,V)`, `f : T → Vec((K,V))` | `flat_map_index` |
+| `flat_map_index(s, f)` | `OrdZSet(T) → OrdIndexedZSet(K,V)`, `f : T → [(K,V), …]` | `flat_map_index` |
 | `join(l, r, f)` | `OrdIndexedZSet(K,V₁) × OrdIndexedZSet(K,V₂) → OrdZSet(OV)`, `f : (K,V₁,V₂) → OV` | `join` |
 | `join_index(l, r, f)` | as `join`, but `f : (K,V₁,V₂) → (OK,OV)` → `OrdIndexedZSet(OK,OV)` | `join_index` |
 | `antijoin(l, r)` | `OrdIndexedZSet(K,V) × OrdIndexedZSet(K,V₂) → OrdIndexedZSet(K,V)` | `antijoin` |
@@ -151,6 +150,14 @@ it lowers to. `X` means the shape is preserved.
 | `delay(s)` | `X → X` | `delay` |
 
 Operator arity follows `dbsp`: `plus` and `minus` are binary, `sum` is n-ary.
+
+**`filter`'s function takes the stream's element.** For a flat stream that is
+one row; for an indexed stream it is the `(key, value)` pair, so the function
+takes two parameters — `fun((k, v) -> …)` — matching `dbsp`'s `ItemRef` for
+each shape.
+
+**Operator calls do not nest.** Every argument that is a stream must name a
+declared node, so `weighted_count(map(s, f))` is two declarations, not one.
 
 `join`, `join_index` and `antijoin` require equal key type `K` on both sides;
 `plus`/`minus`/`sum` require identical batch types.
@@ -173,10 +180,9 @@ params     := NAME ("," NAME)*
 expr       := literal
             | NAME                                        # a bound parameter
             | expr "." FIELD_NAME                         # record field
-            | expr "[" INT "]"                            # tuple element
             | "record" "(" FIELD_NAME ":" expr ("," FIELD_NAME ":" expr)* ")"
-            | "(" expr ("," expr)* ")"                    # tuple
-            | "[" [expr ("," expr)*] "]"                  # list
+            | "(" expr "," expr ")"                       # a (key, value) pair
+            | "[" expr ("," expr)* "]"                    # a list of output rows
             | unop expr
             | expr binop expr
             | BUILTIN "(" [expr ("," expr)*] ")"
@@ -205,6 +211,23 @@ fun((k, e, d) -> record(name: e.name, dname: d.dname))
 
 Duplicate field names within one `record(...)` literal are a parse error.
 
+### Pairs and lists are syntax, not values
+
+`(key, value)` and `[…]` describe *what a node does*; they are not values and
+never flow through a stream. There is no pair type and no list type, and the
+runtime has no variant for either.
+
+- A `(key, value)` pair is legal only as the body of `map_index` or
+  `join_index`, or as an element of a `flat_map_index` list. The type checker
+  splits it into two independent expressions.
+- A `[…]` list is legal only as the body of `flat_map` or `flat_map_index`,
+  where its length fixes how many rows the operator emits per input row. The
+  checker splits it into one expression per row.
+
+The consequence worth knowing: **fan-out is fixed by the source, not the data.**
+Exploding a column holding many values into a variable number of rows needs a
+real list value, and is future work along with `Vec(T)`.
+
 ### Builtins
 
 Free functions callable from any expression. They compose with the operators
@@ -218,7 +241,6 @@ above and with each other.
 | `length` | `(x)` | length of a string, list or array |
 | `concat` | `(x, y)` | string concatenation |
 | `lower` / `upper` / `trim` | `(x)` | string |
-| `cast` | `(x, T)` | `x` converted to value type `T` |
 
 ### Aggregators
 
@@ -235,6 +257,10 @@ aggregate(idx, max, fun((v) -> v.salary))
 | `sum` | the sum of the projected values | `aggregate_linear_postprocess` |
 | `avg` | their mean | `aggregate_linear_postprocess` |
 | `count` | the number of rows whose projected value is non-null | `aggregate_linear_postprocess` |
+
+`sum` yields the projection's own type; `avg` always yields `f64`, so averaging
+integers does not truncate. Both yield null for a group in which every
+projection was null.
 
 Two consequences worth stating explicitly:
 

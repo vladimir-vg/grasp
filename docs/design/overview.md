@@ -32,7 +32,8 @@ the circuit and output changes are emitted as they are produced.
   construction, arithmetic and comparison, conditionals, and a small builtin
   library.
 - The type system described in [`language.md`](language.md) (batch types and
-  value types).
+  value types). The value vocabulary implemented so far is `bool`, `i64`,
+  `f64`, `String`, `sql.SqlString`, `Option(T)` and `record(...)`.
 - The value model described in [`mapping.md`](mapping.md).
 - Feldera-native JSON input/output, emitting deltas — `weighted` by default,
   `insert_delete` for compatibility.
@@ -59,6 +60,31 @@ set of nodes to observe is supplied when the runner starts, by node name.
 - **Windowing and ranking operators** — `window`, `waterline`, `topk`, `rank`,
   `row_number`, `lag`, `asof_join`, `star_join`. All exist in `dbsp`; none are
   in v1.
+- **The rest of the value vocabulary.** The other integer widths and `f32`;
+  and every `sql.*` type but `SqlString` — `ByteArray`, `SqlDecimal`, `Date`,
+  `Time`, `Timestamp`, `TimestampTz`, `LongInterval`, `ShortInterval`, `Uuid`,
+  `Variant`, `Array`, `Map`. Shallow but wide: each needs a `DynValue` variant,
+  a `TypeDesc` variant, a parser name, JSON coding and an ordering that upholds
+  the invariants in [`mapping.md`](mapping.md), and the temporal and decimal
+  types additionally need `SqlSerdeConfig` for their JSON formats.
+
+  Adding a variant shifts `DynValue`'s archived discriminant, which is a
+  persisted storage format. Nothing is persisted yet, so the variant order is
+  still free to settle — which stops being true after the first stored batch.
+
+- **A runtime list value**, and with it `Vec(T)`, `Tup0..Tup10`, element access
+  (`e[0]`), and data-dependent fan-out. Today `[…]` and `(key, value)` are
+  syntax rather than values, which is why `flat_map`'s fan-out is fixed by the
+  source; see [`language.md`](language.md).
+
+- **`cast`**, which needs a type argument in expression position and a
+  conversion matrix over the value vocabulary — so it is worth doing once that
+  vocabulary has settled.
+
+- **Nested operator calls.** Every stream argument must name a declared node, so
+  a composite expression is several declarations. Named intermediates are often
+  clearer, so this is a convenience rather than a gap.
+
 - **A richer expression library** — user-defined functions, and a fuller
   arithmetic/string/temporal builtin set.
 - **Convenience operator macros** — ergonomic forms (for example field-based

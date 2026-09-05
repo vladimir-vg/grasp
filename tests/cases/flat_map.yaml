@@ -1,0 +1,103 @@
+# flat_map and flat_map_index. The list body is syntax, not a value: it says
+# how many rows the operator emits per input row, and no list is ever streamed.
+
+- name: one row fans out into two
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(id: i64))
+    tags := flat_map(emp, fun((r) ->
+        [record(id: r.id, tag: "primary"),
+         record(id: r.id, tag: "backup")]))
+
+  input:
+    - emp:
+        - [1, {id: 1}]
+
+  expected_exact_output:
+    - tags:
+        - [1, {id: 1, tag: "primary"}]
+        - [1, {id: 1, tag: "backup"}]
+
+- name: a single-element list is just map
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(id: i64))
+    out := flat_map(emp, fun((r) -> [record(id: r.id)]))
+
+  input:
+    - emp:
+        - [1, {id: 1}]
+
+  expected_exact_output:
+    - out:
+        - [1, {id: 1}]
+
+- name: fan-out multiplies weights
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(id: i64))
+    two := flat_map(emp, fun((r) -> [record(v: r.id), record(v: r.id + 100)]))
+
+  input:
+    - emp:
+        - [2, {id: 1}]
+
+  expected_exact_output:
+    - two:
+        - [2, {v: 1}]
+        - [2, {v: 101}]
+
+- name: identical rows in one list consolidate
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(id: i64))
+    dup := flat_map(emp, fun((r) -> [record(id: r.id), record(id: r.id)]))
+
+  input:
+    - emp:
+        - [1, {id: 1}]
+
+  # Both elements produce the same row, so the weights add.
+  expected_exact_output:
+    - dup:
+        - [2, {id: 1}]
+
+- name: flat_map_index emits several keys per row
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(id: i64, dept_id: i64, mgr_id: i64))
+    both := flat_map_index(emp, fun((r) ->
+        [(r.dept_id, record(id: r.id)),
+         (r.mgr_id, record(id: r.id))]))
+
+  input:
+    - emp:
+        - [1, {id: 1, dept_id: 10, mgr_id: 20}]
+
+  expected_exact_output:
+    - both:
+        - [1, 10, {id: 1}]
+        - [1, 20, {id: 1}]
+
+- name: a flat_map_index result joins like any other indexed stream
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(id: i64, dept_id: i64, mgr_id: i64))
+    dept := input("dept")
+    dept :: OrdZSet(record(id: i64, dname: sql.SqlString))
+    ei := flat_map_index(emp, fun((r) ->
+        [(r.dept_id, record(id: r.id)), (r.mgr_id, record(id: r.id))]))
+    di := map_index(dept, fun((r) -> (r.id, record(dname: r.dname))))
+    j  := join(ei, di, fun((k, e, d) -> record(id: e.id, dname: d.dname)))
+
+  input:
+    - emp:
+        - [1, {id: 1, dept_id: 10, mgr_id: 20}]
+      dept:
+        - [1, {id: 10, dname: "eng"}]
+        - [1, {id: 20, dname: "ops"}]
+
+  expected_exact_output:
+    - j:
+        - [1, {id: 1, dname: "eng"}]
+        - [1, {id: 1, dname: "ops"}]

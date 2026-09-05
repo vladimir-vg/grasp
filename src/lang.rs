@@ -65,8 +65,17 @@ pub enum ExprKind {
     Field(Box<Expr>, String),
     /// `record(a: x, b: y)`
     Record(Vec<(String, Expr)>),
-    /// `(a, b)`. Only legal as the body of a `map_index` function.
+    /// `(a, b)`. Only legal as the body of a `map_index` or `join_index`
+    /// function, or as an element of a `flat_map_index` list.
+    ///
+    /// This is *syntax, not a value*: the type checker destructures it into
+    /// independent expressions, and no pair is ever streamed. There is no
+    /// corresponding `DynValue` variant.
     Tuple(Vec<Expr>),
+    /// `[a, b]`. Only legal as the body of a `flat_map` or `flat_map_index`
+    /// function, and syntax rather than a value for the same reason: it says
+    /// how many rows the operator emits per input row.
+    List(Vec<Expr>),
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Call(String, Vec<Expr>),
@@ -558,6 +567,12 @@ impl Parser {
                 self.expect(&Tok::LParen, "`(` after Option")?;
                 let inner = self.value_type()?;
                 self.expect(&Tok::RParen, "`)` closing Option")?;
+                if inner.is_nullable() {
+                    // There is one null, so a doubly-nullable type has no
+                    // values the singly-nullable one lacks. Rejecting it beats
+                    // silently flattening it.
+                    return self.err("`Option(Option(T))` is not a distinct type; use `Option(T)`");
+                }
                 Ok(TypeDesc::Option(Box::new(inner)))
             }
             "record" => {
@@ -665,6 +680,21 @@ impl Parser {
             Tok::Str(s) => {
                 self.bump();
                 Ok(self.mk(start, ExprKind::Str(s)))
+            }
+            Tok::LBracket => {
+                self.bump();
+                let mut items = Vec::new();
+                if !self.eat(&Tok::RBracket) {
+                    loop {
+                        items.push(self.expr()?);
+                        if self.eat(&Tok::Comma) {
+                            continue;
+                        }
+                        self.expect(&Tok::RBracket, "`,` or `]` in a list")?;
+                        break;
+                    }
+                }
+                Ok(self.mk(start, ExprKind::List(items)))
             }
             Tok::LParen => {
                 self.bump();

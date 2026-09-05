@@ -11,7 +11,7 @@
 //! decoder here, so a fixture cannot drift from the real wire format.
 
 use dbsp_runner::diag::Diagnostic;
-use dbsp_runner::json::{decode_value, encode_value};
+use dbsp_runner::json::{Format, decode_value, encode_delta_insert_delete, encode_value};
 use dbsp_runner::lower::Runner;
 use dbsp_runner::value::{BatchType, TypeDesc};
 use libtest_mimic::{Arguments, Failed, Trial};
@@ -36,9 +36,10 @@ fn main() {
 // Fixture types
 // ---------------------------------------------------------------------------
 
-/// Rows are `[weight, row]` for a flat stream and `[weight, key, value]` for an
-/// indexed one; the arity distinguishes them.
-type Row = Vec<serde_yaml::Value>;
+/// In the default `weighted` format a row is `[weight, row]` for a flat stream
+/// and `[weight, key, value]` for an indexed one, the arity distinguishing them.
+/// Under `insert_delete` a row is instead a `{insert: …}` / `{delete: …}` map.
+type Row = serde_yaml::Value;
 /// One transaction: output (or table) name to its rows.
 type Epoch = BTreeMap<String, Vec<Row>>;
 
@@ -57,6 +58,9 @@ struct Case {
     expected_exact_output: Option<Vec<Epoch>>,
     #[serde(default)]
     expected_diagnostics: Option<Vec<ExpectedDiagnostic>>,
+    /// `weighted` (the default) or `insert_delete`.
+    #[serde(default)]
+    output_format: Option<String>,
 }
 
 /// Only the fields a fixture actually writes are checked, so new diagnostic
@@ -276,26 +280,52 @@ fn check_output(
             }
         }
 
+        let format = match case.output_format.as_deref() {
+            None | Some("weighted") => Format::Weighted,
+            Some("insert_delete") => Format::InsertDelete,
+            Some(other) => {
+                return Err(format!(
+                    "{where_}: unknown output_format `{other}`; \
+                     expected `weighted` or `insert_delete`"
+                ));
+            }
+        };
+
         let produced = runner.step().map_err(|e| format!("{where_}: {e}"))?;
 
         for (name, deltas) in &produced {
             let ty = &plan.node(name).expect("output exists").ty;
-            let mut actual: Vec<J> = deltas
-                .iter()
-                .map(|d| {
-                    let mut row = vec![J::from(d.weight), encode_value(&d.key, key_type(ty))
-                        .map_err(|e| e.to_string())?];
-                    if let (Some(v), BatchType::IndexedZSet(_, vt)) = (&d.value, ty) {
-                        row.push(encode_value(v, vt).map_err(|e| e.to_string())?);
+            let mut actual: Vec<J> = match format {
+                Format::Weighted => deltas
+                    .iter()
+                    .map(|d| {
+                        let mut row = vec![
+                            J::from(d.weight),
+                            encode_value(&d.key, key_type(ty)).map_err(|e| e.to_string())?,
+                        ];
+                        if let (Some(v), BatchType::IndexedZSet(_, vt)) = (&d.value, ty) {
+                            row.push(encode_value(v, vt).map_err(|e| e.to_string())?);
+                        }
+                        Ok(J::Array(row))
+                    })
+                    .collect::<Result<_, String>>()
+                    .map_err(|e| format!("{where_}: encoding output `{name}`: {e}"))?,
+                // One record per unit of weight, so the count is the assertion.
+                Format::InsertDelete => {
+                    let mut out = Vec::new();
+                    for d in deltas {
+                        out.extend(
+                            encode_delta_insert_delete(d, ty)
+                                .map_err(|e| format!("{where_}: encoding `{name}`: {e}"))?,
+                        );
                     }
-                    Ok(J::Array(row))
-                })
-                .collect::<Result<_, String>>()
-                .map_err(|e| format!("{where_}: encoding output `{name}`: {e}"))?;
+                    out
+                }
+            };
 
             let mut wanted: Vec<J> = want
                 .get(name)
-                .map(|rows| rows.iter().map(|r| canon(&yaml_to_json(&serde_yaml::Value::Sequence(r.clone())))).collect())
+                .map(|rows| rows.iter().map(|r| canon(&yaml_to_json(r))).collect())
                 .unwrap_or_default();
 
             for v in &mut actual {
@@ -340,6 +370,9 @@ fn key_type(ty: &BatchType) -> &TypeDesc {
 
 /// `[weight, row]` for a flat input table.
 fn decode_input_row(row: &Row, ty: &TypeDesc) -> Result<(dbsp_runner::value::DynValue, i64), String> {
+    let row = row
+        .as_sequence()
+        .ok_or_else(|| "an input row is [weight, row]".to_string())?;
     if row.len() != 2 {
         return Err(format!("an input row is [weight, row]; found {} element(s)", row.len()));
     }

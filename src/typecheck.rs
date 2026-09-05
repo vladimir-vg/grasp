@@ -29,6 +29,9 @@ fn err<T>(span: Span, message: impl Into<String>) -> TResult<T> {
 pub enum Agg {
     Min,
     Max,
+    Sum,
+    Avg,
+    Count,
 }
 
 #[derive(Debug, Clone)]
@@ -40,12 +43,27 @@ pub enum PlanOp {
     Join { left: usize, right: usize, f: Arc<TypedExpr> },
     Antijoin { left: usize, right: usize },
     Distinct { input: usize },
-    Aggregate { input: usize, agg: Agg, f: Arc<TypedExpr> },
+    Aggregate {
+        input: usize,
+        agg: Agg,
+        f: Arc<TypedExpr>,
+        /// Whether the projection is floating point, so lowering knows which
+        /// half of the accumulator to read.
+        float: bool,
+    },
     WeightedCount { input: usize },
     Neg { input: usize },
     Plus { left: usize, right: usize },
     Minus { left: usize, right: usize },
     Sum { inputs: Vec<usize> },
+    /// One expression per output row: fan-out is fixed by the source, not by
+    /// the data.
+    FlatMap { input: usize, outputs: Vec<Arc<TypedExpr>> },
+    FlatMapIndex { input: usize, pairs: Vec<(Arc<TypedExpr>, Arc<TypedExpr>)> },
+    JoinIndex { left: usize, right: usize, key: Arc<TypedExpr>, value: Arc<TypedExpr> },
+    Integrate { input: usize },
+    Differentiate { input: usize },
+    Delay { input: usize },
 }
 
 #[derive(Debug, Clone)]
@@ -366,14 +384,106 @@ fn check_op(
 
         "filter" => {
             want(2)?;
-            let sname = stream_arg(0)?;
-            let (input, elem) = cx.zset(sname)?;
-            let (f, out) = check_fun(fun_arg(1)?, std::slice::from_ref(&elem), span)?;
+            let input = cx.stream(stream_arg(0)?)?;
+            // A flat stream feeds the row; an indexed one feeds (key, value),
+            // matching `dbsp`'s `ItemRef` for each shape.
+            let params: Vec<TypeDesc> = match &plan.nodes[input].ty {
+                BatchType::ZSet(t) => vec![t.clone()],
+                BatchType::IndexedZSet(k, v) => vec![k.clone(), v.clone()],
+            };
+            let (f, out) = check_fun(fun_arg(1)?, &params, span)?;
             let out = out.into_known(span, "the body of `filter`")?;
             if out.non_null() != &TypeDesc::Bool {
                 return err(span, format!("`filter`'s function must return bool, found `{out}`"));
             }
-            Ok((BatchType::ZSet(elem), PlanOp::Filter { input, f: Arc::new(f) }))
+            Ok((plan.nodes[input].ty.clone(), PlanOp::Filter { input, f: Arc::new(f) }))
+        }
+
+        "flat_map" => {
+            want(2)?;
+            let (input, elem) = cx.zset(stream_arg(0)?)?;
+            let fun = fun_arg(1)?;
+            let ExprKind::List(items) = &fun.body.kind else {
+                return err(span, "`flat_map`'s function must return a list of rows");
+            };
+            if items.is_empty() {
+                return err(span, "`flat_map`'s list must have at least one element, \
+                                  or the output type cannot be inferred");
+            }
+            let mut outputs = Vec::with_capacity(items.len());
+            let mut out_ty: Option<TypeDesc> = None;
+            for item in items {
+                let (e, t) = check_fun_body(fun, item, std::slice::from_ref(&elem), span)?;
+                let t = t.into_known(span, "an element of a `flat_map` list")?;
+                match &out_ty {
+                    None => out_ty = Some(t),
+                    Some(prev) if *prev == t => {}
+                    Some(prev) => {
+                        return err(
+                            span,
+                            format!("`flat_map`'s rows must share one type, found `{prev}` and `{t}`"),
+                        );
+                    }
+                }
+                outputs.push(Arc::new(e));
+            }
+            Ok((
+                BatchType::ZSet(out_ty.expect("non-empty")),
+                PlanOp::FlatMap { input, outputs },
+            ))
+        }
+
+        "flat_map_index" => {
+            want(2)?;
+            let (input, elem) = cx.zset(stream_arg(0)?)?;
+            let fun = fun_arg(1)?;
+            let ExprKind::List(items) = &fun.body.kind else {
+                return err(span, "`flat_map_index`'s function must return a list of pairs");
+            };
+            if items.is_empty() {
+                return err(span, "`flat_map_index`'s list must have at least one element, \
+                                  or the output type cannot be inferred");
+            }
+            let mut pairs = Vec::with_capacity(items.len());
+            let mut kv: Option<(TypeDesc, TypeDesc)> = None;
+            for item in items {
+                let ExprKind::Tuple(parts) = &item.kind else {
+                    return err(item.span, "every element must be a `(key, value)` pair");
+                };
+                if parts.len() != 2 {
+                    return err(item.span, "a pair has exactly two elements");
+                }
+                let (k, kt) = check_fun_body(fun, &parts[0], std::slice::from_ref(&elem), span)?;
+                let (v, vt) = check_fun_body(fun, &parts[1], std::slice::from_ref(&elem), span)?;
+                let kt = kt.into_known(item.span, "a `flat_map_index` key")?;
+                let vt = vt.into_known(item.span, "a `flat_map_index` value")?;
+                match &kv {
+                    None => kv = Some((kt, vt)),
+                    Some((pk, pv)) if *pk == kt && *pv == vt => {}
+                    Some((pk, pv)) => {
+                        return err(
+                            item.span,
+                            format!("every pair must have the same types, found \
+                                     `({pk}, {pv})` and `({kt}, {vt})`"),
+                        );
+                    }
+                }
+                pairs.push((Arc::new(k), Arc::new(v)));
+            }
+            let (kt, vt) = kv.expect("non-empty");
+            Ok((BatchType::IndexedZSet(kt, vt), PlanOp::FlatMapIndex { input, pairs }))
+        }
+
+        "integrate" | "differentiate" | "delay" => {
+            want(1)?;
+            let input = cx.stream(stream_arg(0)?)?;
+            let ty = plan.nodes[input].ty.clone();
+            let plan_op = match op {
+                "integrate" => PlanOp::Integrate { input },
+                "differentiate" => PlanOp::Differentiate { input },
+                _ => PlanOp::Delay { input },
+            };
+            Ok((ty, plan_op))
         }
 
         "map_index" => {
@@ -411,6 +521,34 @@ fn check_op(
             Ok((BatchType::ZSet(out), PlanOp::Join { left, right, f: Arc::new(f) }))
         }
 
+        "join_index" => {
+            want(3)?;
+            let (left, k1, v1) = cx.indexed(stream_arg(0)?)?;
+            let (right, k2, v2) = cx.indexed(stream_arg(1)?)?;
+            if k1 != k2 {
+                return err(
+                    span,
+                    format!("`join_index` needs equal key types, found `{k1}` and `{k2}`"),
+                );
+            }
+            let fun = fun_arg(2)?;
+            let ExprKind::Tuple(parts) = &fun.body.kind else {
+                return err(span, "`join_index`'s function must return a `(key, value)` pair");
+            };
+            if parts.len() != 2 {
+                return err(span, "`join_index`'s function must return exactly two elements");
+            }
+            let params = [k1, v1, v2];
+            let (key, kt) = check_fun_body(fun, &parts[0], &params, span)?;
+            let (value, vt) = check_fun_body(fun, &parts[1], &params, span)?;
+            let kt = kt.into_known(span, "a `join_index` key")?;
+            let vt = vt.into_known(span, "a `join_index` value")?;
+            Ok((
+                BatchType::IndexedZSet(kt, vt),
+                PlanOp::JoinIndex { left, right, key: Arc::new(key), value: Arc::new(value) },
+            ))
+        }
+
         "antijoin" => {
             want(2)?;
             let (left, k1, v1) = cx.indexed(stream_arg(0)?)?;
@@ -439,21 +577,46 @@ fn check_op(
             let agg = match agg_name.as_str() {
                 "min" => Agg::Min,
                 "max" => Agg::Max,
+                "sum" => Agg::Sum,
+                "avg" => Agg::Avg,
+                "count" => Agg::Count,
                 other => {
                     return err(
                         span,
                         format!(
-                            "unknown aggregator `{other}`; this build has `min` and `max` \
-                             (use the `weighted_count` operator to count rows)"
+                            "unknown aggregator `{other}`; expected \
+                             min, max, sum, avg or count"
                         ),
                     );
                 }
             };
             let (f, out) = check_fun(fun_arg(2)?, &[v], span)?;
             let out = out.into_known(span, "the body of `aggregate`")?;
+            let nullable_in = out.is_nullable();
+            let float = out.non_null() == &TypeDesc::F64;
+
+            // `min`/`max` return the projected value; the linear aggregators
+            // impose their own result types.
+            let result = match agg {
+                Agg::Min | Agg::Max => out.clone(),
+                Agg::Count => TypeDesc::I64,
+                Agg::Sum | Agg::Avg => {
+                    if !is_numeric(&out) {
+                        return err(
+                            span,
+                            format!("`{agg_name}` needs a numeric projection, found `{out}`"),
+                        );
+                    }
+                    // `avg` always yields f64 rather than truncating.
+                    let base = if agg == Agg::Avg { TypeDesc::F64 } else { out.non_null().clone() };
+                    // A projection that can be null can leave a group with no
+                    // contributing rows, and then there is no sum to report.
+                    if nullable_in { nullable(base) } else { base }
+                }
+            };
             Ok((
-                BatchType::IndexedZSet(k, out),
-                PlanOp::Aggregate { input, agg, f: Arc::new(f) },
+                BatchType::IndexedZSet(k, result),
+                PlanOp::Aggregate { input, agg, f: Arc::new(f), float },
             ))
         }
 
@@ -607,7 +770,16 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)]) -> TResult<(TypedExpr, Ty)> {
         ExprKind::Tuple(_) => {
             return err(
                 span,
-                "a tuple is only allowed as the body of a `map_index` function",
+                "a `(key, value)` pair is only allowed as the body of a `map_index` \
+                 or `join_index` function, or as an element of a `flat_map_index` list",
+            );
+        }
+
+        ExprKind::List(_) => {
+            return err(
+                span,
+                "a list is only allowed as the body of a `flat_map` or \
+                 `flat_map_index` function",
             );
         }
 

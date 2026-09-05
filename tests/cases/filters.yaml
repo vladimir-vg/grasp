@@ -60,3 +60,21 @@
     - depts:
         - [1, 10]
         - [1, 20]
+
+- name: filter on an indexed stream sees the key and the value
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(id: i64, dept_id: i64, salary: i64))
+    idx := map_index(emp, fun((r) -> (r.dept_id, record(id: r.id, salary: r.salary))))
+    # Two parameters here, because an indexed stream's element is the pair.
+    picked := filter(idx, fun((k, v) -> k == 10 and v.salary > 100))
+
+  input:
+    - emp:
+        - [1, {id: 1, dept_id: 10, salary: 150}]
+        - [1, {id: 2, dept_id: 10, salary: 50}]
+        - [1, {id: 3, dept_id: 20, salary: 150}]
+
+  expected_exact_output:
+    - picked:
+        - [1, 10, {id: 1, salary: 150}]

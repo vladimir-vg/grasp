@@ -1,0 +1,84 @@
+# integrate, differentiate and delay. Each of these is indistinguishable from
+# the identity within a single transaction, so every case here spans several.
+
+- name: integrate accumulates a running total
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(v: i64))
+    total := integrate(a)
+
+  input:
+    - a:
+        - [1, {v: 1}]
+    - a:
+        - [1, {v: 2}]
+    - a: []
+
+  # The output is the accumulated relation, not the delta: after epoch 2 both
+  # rows are present, and epoch 3 adds nothing but still reports both.
+  expected_exact_output:
+    - total:
+        - [1, {v: 1}]
+    - total:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+    - total:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+
+- name: delay holds each transaction back by one
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(v: i64))
+    previous := delay(a)
+
+  input:
+    - a:
+        - [1, {v: 1}]
+    - a:
+        - [1, {v: 2}]
+    - a: []
+
+  expected_exact_output:
+    - previous: []
+    - previous:
+        - [1, {v: 1}]
+    - previous:
+        - [1, {v: 2}]
+
+- name: differentiate undoes integrate
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(v: i64))
+    total := integrate(a)
+    back := differentiate(total)
+
+  input:
+    - a:
+        - [1, {v: 1}]
+    - a:
+        - [1, {v: 2}]
+
+  # Differentiating an integral returns the original stream of changes.
+  expected_exact_output:
+    - back:
+        - [1, {v: 1}]
+    - back:
+        - [1, {v: 2}]
+
+- name: integrate cancels a retraction
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(v: i64))
+    total := integrate(a)
+
+  input:
+    - a:
+        - [1, {v: 1}]
+    - a:
+        - [-1, {v: 1}]
+
+  expected_exact_output:
+    - total:
+        - [1, {v: 1}]
+    - total: []
