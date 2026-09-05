@@ -495,6 +495,75 @@ fn expand(
     Ok(())
 }
 
+/// Works out the batch type of as many body nodes as possible, without
+/// building anything.
+///
+/// This exists so a recursive stream need not be annotated. The realistic
+/// recursive shape is `path := plus(base, step)`, and `plus` *equates* its
+/// operands' types — so `path` has `base`'s type whatever `step` turns out to
+/// be, even though `step` consumes `path`. No solver is needed, only the
+/// operators whose result type is one of their operands.
+///
+/// What it cannot reach: `map`, `join`, `aggregate` and the like, whose result
+/// type is computed by a function. Their type cannot be known without first
+/// knowing the value type being solved for, so those still need a typespec. A
+/// recursion defined only that way has no base case and computes nothing, so
+/// the gap is theoretical.
+///
+/// Inference never weakens checking. It supplies a starting type; the body is
+/// then checked exactly as before, and `plus` still rejects operands that
+/// disagree.
+fn infer_shapes(nodes: &[(&String, &Rhs, Span)], known: &mut HashMap<String, BatchType>) {
+    // A node can become knowable once another does, so iterate to a fixed
+    // point. Each round learns at least one type or stops.
+    loop {
+        let mut learned = false;
+        for (name, rhs, _) in nodes {
+            if known.contains_key(name.as_str()) {
+                continue;
+            }
+            if let Some(ty) = shape_of_rhs(rhs, known) {
+                known.insert((*name).clone(), ty);
+                learned = true;
+            }
+        }
+        if !learned {
+            return;
+        }
+    }
+}
+
+fn shape_of_rhs(rhs: &Rhs, known: &HashMap<String, BatchType>) -> Option<BatchType> {
+    match rhs {
+        Rhs::Op(call) => shape_of_call(call, known),
+        Rhs::Ref(r) => known.get(&r.key()).cloned(),
+        // An instantiation defines a namespace rather than a stream, and a
+        // fixpoint's own type is not needed here.
+        Rhs::Instantiate(_) | Rhs::Fixpoint(_) => None,
+    }
+}
+
+fn shape_of_call(call: &OpCall, known: &HashMap<String, BatchType>) -> Option<BatchType> {
+    match call.op.as_str() {
+        // Identical batch types are required, so any known operand settles it.
+        "plus" | "minus" | "sum" => call.args.iter().find_map(|a| shape_of_arg(a, known)),
+        // Shape-preserving: the result is the input's type.
+        "distinct" | "neg" | "filter" | "integrate" | "differentiate" | "delay" => {
+            shape_of_arg(call.args.first()?, known)
+        }
+        _ => None,
+    }
+}
+
+fn shape_of_arg(arg: &Arg, known: &HashMap<String, BatchType>) -> Option<BatchType> {
+    match arg {
+        Arg::Name(n) => known.get(n.as_str()).cloned(),
+        Arg::Field(r) => known.get(&r.key()).cloned(),
+        Arg::Op(call) => shape_of_call(call, known),
+        _ => None,
+    }
+}
+
 /// Builds a `fixpoint` instantiation: the body becomes a sub-plan whose
 /// parameters are either imported from the parent or bound to a recursive slot.
 fn check_fixpoint(
@@ -517,14 +586,18 @@ fn check_fixpoint(
     let mut scope = Scope::new();
     let mut recs: Vec<(String, BatchType)> = Vec::new();
 
+    // A parameter is self-referential when a body node shares its label.
+    let recursive = |label: &str| group.nodes.iter().any(|(n, _, _)| n.as_str() == label);
+
+    // Pass 1: resolve the base parameters, which is where every known type
+    // enters the body.
+    let mut base: Vec<(&String, usize)> = Vec::new();
+    let mut known: HashMap<String, BatchType> = HashMap::new();
     for (label, internal) in &def.params {
         let Some((_, arg)) = inst.args.iter().find(|(l, _)| l == label) else {
             return err(inst.span, format!("missing argument `{label}` for `{}`", inst.circuit));
         };
-        // A parameter is self-referential when a body node shares its label.
-        let recursive = group.nodes.iter().any(|(n, _, _)| n.as_str() == label);
-
-        if recursive {
+        if recursive(label) {
             if !matches!(arg, Arg::Op(c) if c.op == "empty") {
                 return err(
                     inst.span,
@@ -534,40 +607,70 @@ fn check_fixpoint(
                     ),
                 );
             }
-            let Some((ty, _)) = group.specs.get(label.as_str()) else {
+            continue;
+        }
+        let idx = match resolve_arg(arg, plan, Env { specs: &Specs::new(), scope: env.scope, ..env })? {
+            RArg::Stream(i) => i,
+            RArg::Name(n) => return err(inst.span, format!("unknown stream `{n}`")),
+            _ => return err(inst.span, format!("argument `{label}` must be a stream")),
+        };
+        known.insert(internal.clone(), plan.nodes[idx].ty.clone());
+        base.push((internal, idx));
+    }
+
+    // Pass 2: work out what type each recursive stream will have. See
+    // `infer_shapes` for what this can and cannot reach.
+    infer_shapes(&group.nodes, &mut known);
+
+    // Pass 3: build the body's parameter nodes, now that the types are settled.
+    for (internal, idx) in base {
+        sub.nodes.push(PlanNode {
+            name: format!("<import {internal}>"),
+            ty: plan.nodes[idx].ty.clone(),
+            op: PlanOp::Import { outer: idx },
+            span: inst.span,
+        });
+        scope.insert(internal.clone(), sub.nodes.len() - 1);
+    }
+    for (label, internal) in &def.params {
+        if !recursive(label) {
+            continue;
+        }
+        let declared = group.specs.get(label.as_str()).map(|(t, _)| (*t).clone());
+        let inferred = known.get(label.as_str()).cloned();
+        let ty = match (declared, inferred) {
+            // A typespec is checked against inference, not an override, which
+            // is the rule every other node follows.
+            (Some(d), Some(i)) if d != i => {
+                return err(
+                    group.specs[label.as_str()].1,
+                    format!("`{label}` is declared as `{d}` but is inferred as `{i}`"),
+                );
+            }
+            (Some(d), _) => d,
+            (None, Some(i)) => i,
+            (None, None) => {
                 return err(
                     inst.span,
                     format!(
-                        "`{label}` is recursive and needs a typespec: add `{label} :: ...` \
-                         to the body of `{}`, since its type cannot be inferred from a \
-                         body that consumes it",
+                        "`{label}` is recursive and its type cannot be inferred: it is \
+                         computed by an operator whose result type comes from a function, \
+                         which cannot be known from a body that consumes `{label}`. \
+                         Add `{label} :: ...` to the body of `{}`.",
                         inst.circuit
                     ),
                 );
-            };
-            let slot = recs.len();
-            sub.nodes.push(PlanNode {
-                name: format!("<{label}>"),
-                ty: (*ty).clone(),
-                op: PlanOp::RecVar { slot },
-                span: inst.span,
-            });
-            scope.insert(internal.clone(), sub.nodes.len() - 1);
-            recs.push((label.clone(), (*ty).clone()));
-        } else {
-            let idx = match resolve_arg(arg, plan, Env { specs: &Specs::new(), scope: env.scope, ..env })? {
-                RArg::Stream(i) => i,
-                RArg::Name(n) => return err(inst.span, format!("unknown stream `{n}`")),
-                _ => return err(inst.span, format!("argument `{label}` must be a stream")),
-            };
-            sub.nodes.push(PlanNode {
-                name: format!("<import {internal}>"),
-                ty: plan.nodes[idx].ty.clone(),
-                op: PlanOp::Import { outer: idx },
-                span: inst.span,
-            });
-            scope.insert(internal.clone(), sub.nodes.len() - 1);
-        }
+            }
+        };
+        let slot = recs.len();
+        sub.nodes.push(PlanNode {
+            name: format!("<{label}>"),
+            ty: ty.clone(),
+            op: PlanOp::RecVar { slot },
+            span: inst.span,
+        });
+        scope.insert(internal.clone(), sub.nodes.len() - 1);
+        recs.push((label.clone(), ty));
     }
 
     if recs.is_empty() {

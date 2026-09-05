@@ -336,7 +336,6 @@ internal name is the *previous round's* value.
 
 ```
 circuit tc(base: b, fwd: f, path: p) {
-    path :: indexed_zset(i64, record(src: i64))
     step := join_index(p, f, fun((k, a, e) -> (e.dst, record(src: a.src))))
     path := plus(b, step)
 }
@@ -347,9 +346,18 @@ closure := fp.path
 
 - **A recursive stream starts empty**, so the call site passes `empty()`. There
   is no seeding: the base case belongs in the body, as `plus(b, step)` here.
-- **A recursive body node needs a typespec.** Its type cannot be inferred,
-  because the body that computes it also consumes it — `join_index` needs the
-  parameter's value type before `plus` determines it.
+- **A recursive body node's type is usually inferred**, so the typespec above is
+  optional. `path := plus(b, step)` works because `plus` *equates* its operands'
+  types: `path` has `b`'s type whatever `step` turns out to be, even though
+  `step` consumes `path`.
+
+  Inference follows the operators whose result type is one of their operands —
+  `plus`, `minus`, `sum`, and the shape-preserving `distinct`, `neg`, `filter`,
+  `integrate`, `differentiate`, `delay` — through any nesting. It cannot follow
+  `map`, `join` or `aggregate`, whose result type comes from a function applied
+  to the very value type being solved for; a recursion defined only that way
+  needs a typespec. A typespec, when given, is checked against the inferred
+  type rather than overriding it.
 - **Only recursive members leave the fixpoint.** `fp.path` works; other body
   nodes exist only inside the nested circuit.
 - **`distinct` is applied for you** to each recursive stream, on every round.

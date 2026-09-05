@@ -4,6 +4,9 @@
 # the call site passes, and the base case belongs in the body.
 #
 # An entry `(k, {src: v})` reads "v reaches k".
+#
+# `path` needs no typespec: it is defined as `plus(b, step)`, and `plus` equates
+# its operands, so its type is `b`'s whatever `step` turns out to be.
 
 - name: transitive closure over a path graph
   source: |
@@ -14,7 +17,6 @@
     fwd   := map_index(edges, fun((r) -> (r.src, record(dst: r.dst))))
 
     circuit tc(base: b, fwd: f, path: p) {
-        path :: indexed_zset(i64, record(src: i64))
         step := join_index(p, f, fun((k, a, e) -> (e.dst, record(src: a.src))))
         path := plus(b, step)
     }
@@ -48,7 +50,6 @@
     fwd   := map_index(edges, fun((r) -> (r.src, record(dst: r.dst))))
 
     circuit tc(base: b, fwd: f, path: p) {
-        path :: indexed_zset(i64, record(src: i64))
         step := join_index(p, f, fun((k, a, e) -> (e.dst, record(src: a.src))))
         path := plus(b, step)
     }
@@ -73,7 +74,6 @@
     fwd   := map_index(edges, fun((r) -> (r.src, record(dst: r.dst))))
 
     circuit tc(base: b, fwd: f, path: p) {
-        path :: indexed_zset(i64, record(src: i64))
         step := join_index(p, f, fun((k, a, e) -> (e.dst, record(src: a.src))))
         path := plus(b, step)
     }
@@ -98,3 +98,54 @@
     - closure:
         - [-1, 3, {src: 2}]
         - [-1, 3, {src: 1}]
+
+- name: inference reaches through a wrapping operator
+  source: |
+    edges := input("edges")
+    edges :: zset(record(src: i64, dst: i64))
+    base  := map_index(edges, fun((r) -> (r.dst, record(src: r.src))))
+    fwd   := map_index(edges, fun((r) -> (r.src, record(dst: r.dst))))
+
+    circuit tc(base: b, fwd: f, path: p) {
+        step := join_index(p, f, fun((k, a, e) -> (e.dst, record(src: a.src))))
+        path := distinct(plus(b, step))
+    }
+
+    fp      := fixpoint(tc(base: base, fwd: fwd, path: empty()))
+    closure := fp.path
+
+  # `distinct` has to be followed through to reach the `plus` that settles it.
+  input:
+    - edges:
+        - [1, {src: 1, dst: 2}]
+        - [1, {src: 2, dst: 3}]
+
+  expected_exact_output:
+    - closure:
+        - [1, 2, {src: 1}]
+        - [1, 3, {src: 2}]
+        - [1, 3, {src: 1}]
+
+- name: a declared type still works, and is checked
+  source: |
+    edges := input("edges")
+    edges :: zset(record(src: i64, dst: i64))
+    base  := map_index(edges, fun((r) -> (r.dst, record(src: r.src))))
+    fwd   := map_index(edges, fun((r) -> (r.src, record(dst: r.dst))))
+
+    circuit tc(base: b, fwd: f, path: p) {
+        path :: indexed_zset(i64, record(src: i64))
+        step := join_index(p, f, fun((k, a, e) -> (e.dst, record(src: a.src))))
+        path := plus(b, step)
+    }
+
+    fp      := fixpoint(tc(base: base, fwd: fwd, path: empty()))
+    closure := fp.path
+
+  input:
+    - edges:
+        - [1, {src: 1, dst: 2}]
+
+  expected_exact_output:
+    - closure:
+        - [1, 2, {src: 1}]

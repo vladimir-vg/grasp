@@ -459,18 +459,34 @@
     - pass: typecheck
       message: "has no recursive parameter"
 
-- name: a recursive parameter needs a typespec
+- name: a recursive type that cannot be inferred needs a typespec
   source: |
     a := input("a")
     a :: zset(record(v: i64))
     circuit c(src: s, out: o) {
+        out := map_index(o, fun((r) -> (r.v, r)))
+    }
+    fp := fixpoint(c(src: a, out: empty()))
+
+  # `map_index`'s result type comes from its function, applied to a value whose
+  # type is the one being solved for. Unlike `plus`, it equates nothing.
+  expected_diagnostics:
+    - pass: typecheck
+      message: "cannot be inferred"
+
+- name: a declared recursive type must match the inferred one
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    circuit c(src: s, out: o) {
+        out :: zset(record(w: i64))
         out := plus(s, o)
     }
     fp := fixpoint(c(src: a, out: empty()))
 
   expected_diagnostics:
     - pass: typecheck
-      message: "is recursive and needs a typespec"
+      message: "is declared as"
 
 - name: a recursive parameter must start empty
   source: |
