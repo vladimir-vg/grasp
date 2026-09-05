@@ -11,7 +11,8 @@ use crate::expr::{eval, is_true};
 use crate::typecheck::{Agg, Plan, PlanOp};
 use crate::value::{Acc, BatchType, DynValue};
 use dbsp::algebra::F64;
-use dbsp::operator::{Max, Min};
+use dbsp::operator::{Generator, Max, Min};
+use dbsp::Circuit;
 use dbsp::{
     DBSPHandle, IndexedZSetReader, OrdIndexedZSet, OrdZSet, OutputHandle, RootCircuit, Runtime,
     Stream, ZSetHandle, ZWeight,
@@ -209,6 +210,18 @@ fn build_node(
     let dep = |i: usize| -> &Node { &built[i] };
 
     Ok(match &node.op {
+        // A source that always yields the zero batch. `HasZero` on `TypedBatch`
+        // is what makes this expressible; the erased batch types have no zero
+        // without factories.
+        PlanOp::Empty => match &node.ty {
+            BatchType::ZSet(_) => Node::Flat(
+                circuit.add_source(Generator::new(dbsp::algebra::HasZero::zero)),
+            ),
+            BatchType::IndexedZSet(..) => Node::Indexed(
+                circuit.add_source(Generator::new(dbsp::algebra::HasZero::zero)),
+            ),
+        },
+
         PlanOp::Input { table } => {
             let (stream, handle) = circuit.add_input_zset::<DynValue>();
             inputs.push((table.clone(), handle));

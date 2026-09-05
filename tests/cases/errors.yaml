@@ -351,3 +351,109 @@
   expected_diagnostics:
     - pass: typecheck
       message: "`input` cannot be nested"
+
+- name: unknown circuit
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    c := nosuch(src: a)
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "unknown circuit `nosuch`"
+
+- name: a missing circuit argument
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    circuit two(x: p, y: q) {
+        out := plus(p, q)
+    }
+    c := two(x: a)
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "missing argument `y`"
+
+- name: an unknown circuit argument
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    circuit one(x: p) {
+        out := distinct(p)
+    }
+    c := one(x: a, z: a)
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "has no parameter `z`"
+
+- name: a duplicate circuit argument
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    circuit one(x: p) {
+        out := distinct(p)
+    }
+    c := one(x: a, x: a)
+
+  expected_diagnostics:
+    - pass: parse
+      message: "duplicate argument `x`"
+
+- name: referring to a node the circuit does not define
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    circuit one(x: p) {
+        out := distinct(p)
+    }
+    c   := one(x: a)
+    bad := c.nope
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "is not a node of `c`"
+
+- name: circuits cannot nest
+  source: |
+    circuit outer(x: p) {
+        circuit inner(y: q) {
+            out := distinct(q)
+        }
+    }
+
+  expected_diagnostics:
+    - pass: parse
+      message: "cannot be defined inside another"
+
+- name: empty() where nothing determines its type
+  source: |
+    out := distinct(empty())
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "`empty()` has no type here"
+
+- name: empty() takes no arguments
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    out := plus(a, empty(a))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "`empty()` takes no arguments"
+
+- name: fixpoint is not implemented yet
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    circuit loop_(src: s) {
+        out := distinct(s)
+    }
+    fp := fixpoint(loop_(src: a))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "`fixpoint` is not implemented yet"

@@ -9,7 +9,10 @@
 
 use crate::diag::{Diagnostic, Pass, Span};
 use crate::expr::{Builtin, TypedExpr};
-use crate::lang::{Arg, BinOp, Decl, Expr, ExprKind, FunLit, OpCall, Program, UnOp};
+use crate::lang::{
+    Arg, BinOp, CircuitDef, Decl, Expr, ExprKind, FunLit, Instantiation, NodeRef, OpCall, Program,
+    Rhs, UnOp,
+};
 use crate::value::{BatchType, DynValue, TypeDesc};
 use std::collections::HashMap;
 use std::fmt;
@@ -47,6 +50,7 @@ pub const OPERATORS: &[&str] = &[
     "integrate",
     "differentiate",
     "delay",
+    "empty",
 ];
 
 /// Every aggregator name. These appear as bare names in argument position, so a
@@ -89,6 +93,8 @@ pub enum PlanOp {
     Integrate { input: usize },
     Differentiate { input: usize },
     Delay { input: usize },
+    /// An empty stream. Its type is fixed by where it is used.
+    Empty,
 }
 
 #[derive(Debug, Clone)]
@@ -188,54 +194,250 @@ fn is_stringy(t: &TypeDesc) -> bool {
 // Entry point
 // ---------------------------------------------------------------------------
 
-pub fn check(program: &Program) -> TResult<Plan> {
-    // Collect declarations. Names resolve after the whole program is parsed, so
-    // forward references are legal.
-    let mut node_decls: Vec<(&String, &OpCall, Span)> = Vec::new();
-    let mut specs: HashMap<&str, (&BatchType, Span)> = HashMap::new();
-    for decl in &program.decls {
+/// The declarations of one scope — the top level, or a circuit body.
+struct Group<'a> {
+    nodes: Vec<(&'a String, &'a Rhs, Span)>,
+    specs: HashMap<&'a str, (&'a BatchType, Span)>,
+}
+
+fn collect<'a>(decls: &'a [Decl]) -> TResult<Group<'a>> {
+    let mut g = Group { nodes: Vec::new(), specs: HashMap::new() };
+    for decl in decls {
         match decl {
-            Decl::Node { name, op, span } => {
-                if node_decls.iter().any(|(n, _, _)| *n == name) {
+            Decl::Node { name, rhs, span } => {
+                if g.nodes.iter().any(|(n, _, _)| *n == name) {
                     return err(*span, format!("`{name}` is declared more than once"));
                 }
-                node_decls.push((name, op, *span));
+                g.nodes.push((name, rhs, *span));
             }
             Decl::TypeSpec { name, ty, span } => {
-                if specs.insert(name, (ty, *span)).is_some() {
+                if g.specs.insert(name, (ty, *span)).is_some() {
                     return err(*span, format!("`{name}` has more than one typespec"));
                 }
             }
+            Decl::Circuit(c) => {
+                return err(c.span, "a circuit definition belongs at the top level");
+            }
         }
     }
-
-    for (name, (_, span)) in &specs {
-        if !node_decls.iter().any(|(n, _, _)| n.as_str() == *name) {
+    for (name, (_, span)) in &g.specs {
+        if !g.nodes.iter().any(|(n, _, _)| n.as_str() == *name) {
             return err(*span, format!("typespec for `{name}`, which is not declared"));
         }
     }
+    Ok(g)
+}
 
-    let order = topo_order(&node_decls)?;
+/// Names bound in the enclosing scope: a circuit body's parameters and the body
+/// nodes checked so far. Empty at the top level.
+type Scope = HashMap<String, usize>;
+
+pub fn check(program: &Program) -> TResult<Plan> {
+    let mut circuits: HashMap<&str, &CircuitDef> = HashMap::new();
+    for decl in &program.decls {
+        if let Decl::Circuit(c) = decl
+            && circuits.insert(&c.name, c).is_some()
+        {
+            return err(c.span, format!("circuit `{}` is defined more than once", c.name));
+        }
+    }
+
+    let top: Vec<&Decl> = program
+        .decls
+        .iter()
+        .filter(|d| !matches!(d, Decl::Circuit(_)))
+        .collect();
+    let owned: Vec<Decl> = top.into_iter().cloned().collect();
+    let group = collect(&owned)?;
 
     let mut plan = Plan { nodes: Vec::new(), by_name: HashMap::new() };
-    for decl_idx in order {
-        let (name, op, span) = node_decls[decl_idx];
-        let (ty, plan_op) = check_op(name, op, span, &mut plan, &specs)?;
+    let scope = Scope::new();
+    for i in topo_order(&group.nodes)? {
+        let (name, rhs, span) = group.nodes[i];
+        check_decl(name, rhs, span, &mut plan, &group.specs, &circuits, &scope)?;
+    }
+    Ok(plan)
+}
 
-        // An explicit typespec on a non-input node is checked, not used to drive
-        // inference.
-        if let Some((expected, spec_line)) = specs.get(name.as_str())
-            && !matches!(plan_op, PlanOp::Input { .. }) && **expected != ty {
+/// Checks one declaration, registering whatever names it introduces.
+///
+/// Most declarations add exactly one node. An instantiation adds one per body
+/// node, under `<instance>.<node>`, and an alias adds no node at all.
+fn check_decl(
+    name: &str,
+    rhs: &Rhs,
+    span: Span,
+    plan: &mut Plan,
+    specs: &Specs<'_>,
+    circuits: &HashMap<&str, &CircuitDef>,
+    scope: &Scope,
+) -> TResult<()> {
+    match rhs {
+        Rhs::Op(call) => {
+            let (ty, plan_op) = check_op(name, call, span, plan, specs, scope)?;
+
+            // An explicit typespec on a non-input node is checked, not used to
+            // drive inference.
+            if let Some((expected, spec_span)) = specs.get(name)
+                && !matches!(plan_op, PlanOp::Input { .. })
+                && **expected != ty
+            {
                 return err(
-                    *spec_line,
+                    *spec_span,
                     format!("`{name}` is declared as `{expected}` but is inferred as `{ty}`"),
                 );
             }
+            plan.by_name.insert(name.to_string(), plan.nodes.len());
+            plan.nodes.push(PlanNode { name: name.to_string(), ty, op: plan_op, span });
+            Ok(())
+        }
 
-        plan.by_name.insert(name.clone(), plan.nodes.len());
-        plan.nodes.push(PlanNode { name: name.clone(), ty, op: plan_op, span });
+        Rhs::Ref(r) => {
+            let idx = lookup(r, plan, scope)?;
+            // An alias adds no node; the name simply points at an existing one.
+            plan.by_name.insert(name.to_string(), idx);
+            Ok(())
+        }
+
+        Rhs::Instantiate(inst) => expand(name, inst, plan, circuits, scope),
+
+        Rhs::Fixpoint(inst) => err(
+            inst.span,
+            format!(
+                "`fixpoint` is not implemented yet; `{}` can only be expanded",
+                inst.circuit
+            ),
+        ),
     }
-    Ok(plan)
+}
+
+/// Expands a circuit body at the call site, binding parameters to the caller's
+/// nodes and registering each body node as `<instance>.<node>`.
+fn expand(
+    instance: &str,
+    inst: &Instantiation,
+    plan: &mut Plan,
+    circuits: &HashMap<&str, &CircuitDef>,
+    outer: &Scope,
+) -> TResult<()> {
+    let Some(def) = circuits.get(inst.circuit.as_str()) else {
+        return err(inst.span, format!("unknown circuit `{}`", inst.circuit));
+    };
+
+    for (label, _) in &inst.args {
+        if !def.params.iter().any(|(l, _)| l == label) {
+            return err(inst.span, format!("`{}` has no parameter `{label}`", inst.circuit));
+        }
+    }
+
+    // Body typespecs are needed while binding parameters, since an `empty()`
+    // argument takes its type from the node the parameter feeds.
+    let group = collect(&def.body)?;
+    let body_specs = &group.specs;
+
+    let mut scope = Scope::new();
+    for (label, internal) in &def.params {
+        let Some((_, arg)) = inst.args.iter().find(|(l, _)| l == label) else {
+            return err(inst.span, format!("missing argument `{label}` for `{}`", inst.circuit));
+        };
+        let resolved = resolve_arg(arg, plan, &Specs::new(), outer)?;
+        let idx = match resolved {
+            RArg::Stream(i) => i,
+            // `empty()` takes the type of the body node this parameter feeds,
+            // which is why a self-referential node needs a typespec.
+            RArg::Empty(espan) => {
+                let Some((ty, _)) = body_specs.get(label.as_str()) else {
+                    return err(
+                        espan,
+                        format!(
+                            "`empty()` has no type here: `{}` has no typespec for `{label}`, \
+                             so nothing determines it. Add `{label} :: ...` to the circuit body.",
+                            inst.circuit
+                        ),
+                    );
+                };
+                plan.nodes.push(PlanNode {
+                    name: format!("empty@{espan}"),
+                    ty: (*ty).clone(),
+                    op: PlanOp::Empty,
+                    span: espan,
+                });
+                plan.nodes.len() - 1
+            }
+            RArg::Name(n) => return err(inst.span, format!("unknown stream `{n}`")),
+            _ => return err(inst.span, format!("argument `{label}` must be a stream")),
+        };
+        scope.insert(internal.clone(), idx);
+    }
+
+    for i in topo_order(&group.nodes)? {
+        let (bname, rhs, bspan) = group.nodes[i];
+        let mangled = format!("{instance}.{bname}");
+        check_decl(&mangled, rhs, bspan, plan, &group.specs, circuits, &scope)?;
+        // Rebind under the body-local name, and under the caller's typespec key,
+        // so later body nodes see it by its short name.
+        let idx = plan.by_name[&mangled];
+        scope.insert(bname.clone(), idx);
+    }
+    Ok(())
+}
+
+/// Turns one argument into a node index, giving an `empty()` the type `want`.
+fn materialize(
+    a: &RArg<'_>,
+    want: &BatchType,
+    plan: &mut Plan,
+    span: Span,
+    op: &str,
+) -> TResult<usize> {
+    match a {
+        RArg::Stream(i) => Ok(*i),
+        RArg::Empty(espan) => {
+            plan.nodes.push(PlanNode {
+                name: format!("empty@{espan}"),
+                ty: want.clone(),
+                op: PlanOp::Empty,
+                span: *espan,
+            });
+            Ok(plan.nodes.len() - 1)
+        }
+        RArg::Name(n) => err(span, format!("unknown stream `{n}`")),
+        _ => err(span, format!("an argument of `{op}` must name a stream")),
+    }
+}
+
+/// Resolves two operands where at most one may be an untyped `empty()`.
+fn resolve_pair(
+    rargs: &[RArg<'_>],
+    plan: &mut Plan,
+    span: Span,
+    op: &str,
+) -> TResult<(usize, usize)> {
+    let typed = rargs.iter().find_map(|a| match a {
+        RArg::Stream(i) => Some(plan.nodes[*i].ty.clone()),
+        _ => None,
+    });
+    let Some(ty) = typed else {
+        return err(span, format!("`{op}` needs at least one operand with a known type"));
+    };
+    let l = materialize(&rargs[0], &ty, plan, span, op)?;
+    let r = materialize(&rargs[1], &ty, plan, span, op)?;
+    Ok((l, r))
+}
+
+/// Resolves a possibly-dotted reference against the local scope, then the plan.
+fn lookup(r: &NodeRef, plan: &Plan, scope: &Scope) -> TResult<usize> {
+    let key = r.key();
+    if let Some(i) = scope.get(&key) {
+        return Ok(*i);
+    }
+    if let Some(i) = plan.by_name.get(&key) {
+        return Ok(*i);
+    }
+    if r.field.is_none() {
+        return err(r.span, format!("unknown stream `{key}`"));
+    }
+    err(r.span, format!("`{key}` is not a node of `{}`", r.base))
 }
 
 /// Every node name an operator call refers to, including inside nested calls.
@@ -245,15 +447,34 @@ fn collect_names<'a>(call: &'a OpCall, out: &mut Vec<&'a String>) {
     for a in &call.args {
         match a {
             Arg::Name(n) => out.push(n),
+            // `inst.node` depends on `inst`, which is what introduces the name.
+            Arg::Field(r) => out.push(&r.base),
             Arg::Op(inner) => collect_names(inner, out),
             _ => {}
         }
     }
 }
 
+fn collect_deps<'a>(rhs: &'a Rhs, out: &mut Vec<&'a String>) {
+    match rhs {
+        Rhs::Op(call) => collect_names(call, out),
+        Rhs::Ref(r) => out.push(&r.base),
+        Rhs::Instantiate(inst) | Rhs::Fixpoint(inst) => {
+            for (_, a) in &inst.args {
+                match a {
+                    Arg::Name(n) => out.push(n),
+                    Arg::Field(r) => out.push(&r.base),
+                    Arg::Op(inner) => collect_names(inner, out),
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 /// Dependency order, rejecting cycles. Recursion needs `delay`, which this cut
 /// does not implement, so any cycle is an error rather than a fixpoint.
-fn topo_order(decls: &[(&String, &OpCall, Span)]) -> TResult<Vec<usize>> {
+fn topo_order(decls: &[(&String, &Rhs, Span)]) -> TResult<Vec<usize>> {
     let index: HashMap<&str, usize> =
         decls.iter().enumerate().map(|(i, (n, _, _))| (n.as_str(), i)).collect();
 
@@ -273,7 +494,7 @@ fn topo_order(decls: &[(&String, &OpCall, Span)]) -> TResult<Vec<usize>> {
         }
         let mut stack = vec![(start, 0usize)];
         while let Some((node, child)) = stack.pop() {
-            let (name, op, span) = decls[node];
+            let (name, rhs, span) = decls[node];
             if child == 0 {
                 if marks[node] == Mark::Done {
                     continue;
@@ -281,7 +502,7 @@ fn topo_order(decls: &[(&String, &OpCall, Span)]) -> TResult<Vec<usize>> {
                 marks[node] = Mark::Active;
             }
             let mut deps: Vec<&String> = Vec::new();
-            collect_names(op, &mut deps);
+            collect_deps(rhs, &mut deps);
             if child < deps.len() {
                 stack.push((node, child + 1));
                 let dep = deps[child];
@@ -319,6 +540,9 @@ enum RArg<'a> {
     Stream(usize),
     /// A bare name that is not a declared node: an aggregator, or a mistake.
     Name(&'a str),
+    /// `empty()`, whose type comes from where it sits rather than from itself.
+    /// Left unresolved here so the operator can supply one.
+    Empty(Span),
     /// Only the shape matters: the `input` arm reads the table name from the
     /// unresolved argument.
     Str,
@@ -336,16 +560,24 @@ fn resolve_arg<'a>(
     arg: &'a Arg,
     plan: &mut Plan,
     specs: &Specs<'_>,
+    scope: &Scope,
 ) -> TResult<RArg<'a>> {
     Ok(match arg {
         Arg::Str(_) => RArg::Str,
         Arg::Fun(f) => RArg::Fun(f),
-        Arg::Name(n) => match plan.by_name.get(n.as_str()) {
+        Arg::Field(r) => RArg::Stream(lookup(r, plan, scope)?),
+        Arg::Name(n) => match scope.get(n.as_str()).or_else(|| plan.by_name.get(n.as_str())) {
             Some(i) => RArg::Stream(*i),
             // Not a node: an aggregator name, or an error the caller reports
             // with the context to say what was expected.
             None => RArg::Name(n),
         },
+        Arg::Op(call) if call.op == "empty" => {
+            if !call.args.is_empty() {
+                return err(call.span, "`empty()` takes no arguments; its type comes from where it is used");
+            }
+            RArg::Empty(call.span)
+        }
         Arg::Op(call) => {
             if call.op == "input" {
                 return err(
@@ -357,7 +589,7 @@ fn resolve_arg<'a>(
             // Anonymous, so it is named for diagnostics only and deliberately
             // kept out of `by_name`: it cannot be an output and cannot collide.
             let name = format!("{}@{}", call.op, call.span);
-            let (ty, op) = check_op(&name, call, call.span, plan, specs)?;
+            let (ty, op) = check_op(&name, call, call.span, plan, specs, scope)?;
             plan.nodes.push(PlanNode { name, ty, op, span: call.span });
             RArg::Stream(plan.nodes.len() - 1)
         }
@@ -404,6 +636,7 @@ fn check_op(
     span: Span,
     plan: &mut Plan,
     specs: &Specs<'_>,
+    scope: &Scope,
 ) -> TResult<(BatchType, PlanOp)> {
     let op = call.op.as_str();
     let args = &call.args;
@@ -412,7 +645,7 @@ fn check_op(
     // anything below reads it.
     let mut rargs = Vec::with_capacity(args.len());
     for a in args {
-        rargs.push(resolve_arg(a, plan, specs)?);
+        rargs.push(resolve_arg(a, plan, specs, scope)?);
     }
 
     let cx = Ctx { plan, span };
@@ -428,6 +661,14 @@ fn check_op(
         match &rargs[i] {
             RArg::Stream(idx) => Ok(*idx),
             RArg::Name(n) => err(span, format!("unknown stream `{n}`")),
+            RArg::Empty(espan) => err(
+                *espan,
+                format!(
+                    "`empty()` has no type here: `{op}` does not determine one. It is \
+                     allowed as a circuit argument, or beside a typed operand of \
+                     `plus`, `minus` or `sum`."
+                ),
+            ),
             _ => err(span, format!("argument {} of `{op}` must name a stream", i + 1)),
         }
     };
@@ -459,6 +700,23 @@ fn check_op(
                 }
             }
             Ok(((*spec).clone(), PlanOp::Input { table: table.clone() }))
+        }
+
+        // Reached only for a standalone `x := empty()`; as an argument it is
+        // handled during resolution, where the surrounding operator supplies a
+        // type. Here the typespec is the only thing that can.
+        "empty" => {
+            want(0)?;
+            let Some((ty, _)) = specs.get(name) else {
+                return err(
+                    span,
+                    format!(
+                        "`empty()` has no type here: add `{name} :: ...`, or use it \
+                         where an operator determines one"
+                    ),
+                );
+            };
+            Ok(((*ty).clone(), PlanOp::Empty))
         }
 
         "map" => {
@@ -738,8 +996,7 @@ fn check_op(
 
         "plus" | "minus" => {
             want(2)?;
-            let l = cx.stream(stream_arg(0)?)?;
-            let r = cx.stream(stream_arg(1)?)?;
+            let (l, r) = resolve_pair(&rargs, plan, span, op)?;
             let (lt, rt) = (&plan.nodes[l].ty, &plan.nodes[r].ty);
             if lt != rt {
                 return err(
@@ -762,9 +1019,17 @@ fn check_op(
             if args.len() < 2 {
                 return err(span, "`sum` takes at least two streams");
             }
+            // At least one operand must be typed, since `sum` requires identical
+            // batch types and an `empty()` takes its type from the others.
+            let Some(typed) = rargs.iter().find_map(|a| match a {
+                RArg::Stream(i) => Some(plan.nodes[*i].ty.clone()),
+                _ => None,
+            }) else {
+                return err(span, "`sum` needs at least one operand with a known type");
+            };
             let mut inputs = Vec::new();
-            for i in 0..args.len() {
-                inputs.push(cx.stream(stream_arg(i)?)?);
+            for a in &rargs {
+                inputs.push(materialize(a, &typed, plan, span, op)?);
             }
             let ty = plan.nodes[inputs[0]].ty.clone();
             for &i in &inputs[1..] {

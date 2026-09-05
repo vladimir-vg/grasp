@@ -1,0 +1,129 @@
+# `circuit` blocks: named, parameterised bodies, expanded at the call site.
+# `label: internal` maps the keyword used by the caller to the name the body
+# uses. Body nodes are reachable as `<instance>.<node>`.
+
+- name: a circuit expanded once
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+
+    circuit normalize(src: s) {
+        big     := filter(s, fun((r) -> r.v > 1))
+        doubled := map(big, fun((r) -> record(v: r.v * 2)))
+    }
+
+    n   := normalize(src: a)
+    out := n.doubled
+
+  input:
+    - a:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: 4}]
+
+- name: two instantiations do not interfere
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    b := input("b")
+    b :: zset(record(v: i64))
+
+    circuit double(src: s) {
+        out := map(s, fun((r) -> record(v: r.v * 2)))
+    }
+
+    x   := double(src: a)
+    y   := double(src: b)
+    all := plus(x.out, y.out)
+
+  input:
+    - a:
+        - [1, {v: 1}]
+      b:
+        - [1, {v: 10}]
+
+  expected_exact_output:
+    - all:
+        - [1, {v: 2}]
+        - [1, {v: 20}]
+
+- name: several parameters, and a body node used by a later one
+  source: |
+    l := input("l")
+    l :: zset(record(k: i64, a: i64))
+    r := input("r")
+    r :: zset(record(k: i64, b: i64))
+
+    circuit pair(left: x, right: y) {
+        li     := map_index(x, fun((e) -> (e.k, record(a: e.a))))
+        ri     := map_index(y, fun((e) -> (e.k, record(b: e.b))))
+        joined := join(li, ri, fun((k, p, q) -> record(a: p.a, b: q.b)))
+    }
+
+    j   := pair(left: l, right: r)
+    out := j.joined
+
+  input:
+    - l:
+        - [1, {k: 1, a: 100}]
+      r:
+        - [1, {k: 1, b: 200}]
+
+  expected_exact_output:
+    - out:
+        - [1, {a: 100, b: 200}]
+
+- name: one instantiation feeding another
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+
+    circuit double(src: s) {
+        out := map(s, fun((r) -> record(v: r.v * 2)))
+    }
+
+    once  := double(src: a)
+    twice := double(src: once.out)
+    out   := twice.out
+
+  input:
+    - a:
+        - [1, {v: 1}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: 4}]
+
+- name: empty() takes its type from the operand beside it
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    out := plus(a, empty())
+
+  # An empty stream is the identity for `plus`, so the output is just `a`.
+  input:
+    - a:
+        - [1, {v: 1}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: 1}]
+
+- name: a standalone empty() typed by its typespec
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    nothing :: zset(record(v: i64))
+    nothing := empty()
+    out     := plus(a, nothing)
+
+  input:
+    - a:
+        - [1, {v: 1}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: 1}]

@@ -73,7 +73,7 @@ fn a_nested_node_cannot_be_an_output() {
 
 fn operands(op: &PlanOp) -> Vec<usize> {
     match op {
-        PlanOp::Input { .. } => vec![],
+        PlanOp::Input { .. } | PlanOp::Empty => vec![],
         PlanOp::Map { input, .. }
         | PlanOp::Filter { input, .. }
         | PlanOp::MapIndex { input, .. }

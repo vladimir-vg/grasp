@@ -286,13 +286,52 @@ that JSON pasted into source keeps its meaning. On the wire it is unchanged: a
 JSON `null` in a data position still decodes to absence for an `optional(T)`
 column, and absence still encodes as JSON `null`.
 
+## Circuits
+
+A `circuit` is a named, parameterised block of declarations. It is expanded at
+the call site: the body becomes ordinary nodes, reachable as
+`<instance>.<node>`.
+
+```
+circuit normalize(src: s) {
+    big     := filter(s, fun((r) -> r.v > 1))
+    doubled := map(big, fun((r) -> record(v: r.v * 2)))
+}
+
+n   := normalize(src: a)
+out := n.doubled
+```
+
+`label: internal` maps the keyword the caller uses to the name the body uses —
+here the caller passes `src:` and the body refers to `s`. Every parameter must
+be supplied, each exactly once, and the body may not define another circuit.
+
+`out := n.doubled` is an **alias**: a right-hand side that is just a reference
+adds no node, it only gives an existing one another name. That is how a body
+node becomes selectable as a program output, since only declared names can be.
+
+Expansion is per instantiation: two instantiations of one circuit produce two
+independent sets of nodes, exactly as writing the body twice would.
+
+## `empty()`
+
+`empty()` is a stream with no rows. It carries no type of its own — it takes one
+from where it sits:
+
+- beside a typed operand of `plus`, `minus` or `sum`, which require identical
+  batch types anyway;
+- as a circuit argument, from the body node the parameter feeds;
+- on its own, from its `::` typespec.
+
+Anywhere else it is an error saying so, rather than guessing.
+
 ### Reserved words
 
 These may not name a node or a `fun` parameter: the 19 operator names, the 5
 aggregator names, the builtin names, the type constructors (`bool`, `i64`,
 `f64`, `String`, `optional`, `record`, `sql`, `zset`, `indexed_zset`), and
 `true`, `false`, `NONE`, `null`, `fun`, `and`, `or`, `not`, `if`, `then`,
-`else`.
+`else`, `circuit`, `fixpoint`.
 
 `if`, `then` and `else` are reserved although there are no conditionals yet, so
 adding them later will not break existing programs. Record *field* names are

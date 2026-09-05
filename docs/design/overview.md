@@ -44,8 +44,11 @@ set of nodes to observe is supplied when the runner starts, by node name.
 
 ## Future work
 
-- **Recursive queries** (`circuit` / `iterate`), mapped onto `dbsp`'s
-  `RootCircuit::recursive`. The `Vec<Stream>` form of the underlying
+- **`fixpoint`** — iterating a circuit to convergence, mapped onto
+  `RootCircuit::recursive_dynamic`, which takes a runtime arity. Circuit
+  definitions and macro expansion are implemented; only the fixpoint mode is
+  not. It is the one place the flat node list stops being flat, since the body
+  builds inside a nested circuit of a different Rust type. The `Vec<Stream>` form of the underlying
   `dyn_recursive` allows a runtime-determined number of mutually recursive
   streams, which is the shape this runtime needs.
 - **Checkpoint and restore.** Every stateful `dbsp` operator takes a
@@ -93,8 +96,6 @@ set of nodes to observe is supplied when the runner starts, by node name.
 
 - **A richer expression library** — user-defined functions, and a fuller
   arithmetic/string/temporal builtin set.
-- **Convenience operator macros** — ergonomic forms (for example field-based
-  joins) that desugar onto the primitives.
 - **The CLI / HTTP surface** — the current `validate` / `run` / `serve`
   commands are placeholders and subject to change.
 

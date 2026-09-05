@@ -18,10 +18,62 @@ pub struct Program {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Decl {
-    /// `name := op(args)`
-    Node { name: String, op: OpCall, span: Span },
+    /// `name := <rhs>`
+    Node { name: String, rhs: Rhs, span: Span },
     /// `name :: batch_type`
     TypeSpec { name: String, ty: BatchType, span: Span },
+    /// `circuit name(label: internal, ...) { ... }`
+    Circuit(CircuitDef),
+}
+
+/// What a node declaration is defined as.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Rhs {
+    Op(OpCall),
+    /// `name(label: arg, ...)` — expands the circuit body here.
+    Instantiate(Instantiation),
+    /// `fixpoint(name(label: arg, ...))` — iterates it to convergence.
+    Fixpoint(Instantiation),
+    /// `other` or `inst.node` — an alias, which is how a circuit's output gets
+    /// a name that can be selected as a program output.
+    Ref(NodeRef),
+}
+
+/// A named, parameterised block of declarations.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CircuitDef {
+    pub name: String,
+    /// `(label, internal)`: the keyword used at the call site, and the name the
+    /// body uses for the bound argument.
+    pub params: Vec<(String, String)>,
+    pub body: Vec<Decl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Instantiation {
+    pub circuit: String,
+    pub args: Vec<(String, Arg)>,
+    pub span: Span,
+}
+
+/// `name`, or `instance.node`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodeRef {
+    pub base: String,
+    pub field: Option<String>,
+    pub span: Span,
+}
+
+impl NodeRef {
+    /// The mangled name a body node is registered under, so `fp.path` is an
+    /// ordinary lookup rather than a second resolution mechanism.
+    pub fn key(&self) -> String {
+        match &self.field {
+            Some(f) => format!("{}.{}", self.base, f),
+            None => self.base.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,6 +95,8 @@ pub enum Arg {
     /// A nested operator call, which the type checker turns into an anonymous
     /// node. `Vec<Arg>` inside `OpCall` breaks the recursion, so no `Box`.
     Op(OpCall),
+    /// `instance.node`.
+    Field(NodeRef),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -132,8 +186,10 @@ const TYPE_NAMES: &[&str] = &[
 
 /// Literals and keywords. `if`/`then`/`else` are reserved although the language
 /// has no conditionals yet, so adding them later is not a breaking change.
-const KEYWORDS: &[&str] =
-    &["true", "false", "NONE", "null", "fun", "and", "or", "not", "if", "then", "else"];
+const KEYWORDS: &[&str] = &[
+    "true", "false", "NONE", "null", "fun", "and", "or", "not", "if", "then", "else", "circuit",
+    "fixpoint",
+];
 
 /// Whether `name` is reserved, and so may not name a node or a parameter.
 ///
@@ -168,6 +224,8 @@ enum Tok {
     RParen,
     LBracket,
     RBracket,
+    LBrace,
+    RBrace,
     Comma,
     Colon,
     Dot,
@@ -268,6 +326,8 @@ impl<'a> Lexer<'a> {
             b')' => Some(Tok::RParen),
             b'[' => Some(Tok::LBracket),
             b']' => Some(Tok::RBracket),
+            b'{' => Some(Tok::LBrace),
+            b'}' => Some(Tok::RBrace),
             b',' => Some(Tok::Comma),
             b':' => Some(Tok::Colon),
             b'.' => Some(Tok::Dot),
@@ -486,6 +546,9 @@ impl Parser {
 
     fn decl(&mut self) -> PResult<Decl> {
         let span = self.span();
+        if matches!(self.peek(), Tok::Ident(w) if w == "circuit") {
+            return self.circuit_def().map(Decl::Circuit);
+        }
         let name = self.ident()?;
         if is_reserved(&name) {
             return parse_error(
@@ -497,14 +560,119 @@ impl Parser {
             let ty = self.batch_type()?;
             Ok(Decl::TypeSpec { name, ty, span })
         } else if self.eat(&Tok::Assign) {
-            let op = self.op_call()?;
-            Ok(Decl::Node { name, op, span })
+            let rhs = self.rhs()?;
+            Ok(Decl::Node { name, rhs, span })
         } else {
             self.err(format!(
                 "expected `:=` or `::` after `{name}`, found {}",
                 describe(self.peek())
             ))
         }
+    }
+
+    /// `circuit name(label: internal, ...) { ... }`
+    fn circuit_def(&mut self) -> PResult<CircuitDef> {
+        let span = self.span();
+        self.bump(); // `circuit`
+        let name = self.ident()?;
+        if is_reserved(&name) {
+            return parse_error(span, format!("`{name}` is a reserved word and cannot name a circuit"));
+        }
+        self.expect(&Tok::LParen, "`(` after a circuit name")?;
+        let mut params: Vec<(String, String)> = Vec::new();
+        if !self.eat(&Tok::RParen) {
+            loop {
+                let pspan = self.span();
+                let label = self.ident()?;
+                self.expect(&Tok::Colon, "`:` between a parameter's label and its internal name")?;
+                let internal = self.ident()?;
+                if is_reserved(&internal) {
+                    return parse_error(
+                        pspan,
+                        format!("`{internal}` is a reserved word and cannot name a parameter"),
+                    );
+                }
+                if params.iter().any(|(l, _)| *l == label) {
+                    return parse_error(pspan, format!("duplicate parameter `{label}`"));
+                }
+                params.push((label, internal));
+                if self.eat(&Tok::Comma) {
+                    continue;
+                }
+                self.expect(&Tok::RParen, "`,` or `)` in a parameter list")?;
+                break;
+            }
+        }
+        self.expect(&Tok::LBrace, "`{` opening a circuit body")?;
+        let mut body = Vec::new();
+        while !self.eat(&Tok::RBrace) {
+            if self.peek() == &Tok::Eof {
+                return parse_error(span, "unterminated circuit body: expected `}`");
+            }
+            match self.decl()? {
+                d @ (Decl::Node { .. } | Decl::TypeSpec { .. }) => body.push(d),
+                Decl::Circuit(c) => {
+                    return parse_error(c.span, "a circuit cannot be defined inside another");
+                }
+            }
+        }
+        Ok(CircuitDef { name, params, body, span })
+    }
+
+    /// Distinguishes the four right-hand sides by lookahead.
+    fn rhs(&mut self) -> PResult<Rhs> {
+        if matches!(self.peek(), Tok::Ident(w) if w == "fixpoint") {
+            self.bump();
+            self.expect(&Tok::LParen, "`(` after `fixpoint`")?;
+            let inst = self.instantiation()?;
+            self.expect(&Tok::RParen, "`)` closing `fixpoint`")?;
+            return Ok(Rhs::Fixpoint(inst));
+        }
+        match (self.peek(), self.peek_ahead(1)) {
+            // `name(label: ...)` is an instantiation; `name(a, ...)` an operator.
+            (Tok::Ident(_), Tok::LParen)
+                if matches!(self.peek_ahead(2), Tok::Ident(_))
+                    && matches!(self.peek_ahead(3), Tok::Colon) =>
+            {
+                Ok(Rhs::Instantiate(self.instantiation()?))
+            }
+            (Tok::Ident(_), Tok::LParen) => Ok(Rhs::Op(self.op_call()?)),
+            (Tok::Ident(_), _) => Ok(Rhs::Ref(self.node_ref()?)),
+            (other, _) => {
+                self.err(format!("expected a definition, found {}", describe(other)))
+            }
+        }
+    }
+
+    fn instantiation(&mut self) -> PResult<Instantiation> {
+        let span = self.span();
+        let circuit = self.ident()?;
+        self.expect(&Tok::LParen, "`(` after a circuit name")?;
+        let mut args: Vec<(String, Arg)> = Vec::new();
+        if !self.eat(&Tok::RParen) {
+            loop {
+                let aspan = self.span();
+                let label = self.ident()?;
+                self.expect(&Tok::Colon, "`:` after an argument label")?;
+                if args.iter().any(|(l, _)| *l == label) {
+                    return parse_error(aspan, format!("duplicate argument `{label}`"));
+                }
+                args.push((label, self.arg()?));
+                if self.eat(&Tok::Comma) {
+                    continue;
+                }
+                self.expect(&Tok::RParen, "`,` or `)` in an argument list")?;
+                break;
+            }
+        }
+        Ok(Instantiation { circuit, args, span })
+    }
+
+    fn node_ref(&mut self) -> PResult<NodeRef> {
+        let span = self.span();
+        let base = self.ident()?;
+        let field = if self.eat(&Tok::Dot) { Some(self.ident()?) } else { None };
+        Ok(NodeRef { base, field, span })
     }
 
     fn op_call(&mut self) -> PResult<OpCall> {
@@ -539,6 +707,9 @@ impl Parser {
             // otherwise it names a node, or is a bare aggregator.
             Tok::Ident(_) if matches!(self.peek_ahead(1), Tok::LParen) => {
                 Ok(Arg::Op(self.op_call()?))
+            }
+            Tok::Ident(_) if matches!(self.peek_ahead(1), Tok::Dot) => {
+                Ok(Arg::Field(self.node_ref()?))
             }
             Tok::Ident(name) => {
                 self.bump();
@@ -850,6 +1021,8 @@ fn describe(t: &Tok) -> String {
         Tok::RParen => "`)`".into(),
         Tok::LBracket => "`[`".into(),
         Tok::RBracket => "`]`".into(),
+        Tok::LBrace => "`{`".into(),
+        Tok::RBrace => "`}`".into(),
         Tok::Comma => "`,`".into(),
         Tok::Colon => "`:`".into(),
         Tok::Dot => "`.`".into(),
