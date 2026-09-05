@@ -1,0 +1,90 @@
+# join and antijoin over indexed streams.
+
+- name: join two tables on a shared key
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(id: i64, name: sql.SqlString, dept_id: i64))
+    dept := input("dept")
+    dept :: OrdZSet(record(id: i64, dname: sql.SqlString))
+
+    emp_idx  := map_index(emp,  fun((r) -> (r.dept_id, record(name: r.name))))
+    dept_idx := map_index(dept, fun((r) -> (r.id, record(dname: r.dname))))
+    joined   := join(emp_idx, dept_idx, fun((k, e, d) -> record(name: e.name, dname: d.dname)))
+
+  input:
+    - emp:
+        - [1, {id: 1, name: "ada", dept_id: 10}]
+        - [1, {id: 2, name: "bob", dept_id: 10}]
+        - [1, {id: 3, name: "cy", dept_id: 20}]
+      dept:
+        - [1, {id: 10, dname: "eng"}]
+        - [1, {id: 20, dname: "ops"}]
+
+  expected_exact_output:
+    - joined:
+        - [1, {name: "ada", dname: "eng"}]
+        - [1, {name: "bob", dname: "eng"}]
+        - [1, {name: "cy", dname: "ops"}]
+
+- name: a row with no match on the other side produces nothing
+  source: |
+    l := input("l")
+    l :: OrdZSet(record(k: i64, a: i64))
+    r := input("r")
+    r :: OrdZSet(record(k: i64, b: i64))
+    li := map_index(l, fun((x) -> (x.k, record(a: x.a))))
+    ri := map_index(r, fun((x) -> (x.k, record(b: x.b))))
+    j  := join(li, ri, fun((k, x, y) -> record(k: k, a: x.a, b: y.b)))
+
+  input:
+    - l:
+        - [1, {k: 1, a: 100}]
+        - [1, {k: 2, a: 200}]
+      r:
+        - [1, {k: 1, b: 900}]
+
+  expected_exact_output:
+    - j:
+        - [1, {k: 1, a: 100, b: 900}]
+
+- name: the right side arriving later still joins
+  source: |
+    l := input("l")
+    l :: OrdZSet(record(k: i64, a: i64))
+    r := input("r")
+    r :: OrdZSet(record(k: i64, b: i64))
+    li := map_index(l, fun((x) -> (x.k, record(a: x.a))))
+    ri := map_index(r, fun((x) -> (x.k, record(b: x.b))))
+    j  := join(li, ri, fun((k, x, y) -> record(a: x.a, b: y.b)))
+
+  input:
+    - l:
+        - [1, {k: 1, a: 100}]
+    - r:
+        - [1, {k: 1, b: 900}]
+
+  expected_exact_output:
+    - j: []
+    - j:
+        - [1, {a: 100, b: 900}]
+
+- name: antijoin keeps only unmatched keys
+  source: |
+    pos := input("pos")
+    pos :: OrdZSet(record(k: i64, a: i64))
+    neg := input("neg")
+    neg :: OrdZSet(record(k: i64))
+    pi := map_index(pos, fun((x) -> (x.k, record(a: x.a))))
+    ni := map_index(neg, fun((x) -> (x.k, record(k: x.k))))
+    out := antijoin(pi, ni)
+
+  input:
+    - pos:
+        - [1, {k: 1, a: 100}]
+        - [1, {k: 2, a: 200}]
+      neg:
+        - [1, {k: 1}]
+
+  expected_exact_output:
+    - out:
+        - [1, 2, {a: 200}]

@@ -1,0 +1,55 @@
+# weighted_count sums Z-weights per key, so it counts rows including multiplicity.
+
+- name: count rows per department
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(id: i64, dept_id: i64))
+    depts := map(emp, fun((r) -> r.dept_id))
+    per_dept := weighted_count(depts)
+
+  input:
+    - emp:
+        - [1, {id: 1, dept_id: 10}]
+        - [1, {id: 2, dept_id: 10}]
+        - [1, {id: 3, dept_id: 20}]
+
+  expected_exact_output:
+    - per_dept:
+        - [1, 10, 2]
+        - [1, 20, 1]
+
+- name: a weight of three counts as three
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(dept_id: i64))
+    depts := map(emp, fun((r) -> r.dept_id))
+    per_dept := weighted_count(depts)
+
+  input:
+    - emp:
+        - [3, {dept_id: 10}]
+
+  expected_exact_output:
+    - per_dept:
+        - [1, 10, 3]
+
+- name: a retraction lowers the count
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(id: i64, dept_id: i64))
+    depts := map(emp, fun((r) -> r.dept_id))
+    per_dept := weighted_count(depts)
+
+  input:
+    - emp:
+        - [1, {id: 1, dept_id: 10}]
+        - [1, {id: 2, dept_id: 10}]
+    - emp:
+        - [-1, {id: 1, dept_id: 10}]
+
+  expected_exact_output:
+    - per_dept:
+        - [1, 10, 2]
+    - per_dept:
+        - [-1, 10, 2]
+        - [1, 10, 1]

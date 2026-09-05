@@ -4,8 +4,8 @@
 //! recursive-descent parser producing an untyped AST: field accesses still carry
 //! names, which `typecheck` resolves to positional indices.
 
+use crate::diag::{Diagnostic, Pass, Span};
 use crate::value::{BatchType, TypeDesc};
-use std::fmt;
 
 // ---------------------------------------------------------------------------
 // AST
@@ -19,9 +19,9 @@ pub struct Program {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Decl {
     /// `name := op(args)`
-    Node { name: String, op: OpCall, line: usize },
+    Node { name: String, op: OpCall, span: Span },
     /// `name :: batch_type`
-    TypeSpec { name: String, ty: BatchType, line: usize },
+    TypeSpec { name: String, ty: BatchType, span: Span },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,8 +45,15 @@ pub struct FunLit {
     pub body: Expr,
 }
 
+/// An expression together with the source it came from.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Expr {
+pub struct Expr {
+    pub kind: ExprKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExprKind {
     Null,
     Bool(bool),
     Int(i64),
@@ -93,21 +100,11 @@ pub enum BinOp {
 // Errors
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseError {
-    pub message: String,
-    pub line: usize,
+type PResult<T> = Result<T, Diagnostic>;
+
+fn parse_error<T>(span: Span, message: impl Into<String>) -> PResult<T> {
+    Err(Diagnostic::error(Pass::Parse, span, message))
 }
-
-impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "line {}: {}", self.line, self.message)
-    }
-}
-
-impl std::error::Error for ParseError {}
-
-type PResult<T> = Result<T, ParseError>;
 
 // ---------------------------------------------------------------------------
 // Lexer
@@ -142,15 +139,27 @@ struct Lexer<'a> {
     src: &'a [u8],
     pos: usize,
     line: usize,
+    /// Byte offset of the current line's first character, so a column is just
+    /// `pos - line_start`.
+    line_start: usize,
 }
 
 impl<'a> Lexer<'a> {
     fn new(src: &'a str) -> Self {
-        Lexer { src: src.as_bytes(), pos: 0, line: 1 }
+        Lexer { src: src.as_bytes(), pos: 0, line: 1, line_start: 0 }
+    }
+
+    /// 1-based column of the current position.
+    fn column(&self) -> usize {
+        self.pos - self.line_start + 1
+    }
+
+    fn here(&self) -> Span {
+        Span::new(self.line, self.column(), 0)
     }
 
     fn err<T>(&self, msg: impl Into<String>) -> PResult<T> {
-        Err(ParseError { message: msg.into(), line: self.line })
+        parse_error(self.here(), msg)
     }
 
     fn peek_byte(&self) -> Option<u8> {
@@ -163,6 +172,7 @@ impl<'a> Lexer<'a> {
                 Some(b'\n') => {
                     self.line += 1;
                     self.pos += 1;
+                    self.line_start = self.pos;
                 }
                 Some(c) if c.is_ascii_whitespace() => self.pos += 1,
                 Some(b'#') => {
@@ -178,11 +188,18 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn next_token(&mut self) -> PResult<(Tok, usize)> {
+    /// A token plus the span it occupies, measured from after trivia to the
+    /// position the scan ended at.
+    fn next_token(&mut self) -> PResult<(Tok, Span)> {
         self.skip_trivia();
-        let line = self.line;
+        let (line, column, start) = (self.line, self.column(), self.pos);
+        let tok = self.scan()?;
+        Ok((tok, Span::new(line, column, self.pos - start)))
+    }
+
+    fn scan(&mut self) -> PResult<Tok> {
         let Some(c) = self.peek_byte() else {
-            return Ok((Tok::Eof, line));
+            return Ok(Tok::Eof);
         };
 
         // Multi-character punctuation first.
@@ -200,7 +217,7 @@ impl<'a> Lexer<'a> {
             };
             if let Some(tok) = tok {
                 self.pos += 2;
-                return Ok((tok, line));
+                return Ok(tok);
             }
         }
 
@@ -224,14 +241,14 @@ impl<'a> Lexer<'a> {
         };
         if let Some(tok) = single {
             self.pos += 1;
-            return Ok((tok, line));
+            return Ok(tok);
         }
 
         if c == b'"' {
-            return self.lex_string().map(|s| (Tok::Str(s), line));
+            return self.lex_string().map(Tok::Str);
         }
         if c.is_ascii_digit() {
-            return self.lex_number().map(|t| (t, line));
+            return self.lex_number();
         }
         if c.is_ascii_alphabetic() || c == b'_' {
             let start = self.pos;
@@ -243,7 +260,7 @@ impl<'a> Lexer<'a> {
                 }
             }
             let word = String::from_utf8_lossy(&self.src[start..self.pos]).into_owned();
-            return Ok((Tok::Ident(word), line));
+            return Ok(Tok::Ident(word));
         }
 
         self.err(format!("unexpected character {:?}", c as char))
@@ -305,11 +322,11 @@ impl<'a> Lexer<'a> {
         if is_float {
             text.parse::<f64>()
                 .map(Tok::Float)
-                .map_err(|e| ParseError { message: e.to_string(), line: self.line })
+                .map_err(|e| Diagnostic::error(Pass::Parse, self.here(), e.to_string()))
         } else {
             text.parse::<i64>()
                 .map(Tok::Int)
-                .map_err(|e| ParseError { message: e.to_string(), line: self.line })
+                .map_err(|e| Diagnostic::error(Pass::Parse, self.here(), e.to_string()))
         }
     }
 }
@@ -322,19 +339,23 @@ pub fn parse(src: &str) -> PResult<Program> {
     let mut toks = Vec::new();
     let mut lexer = Lexer::new(src);
     loop {
-        let (tok, line) = lexer.next_token()?;
+        let (tok, span) = lexer.next_token()?;
         let eof = tok == Tok::Eof;
-        toks.push((tok, line));
+        toks.push((tok, span));
         if eof {
             break;
         }
     }
-    Parser { toks, pos: 0 }.program()
+    let start = toks[0].1;
+    Parser { toks, pos: 0, prev: start }.program()
 }
 
 struct Parser {
-    toks: Vec<(Tok, usize)>,
+    toks: Vec<(Tok, Span)>,
     pos: usize,
+    /// Span of the most recently consumed token, so a production can close a
+    /// span over everything it consumed.
+    prev: Span,
 }
 
 impl Parser {
@@ -342,20 +363,27 @@ impl Parser {
         &self.toks[self.pos].0
     }
 
-    fn line(&self) -> usize {
+    fn span(&self) -> Span {
         self.toks[self.pos].1
     }
 
     fn bump(&mut self) -> Tok {
         let t = self.toks[self.pos].0.clone();
+        self.prev = self.toks[self.pos].1;
         if self.pos + 1 < self.toks.len() {
             self.pos += 1;
         }
         t
     }
 
+    /// Builds an expression spanning from `start` through the last token
+    /// consumed.
+    fn mk(&self, start: Span, kind: ExprKind) -> Expr {
+        Expr { kind, span: start.to(self.prev) }
+    }
+
     fn err<T>(&self, msg: impl Into<String>) -> PResult<T> {
-        Err(ParseError { message: msg.into(), line: self.line() })
+        parse_error(self.span(), msg)
     }
 
     fn eat(&mut self, want: &Tok) -> bool {
@@ -410,14 +438,14 @@ impl Parser {
     }
 
     fn decl(&mut self) -> PResult<Decl> {
-        let line = self.line();
+        let span = self.span();
         let name = self.ident()?;
         if self.eat(&Tok::HasType) {
             let ty = self.batch_type()?;
-            Ok(Decl::TypeSpec { name, ty, line })
+            Ok(Decl::TypeSpec { name, ty, span })
         } else if self.eat(&Tok::Assign) {
             let op = self.op_call()?;
-            Ok(Decl::Node { name, op, line })
+            Ok(Decl::Node { name, op, span })
         } else {
             self.err(format!(
                 "expected `:=` or `::` after `{name}`, found {}",
@@ -573,7 +601,8 @@ impl Parser {
             self.bump();
             // All binary operators here are left-associative.
             let rhs = self.binary(prec + 1)?;
-            lhs = Expr::Binary(op, Box::new(lhs), Box::new(rhs));
+            let span = lhs.span.to(rhs.span);
+            lhs = Expr { kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)), span };
         }
         Ok(lhs)
     }
@@ -597,14 +626,15 @@ impl Parser {
     }
 
     fn unary(&mut self) -> PResult<Expr> {
+        let start = self.span();
         if self.eat(&Tok::Minus) {
             let e = self.unary()?;
-            return Ok(Expr::Unary(UnOp::Neg, Box::new(e)));
+            return Ok(self.mk(start, ExprKind::Unary(UnOp::Neg, Box::new(e))));
         }
         if matches!(self.peek(), Tok::Ident(w) if w == "not") {
             self.bump();
             let e = self.unary()?;
-            return Ok(Expr::Unary(UnOp::Not, Box::new(e)));
+            return Ok(self.mk(start, ExprKind::Unary(UnOp::Not, Box::new(e))));
         }
         self.postfix()
     }
@@ -613,24 +643,28 @@ impl Parser {
         let mut e = self.primary()?;
         while self.eat(&Tok::Dot) {
             let name = self.field_name()?;
-            e = Expr::Field(Box::new(e), name);
+            // The span covers the whole access, so `r.nope` is reported rather
+            // than just the field name.
+            let span = e.span.to(self.prev);
+            e = Expr { kind: ExprKind::Field(Box::new(e), name), span };
         }
         Ok(e)
     }
 
     fn primary(&mut self) -> PResult<Expr> {
+        let start = self.span();
         match self.peek().clone() {
             Tok::Int(v) => {
                 self.bump();
-                Ok(Expr::Int(v))
+                Ok(self.mk(start, ExprKind::Int(v)))
             }
             Tok::Float(v) => {
                 self.bump();
-                Ok(Expr::Float(v))
+                Ok(self.mk(start, ExprKind::Float(v)))
             }
             Tok::Str(s) => {
                 self.bump();
-                Ok(Expr::Str(s))
+                Ok(self.mk(start, ExprKind::Str(s)))
             }
             Tok::LParen => {
                 self.bump();
@@ -646,19 +680,19 @@ impl Parser {
                         break;
                     }
                 }
-                Ok(Expr::Tuple(items))
+                Ok(self.mk(start, ExprKind::Tuple(items)))
             }
-            Tok::Ident(word) => self.ident_expr(word),
+            Tok::Ident(word) => self.ident_expr(word, start),
             other => self.err(format!("expected an expression, found {}", describe(&other))),
         }
     }
 
-    fn ident_expr(&mut self, word: String) -> PResult<Expr> {
+    fn ident_expr(&mut self, word: String, start: Span) -> PResult<Expr> {
         self.bump();
         match word.as_str() {
-            "true" => return Ok(Expr::Bool(true)),
-            "false" => return Ok(Expr::Bool(false)),
-            "null" => return Ok(Expr::Null),
+            "true" => return Ok(self.mk(start, ExprKind::Bool(true))),
+            "false" => return Ok(self.mk(start, ExprKind::Bool(false))),
+            "null" => return Ok(self.mk(start, ExprKind::Null)),
             "if" => {
                 let cond = self.expr()?;
                 if !matches!(self.peek(), Tok::Ident(w) if w == "then") {
@@ -671,7 +705,7 @@ impl Parser {
                 }
                 self.bump();
                 let els = self.expr()?;
-                return Ok(Expr::If(Box::new(cond), Box::new(then), Box::new(els)));
+                return Ok(self.mk(start, ExprKind::If(Box::new(cond), Box::new(then), Box::new(els))));
             }
             "record" => {
                 self.expect(&Tok::LParen, "`(` after record")?;
@@ -692,7 +726,7 @@ impl Parser {
                         break;
                     }
                 }
-                return Ok(Expr::Record(fields));
+                return Ok(self.mk(start, ExprKind::Record(fields)));
             }
             _ => {}
         }
@@ -710,9 +744,9 @@ impl Parser {
                     break;
                 }
             }
-            Ok(Expr::Call(word, args))
+            Ok(self.mk(start, ExprKind::Call(word, args)))
         } else {
-            Ok(Expr::Var(word))
+            Ok(self.mk(start, ExprKind::Var(word)))
         }
     }
 }

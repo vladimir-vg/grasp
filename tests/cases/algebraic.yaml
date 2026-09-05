@@ -1,0 +1,115 @@
+# The operators that manipulate weights rather than rows.
+
+- name: plus adds weights, so it is bag union
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(v: i64))
+    b := input("b")
+    b :: OrdZSet(record(v: i64))
+    both := plus(a, b)
+
+  input:
+    - a:
+        - [1, {v: 1}]
+      b:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+
+  # v=1 arrives from both sides and ends with weight 2, not 1. `distinct` is
+  # what turns this into set union.
+  expected_exact_output:
+    - both:
+        - [2, {v: 1}]
+        - [1, {v: 2}]
+
+- name: distinct after plus gives set union
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(v: i64))
+    b := input("b")
+    b :: OrdZSet(record(v: i64))
+    both := plus(a, b)
+    united := distinct(both)
+
+  input:
+    - a:
+        - [1, {v: 1}]
+      b:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+
+  expected_exact_output:
+    - united:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+
+- name: minus subtracts weights
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(v: i64))
+    b := input("b")
+    b :: OrdZSet(record(v: i64))
+    diff := minus(a, b)
+
+  input:
+    - a:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+      b:
+        - [1, {v: 2}]
+
+  expected_exact_output:
+    - diff:
+        - [1, {v: 1}]
+
+- name: neg flips every weight
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(v: i64))
+    inverted := neg(a)
+
+  input:
+    - a:
+        - [1, {v: 1}]
+        - [2, {v: 2}]
+
+  expected_exact_output:
+    - inverted:
+        - [-1, {v: 1}]
+        - [-2, {v: 2}]
+
+- name: sum is n-ary
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(v: i64))
+    b := input("b")
+    b :: OrdZSet(record(v: i64))
+    c := input("c")
+    c :: OrdZSet(record(v: i64))
+    total := sum(a, b, c)
+
+  input:
+    - a:
+        - [1, {v: 1}]
+      b:
+        - [1, {v: 1}]
+      c:
+        - [1, {v: 1}]
+
+  expected_exact_output:
+    - total:
+        - [3, {v: 1}]
+
+- name: distinct collapses a duplicate weight
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(v: i64))
+    d := distinct(a)
+
+  input:
+    - a:
+        - [3, {v: 1}]
+
+  expected_exact_output:
+    - d:
+        - [1, {v: 1}]

@@ -1,0 +1,87 @@
+# Retractions must cancel what they retract. This is the whole reason for
+# building on DBSP rather than recomputing, so it is tested per operator.
+
+- name: a retraction cancels an insertion
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(v: i64))
+    d := distinct(a)
+
+  input:
+    - a:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+    - a:
+        - [-1, {v: 1}]
+
+  expected_exact_output:
+    - d:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+    - d:
+        - [-1, {v: 1}]
+
+- name: insert and retract within one transaction produce nothing
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(v: i64))
+    d := distinct(a)
+
+  input:
+    - a:
+        - [1, {v: 1}]
+        - [-1, {v: 1}]
+        - [1, {v: 2}]
+
+  expected_exact_output:
+    - d:
+        - [1, {v: 2}]
+
+- name: retracting the left side of a join retracts the joined row
+  source: |
+    l := input("l")
+    l :: OrdZSet(record(k: i64, a: i64))
+    r := input("r")
+    r :: OrdZSet(record(k: i64, b: i64))
+    li := map_index(l, fun((x) -> (x.k, record(a: x.a))))
+    ri := map_index(r, fun((x) -> (x.k, record(b: x.b))))
+    j  := join(li, ri, fun((k, x, y) -> record(a: x.a, b: y.b)))
+
+  input:
+    - l:
+        - [1, {k: 1, a: 100}]
+      r:
+        - [1, {k: 1, b: 200}]
+    - l:
+        - [-1, {k: 1, a: 100}]
+
+  expected_exact_output:
+    - j:
+        - [1, {a: 100, b: 200}]
+    - j:
+        - [-1, {a: 100, b: 200}]
+
+- name: retracting the excluded side of an antijoin admits the row
+  source: |
+    pos := input("pos")
+    pos :: OrdZSet(record(k: i64, a: i64))
+    neg := input("neg")
+    neg :: OrdZSet(record(k: i64))
+    pi := map_index(pos, fun((x) -> (x.k, record(a: x.a))))
+    ni := map_index(neg, fun((x) -> (x.k, record(k: x.k))))
+    out := antijoin(pi, ni)
+
+  input:
+    - pos:
+        - [1, {k: 1, a: 100}]
+        - [1, {k: 2, a: 200}]
+      neg:
+        - [1, {k: 1}]
+    - neg:
+        - [-1, {k: 1}]
+
+  expected_exact_output:
+    - out:
+        - [1, 2, {a: 200}]
+    - out:
+        - [1, 1, {a: 100}]

@@ -1,0 +1,62 @@
+# filter and map, the operators that carry real expressions.
+
+- name: filter on a comparison
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(id: i64, salary: i64))
+    rich := filter(emp, fun((r) -> r.salary > 100))
+
+  input:
+    - emp:
+        - [1, {id: 1, salary: 150}]
+        - [1, {id: 2, salary: 90}]
+
+  expected_exact_output:
+    - rich:
+        - [1, {id: 1, salary: 150}]
+
+- name: filter on a conjunction
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(id: i64, salary: i64, active: bool))
+    hits := filter(emp, fun((r) -> r.salary > 100 and r.active))
+
+  input:
+    - emp:
+        - [1, {id: 1, salary: 150, active: true}]
+        - [1, {id: 2, salary: 150, active: false}]
+        - [1, {id: 3, salary: 50, active: true}]
+
+  expected_exact_output:
+    - hits:
+        - [1, {id: 1, salary: 150, active: true}]
+
+- name: map projects a record
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(id: i64, name: sql.SqlString, salary: i64))
+    small := map(emp, fun((r) -> record(id: r.id, name: r.name)))
+
+  input:
+    - emp:
+        - [1, {id: 1, name: "ada", salary: 150}]
+
+  expected_exact_output:
+    - small:
+        - [1, {id: 1, name: "ada"}]
+
+- name: map to a bare scalar
+  source: |
+    emp := input("emp")
+    emp :: OrdZSet(record(id: i64, dept_id: i64))
+    depts := map(emp, fun((r) -> r.dept_id))
+
+  input:
+    - emp:
+        - [1, {id: 1, dept_id: 10}]
+        - [1, {id: 2, dept_id: 20}]
+
+  expected_exact_output:
+    - depts:
+        - [1, 10]
+        - [1, 20]

@@ -1,0 +1,152 @@
+# Compilation failures. Only the fields a case writes are checked, so a fixture
+# can pin a message without committing to a column, or pin a column once the
+# span is known to be right.
+#
+# Each case names a `pass` and a `message` specific enough that a typo in the
+# fixture's own source — which would also fail to compile — cannot satisfy it.
+
+- name: unknown field
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(id: i64))
+    b := filter(a, fun((r) -> r.nope > 1))
+
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+      message: "has no field `nope`"
+      line: 3
+      column: 27
+
+- name: unknown parameter
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(id: i64))
+    b := filter(a, fun((r) -> q.id > 1))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "unknown parameter `q`"
+
+- name: join key types must match
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(id: i64))
+    b := input("b")
+    b :: OrdZSet(record(name: sql.SqlString))
+    ai := map_index(a, fun((r) -> (r.id, r)))
+    bi := map_index(b, fun((r) -> (r.name, r)))
+    j  := join(ai, bi, fun((k, x, y) -> k))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "`join` needs equal key types"
+
+- name: an input needs a typespec
+  source: |
+    a := input("a")
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "needs a `::` typespec"
+
+- name: an input must be a record
+  source: |
+    a := input("a")
+    a :: OrdZSet(i64)
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "an input must be `OrdZSet(record(...))`"
+
+- name: a cycle without delay is rejected
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(id: i64))
+    b := map(c, fun((r) -> r))
+    c := map(b, fun((r) -> r))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "cycle"
+
+- name: comparing incompatible types
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(id: i64, name: sql.SqlString))
+    b := filter(a, fun((r) -> r.id == r.name))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "cannot compare"
+
+- name: filter must return a bool
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(id: i64))
+    b := filter(a, fun((r) -> r.id))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "must return bool"
+
+- name: a declared type that disagrees with inference
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(id: i64))
+    b := map(a, fun((r) -> r.id))
+    b :: OrdZSet(sql.SqlString)
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "is inferred as"
+
+- name: unknown operator
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(id: i64))
+    b := frobnicate(a)
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "unknown operator `frobnicate`"
+
+- name: a tuple is only allowed as a map_index body
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(id: i64))
+    b := map(a, fun((r) -> (r.id, r.id)))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "only allowed as the body of a `map_index`"
+
+- name: a stray character is a parse error
+  source: |
+    a := input("a")
+    a ;; bad
+
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "unexpected character ';'"
+      line: 2
+      column: 3
+
+- name: an unterminated string is a parse error
+  source: |
+    a := input("a
+
+  expected_diagnostics:
+    - pass: parse
+      message: "unterminated string literal"
+
+- name: duplicate record fields are rejected at parse time
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(id: i64))
+    b := map(a, fun((r) -> record(x: r.id, x: r.id)))
+
+  expected_diagnostics:
+    - pass: parse
+      message: "duplicate field `x`"

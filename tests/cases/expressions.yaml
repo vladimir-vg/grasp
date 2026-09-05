@@ -1,0 +1,111 @@
+# The expression language: precedence, null propagation, and the builtins.
+
+- name: arithmetic respects precedence
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(x: i64, y: i64))
+    out := map(a, fun((r) -> record(v: r.x + r.y * 2)))
+
+  input:
+    - a:
+        - [1, {x: 1, y: 10}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: 21}]
+
+- name: parentheses override precedence
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(x: i64, y: i64))
+    out := map(a, fun((r) -> record(v: (r.x + r.y) * 2)))
+
+  input:
+    - a:
+        - [1, {x: 1, y: 10}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: 22}]
+
+- name: if then else
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(x: i64))
+    out := map(a, fun((r) -> record(label: if r.x > 5 then "big" else "small")))
+
+  input:
+    - a:
+        - [1, {x: 10}]
+        - [1, {x: 1}]
+
+  expected_exact_output:
+    - out:
+        - [1, {label: "big"}]
+        - [1, {label: "small"}]
+
+- name: null propagates through arithmetic and excludes the row from a filter
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(id: i64, x: Option(i64)))
+    kept := filter(a, fun((r) -> r.x > 5))
+
+  input:
+    - a:
+        - [1, {id: 1, x: 10}]
+        - [1, {id: 2, x: null}]
+
+  # `null > 5` is null, and a filter keeps only `true`.
+  expected_exact_output:
+    - kept:
+        - [1, {id: 1, x: 10}]
+
+- name: is_null and coalesce see nulls instead of propagating them
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(id: i64, x: Option(i64)))
+    out := map(a, fun((r) -> record(missing: is_null(r.x), v: coalesce(r.x, 0))))
+
+  input:
+    - a:
+        - [1, {id: 1, x: 10}]
+        - [1, {id: 2, x: null}]
+
+  expected_exact_output:
+    - out:
+        - [1, {missing: false, v: 10}]
+        - [1, {missing: true, v: 0}]
+
+- name: string and numeric builtins
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(name: sql.SqlString, n: i64))
+    out := map(a, fun((r) -> record(
+        shout: upper(r.name),
+        size: length(r.name),
+        mag: abs(r.n))))
+
+  input:
+    - a:
+        - [1, {name: "ada", n: -7}]
+
+  expected_exact_output:
+    - out:
+        - [1, {shout: "ADA", size: 3, mag: 7}]
+
+- name: not and or
+  source: |
+    a := input("a")
+    a :: OrdZSet(record(id: i64, p: bool, q: bool))
+    out := filter(a, fun((r) -> not r.p or r.q))
+
+  input:
+    - a:
+        - [1, {id: 1, p: true, q: false}]
+        - [1, {id: 2, p: false, q: false}]
+        - [1, {id: 3, p: true, q: true}]
+
+  expected_exact_output:
+    - out:
+        - [1, {id: 2, p: false, q: false}]
+        - [1, {id: 3, p: true, q: true}]

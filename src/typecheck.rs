@@ -7,31 +7,18 @@
 //! record *values* to be positional at runtime, and it is why nothing in the hot
 //! path compares field-name strings.
 
+use crate::diag::{Diagnostic, Pass, Span};
 use crate::expr::{Builtin, TypedExpr};
-use crate::lang::{Arg, BinOp, Decl, Expr, FunLit, OpCall, Program, UnOp};
+use crate::lang::{Arg, BinOp, Decl, Expr, ExprKind, FunLit, OpCall, Program, UnOp};
 use crate::value::{BatchType, DynValue, TypeDesc};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TypeError {
-    pub message: String,
-    pub line: usize,
-}
+type TResult<T> = Result<T, Diagnostic>;
 
-impl fmt::Display for TypeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "line {}: {}", self.line, self.message)
-    }
-}
-
-impl std::error::Error for TypeError {}
-
-type TResult<T> = Result<T, TypeError>;
-
-fn err<T>(line: usize, message: impl Into<String>) -> TResult<T> {
-    Err(TypeError { message: message.into(), line })
+fn err<T>(span: Span, message: impl Into<String>) -> TResult<T> {
+    Err(Diagnostic::error(Pass::Typecheck, span, message))
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +53,8 @@ pub struct PlanNode {
     pub name: String,
     pub ty: BatchType,
     pub op: PlanOp,
+    /// Where the node was declared, so lowering failures have a location.
+    pub span: Span,
 }
 
 /// A checked program: nodes in dependency order.
@@ -106,17 +95,17 @@ enum Ty {
 }
 
 impl Ty {
-    fn into_known(self, line: usize, what: impl fmt::Display) -> TResult<TypeDesc> {
+    fn into_known(self, span: Span, what: impl fmt::Display) -> TResult<TypeDesc> {
         match self {
             Ty::Known(t) => Ok(t),
-            Ty::Null => err(line, format!("cannot infer a type for `null` in {what}")),
+            Ty::Null => err(span, format!("cannot infer a type for `null` in {what}")),
         }
     }
 }
 
 /// Unifies two branch types, as `if`/`coalesce` need. A null branch makes the
 /// other branch's type nullable.
-fn unify(a: Ty, b: Ty, line: usize) -> TResult<Ty> {
+fn unify(a: Ty, b: Ty, span: Span) -> TResult<Ty> {
     Ok(match (a, b) {
         (Ty::Null, Ty::Null) => Ty::Null,
         (Ty::Null, Ty::Known(t)) | (Ty::Known(t), Ty::Null) => Ty::Known(nullable(t)),
@@ -134,7 +123,7 @@ fn unify(a: Ty, b: Ty, line: usize) -> TResult<Ty> {
                 };
                 Ty::Known(t)
             } else {
-                return err(line, format!("incompatible types `{x}` and `{y}`"));
+                return err(span, format!("incompatible types `{x}` and `{y}`"));
             }
         }
     })
@@ -159,27 +148,27 @@ fn is_stringy(t: &TypeDesc) -> bool {
 pub fn check(program: &Program) -> TResult<Plan> {
     // Collect declarations. Names resolve after the whole program is parsed, so
     // forward references are legal.
-    let mut node_decls: Vec<(&String, &OpCall, usize)> = Vec::new();
-    let mut specs: HashMap<&str, (&BatchType, usize)> = HashMap::new();
+    let mut node_decls: Vec<(&String, &OpCall, Span)> = Vec::new();
+    let mut specs: HashMap<&str, (&BatchType, Span)> = HashMap::new();
     for decl in &program.decls {
         match decl {
-            Decl::Node { name, op, line } => {
+            Decl::Node { name, op, span } => {
                 if node_decls.iter().any(|(n, _, _)| *n == name) {
-                    return err(*line, format!("`{name}` is declared more than once"));
+                    return err(*span, format!("`{name}` is declared more than once"));
                 }
-                node_decls.push((name, op, *line));
+                node_decls.push((name, op, *span));
             }
-            Decl::TypeSpec { name, ty, line } => {
-                if specs.insert(name, (ty, *line)).is_some() {
-                    return err(*line, format!("`{name}` has more than one typespec"));
+            Decl::TypeSpec { name, ty, span } => {
+                if specs.insert(name, (ty, *span)).is_some() {
+                    return err(*span, format!("`{name}` has more than one typespec"));
                 }
             }
         }
     }
 
-    for (name, (_, line)) in &specs {
+    for (name, (_, span)) in &specs {
         if !node_decls.iter().any(|(n, _, _)| n.as_str() == *name) {
-            return err(*line, format!("typespec for `{name}`, which is not declared"));
+            return err(*span, format!("typespec for `{name}`, which is not declared"));
         }
     }
 
@@ -187,8 +176,8 @@ pub fn check(program: &Program) -> TResult<Plan> {
 
     let mut plan = Plan { nodes: Vec::new(), by_name: HashMap::new() };
     for decl_idx in order {
-        let (name, op, line) = node_decls[decl_idx];
-        let (ty, plan_op) = check_op(name, op, line, &plan, &specs)?;
+        let (name, op, span) = node_decls[decl_idx];
+        let (ty, plan_op) = check_op(name, op, span, &plan, &specs)?;
 
         // An explicit typespec on a non-input node is checked, not used to drive
         // inference.
@@ -201,14 +190,14 @@ pub fn check(program: &Program) -> TResult<Plan> {
             }
 
         plan.by_name.insert(name.clone(), plan.nodes.len());
-        plan.nodes.push(PlanNode { name: name.clone(), ty, op: plan_op });
+        plan.nodes.push(PlanNode { name: name.clone(), ty, op: plan_op, span });
     }
     Ok(plan)
 }
 
 /// Dependency order, rejecting cycles. Recursion needs `delay`, which this cut
 /// does not implement, so any cycle is an error rather than a fixpoint.
-fn topo_order(decls: &[(&String, &OpCall, usize)]) -> TResult<Vec<usize>> {
+fn topo_order(decls: &[(&String, &OpCall, Span)]) -> TResult<Vec<usize>> {
     let index: HashMap<&str, usize> =
         decls.iter().enumerate().map(|(i, (n, _, _))| (n.as_str(), i)).collect();
 
@@ -228,7 +217,7 @@ fn topo_order(decls: &[(&String, &OpCall, usize)]) -> TResult<Vec<usize>> {
         }
         let mut stack = vec![(start, 0usize)];
         while let Some((node, child)) = stack.pop() {
-            let (name, op, line) = decls[node];
+            let (name, op, span) = decls[node];
             if child == 0 {
                 if marks[node] == Mark::Done {
                     continue;
@@ -252,7 +241,7 @@ fn topo_order(decls: &[(&String, &OpCall, usize)]) -> TResult<Vec<usize>> {
                     match marks[d] {
                         Mark::Active => {
                             return err(
-                                line,
+                                span,
                                 format!("`{name}` participates in a cycle through `{dep}`; \
                                          recursion needs `delay`, which is not implemented"),
                             );
@@ -276,7 +265,7 @@ fn topo_order(decls: &[(&String, &OpCall, usize)]) -> TResult<Vec<usize>> {
 
 struct Ctx<'a> {
     plan: &'a Plan,
-    line: usize,
+    span: Span,
 }
 
 impl Ctx<'_> {
@@ -285,9 +274,8 @@ impl Ctx<'_> {
             .by_name
             .get(name)
             .copied()
-            .ok_or_else(|| TypeError {
-                message: format!("unknown stream `{name}`"),
-                line: self.line,
+            .ok_or_else(|| {
+                Diagnostic::error(Pass::Typecheck, self.span, format!("unknown stream `{name}`"))
             })
     }
 
@@ -296,7 +284,7 @@ impl Ctx<'_> {
         match &self.plan.nodes[i].ty {
             BatchType::ZSet(t) => Ok((i, t.clone())),
             other => err(
-                self.line,
+                self.span,
                 format!("`{name}` is `{other}`, but a flat OrdZSet is required here"),
             ),
         }
@@ -307,7 +295,7 @@ impl Ctx<'_> {
         match &self.plan.nodes[i].ty {
             BatchType::IndexedZSet(k, v) => Ok((i, k.clone(), v.clone())),
             other => err(
-                self.line,
+                self.span,
                 format!("`{name}` is `{other}`, but an OrdIndexedZSet is required here"),
             ),
         }
@@ -317,11 +305,11 @@ impl Ctx<'_> {
 fn check_op(
     name: &str,
     call: &OpCall,
-    line: usize,
+    span: Span,
     plan: &Plan,
-    specs: &HashMap<&str, (&BatchType, usize)>,
+    specs: &HashMap<&str, (&BatchType, Span)>,
 ) -> TResult<(BatchType, PlanOp)> {
-    let cx = Ctx { plan, line };
+    let cx = Ctx { plan, span };
     let op = call.op.as_str();
     let args = &call.args;
 
@@ -329,19 +317,19 @@ fn check_op(
         if args.len() == n {
             Ok(())
         } else {
-            err(line, format!("`{op}` takes {n} argument(s), found {}", args.len()))
+            err(span, format!("`{op}` takes {n} argument(s), found {}", args.len()))
         }
     };
     let stream_arg = |i: usize| -> TResult<&String> {
         match &args[i] {
             Arg::Name(n) => Ok(n),
-            _ => err(line, format!("argument {} of `{op}` must name a stream", i + 1)),
+            _ => err(span, format!("argument {} of `{op}` must name a stream", i + 1)),
         }
     };
     let fun_arg = |i: usize| -> TResult<&FunLit> {
         match &args[i] {
             Arg::Fun(f) => Ok(f),
-            _ => err(line, format!("argument {} of `{op}` must be a `fun(...)`", i + 1)),
+            _ => err(span, format!("argument {} of `{op}` must be a `fun(...)`", i + 1)),
         }
     };
 
@@ -349,16 +337,16 @@ fn check_op(
         "input" => {
             want(1)?;
             let Arg::Str(table) = &args[0] else {
-                return err(line, "`input` takes a table name in quotes");
+                return err(span, "`input` takes a table name in quotes");
             };
             let Some((spec, _)) = specs.get(name) else {
-                return err(line, format!("`{name}` is an input and needs a `::` typespec"));
+                return err(span, format!("`{name}` is an input and needs a `::` typespec"));
             };
             match spec {
                 BatchType::ZSet(TypeDesc::Record(_)) => {}
                 other => {
                     return err(
-                        line,
+                        span,
                         format!(
                             "an input must be `OrdZSet(record(...))`, found `{other}`"
                         ),
@@ -371,8 +359,8 @@ fn check_op(
         "map" => {
             want(2)?;
             let (input, elem) = cx.zset(stream_arg(0)?)?;
-            let (f, out) = check_fun(fun_arg(1)?, &[elem], line)?;
-            let out = out.into_known(line, "the body of `map`")?;
+            let (f, out) = check_fun(fun_arg(1)?, &[elem], span)?;
+            let out = out.into_known(span, "the body of `map`")?;
             Ok((BatchType::ZSet(out), PlanOp::Map { input, f: Arc::new(f) }))
         }
 
@@ -380,10 +368,10 @@ fn check_op(
             want(2)?;
             let sname = stream_arg(0)?;
             let (input, elem) = cx.zset(sname)?;
-            let (f, out) = check_fun(fun_arg(1)?, std::slice::from_ref(&elem), line)?;
-            let out = out.into_known(line, "the body of `filter`")?;
+            let (f, out) = check_fun(fun_arg(1)?, std::slice::from_ref(&elem), span)?;
+            let out = out.into_known(span, "the body of `filter`")?;
             if out.non_null() != &TypeDesc::Bool {
-                return err(line, format!("`filter`'s function must return bool, found `{out}`"));
+                return err(span, format!("`filter`'s function must return bool, found `{out}`"));
             }
             Ok((BatchType::ZSet(elem), PlanOp::Filter { input, f: Arc::new(f) }))
         }
@@ -392,16 +380,16 @@ fn check_op(
             want(2)?;
             let (input, elem) = cx.zset(stream_arg(0)?)?;
             let fun = fun_arg(1)?;
-            let Expr::Tuple(parts) = &fun.body else {
-                return err(line, "`map_index`'s function must return a `(key, value)` pair");
+            let ExprKind::Tuple(parts) = &fun.body.kind else {
+                return err(span, "`map_index`'s function must return a `(key, value)` pair");
             };
             if parts.len() != 2 {
-                return err(line, "`map_index`'s function must return exactly two elements");
+                return err(span, "`map_index`'s function must return exactly two elements");
             }
-            let (key, kt) = check_fun_body(fun, &parts[0], std::slice::from_ref(&elem), line)?;
-            let (value, vt) = check_fun_body(fun, &parts[1], &[elem], line)?;
-            let kt = kt.into_known(line, "a `map_index` key")?;
-            let vt = vt.into_known(line, "a `map_index` value")?;
+            let (key, kt) = check_fun_body(fun, &parts[0], std::slice::from_ref(&elem), span)?;
+            let (value, vt) = check_fun_body(fun, &parts[1], &[elem], span)?;
+            let kt = kt.into_known(span, "a `map_index` key")?;
+            let vt = vt.into_known(span, "a `map_index` value")?;
             Ok((
                 BatchType::IndexedZSet(kt, vt),
                 PlanOp::MapIndex { input, key: Arc::new(key), value: Arc::new(value) },
@@ -414,12 +402,12 @@ fn check_op(
             let (right, k2, v2) = cx.indexed(stream_arg(1)?)?;
             if k1 != k2 {
                 return err(
-                    line,
+                    span,
                     format!("`join` needs equal key types, found `{k1}` and `{k2}`"),
                 );
             }
-            let (f, out) = check_fun(fun_arg(2)?, &[k1, v1, v2], line)?;
-            let out = out.into_known(line, "the body of `join`")?;
+            let (f, out) = check_fun(fun_arg(2)?, &[k1, v1, v2], span)?;
+            let out = out.into_known(span, "the body of `join`")?;
             Ok((BatchType::ZSet(out), PlanOp::Join { left, right, f: Arc::new(f) }))
         }
 
@@ -429,7 +417,7 @@ fn check_op(
             let (right, k2, _) = cx.indexed(stream_arg(1)?)?;
             if k1 != k2 {
                 return err(
-                    line,
+                    span,
                     format!("`antijoin` needs equal key types, found `{k1}` and `{k2}`"),
                 );
             }
@@ -446,14 +434,14 @@ fn check_op(
             want(3)?;
             let (input, k, v) = cx.indexed(stream_arg(0)?)?;
             let Arg::Name(agg_name) = &args[1] else {
-                return err(line, "`aggregate`'s second argument must be an aggregator name");
+                return err(span, "`aggregate`'s second argument must be an aggregator name");
             };
             let agg = match agg_name.as_str() {
                 "min" => Agg::Min,
                 "max" => Agg::Max,
                 other => {
                     return err(
-                        line,
+                        span,
                         format!(
                             "unknown aggregator `{other}`; this build has `min` and `max` \
                              (use the `weighted_count` operator to count rows)"
@@ -461,8 +449,8 @@ fn check_op(
                     );
                 }
             };
-            let (f, out) = check_fun(fun_arg(2)?, &[v], line)?;
-            let out = out.into_known(line, "the body of `aggregate`")?;
+            let (f, out) = check_fun(fun_arg(2)?, &[v], span)?;
+            let out = out.into_known(span, "the body of `aggregate`")?;
             Ok((
                 BatchType::IndexedZSet(k, out),
                 PlanOp::Aggregate { input, agg, f: Arc::new(f) },
@@ -491,7 +479,7 @@ fn check_op(
             let (lt, rt) = (&plan.nodes[l].ty, &plan.nodes[r].ty);
             if lt != rt {
                 return err(
-                    line,
+                    span,
                     format!("`{op}` needs identical batch types, found `{lt}` and `{rt}`"),
                 );
             }
@@ -508,7 +496,7 @@ fn check_op(
 
         "sum" => {
             if args.len() < 2 {
-                return err(line, "`sum` takes at least two streams");
+                return err(span, "`sum` takes at least two streams");
             }
             let mut inputs = Vec::new();
             for i in 0..args.len() {
@@ -518,7 +506,7 @@ fn check_op(
             for &i in &inputs[1..] {
                 if plan.nodes[i].ty != ty {
                     return err(
-                        line,
+                        span,
                         format!(
                             "`sum` needs identical batch types, found `{ty}` and `{}`",
                             plan.nodes[i].ty
@@ -530,7 +518,7 @@ fn check_op(
         }
 
         other => err(
-            line,
+            span,
             format!("unknown operator `{other}`"),
         ),
     }
@@ -540,19 +528,19 @@ fn check_op(
 // Expressions
 // ---------------------------------------------------------------------------
 
-fn check_fun(fun: &FunLit, params: &[TypeDesc], line: usize) -> TResult<(TypedExpr, Ty)> {
-    check_fun_body(fun, &fun.body, params, line)
+fn check_fun(fun: &FunLit, params: &[TypeDesc], span: Span) -> TResult<(TypedExpr, Ty)> {
+    check_fun_body(fun, &fun.body, params, span)
 }
 
 fn check_fun_body(
     fun: &FunLit,
     body: &Expr,
     params: &[TypeDesc],
-    line: usize,
+    span: Span,
 ) -> TResult<(TypedExpr, Ty)> {
     if fun.params.len() != params.len() {
         return err(
-            line,
+            span,
             format!(
                 "this function takes {} parameter(s) but the operator supplies {}",
                 fun.params.len(),
@@ -566,33 +554,36 @@ fn check_fun_body(
         .map(|s| s.as_str())
         .zip(params.iter())
         .collect();
-    infer(body, &env, line)
+    infer(body, &env)
 }
 
-fn infer(e: &Expr, env: &[(&str, &TypeDesc)], line: usize) -> TResult<(TypedExpr, Ty)> {
-    Ok(match e {
-        Expr::Null => (TypedExpr::Const(DynValue::Null), Ty::Null),
-        Expr::Bool(b) => (TypedExpr::Const(DynValue::Bool(*b)), Ty::Known(TypeDesc::Bool)),
-        Expr::Int(v) => (TypedExpr::Const(DynValue::I64(*v)), Ty::Known(TypeDesc::I64)),
-        Expr::Float(v) => (
+fn infer(e: &Expr, env: &[(&str, &TypeDesc)]) -> TResult<(TypedExpr, Ty)> {
+    // Every diagnostic below is reported against the offending expression, not
+    // the enclosing declaration.
+    let span = e.span;
+    Ok(match &e.kind {
+        ExprKind::Null => (TypedExpr::Const(DynValue::Null), Ty::Null),
+        ExprKind::Bool(b) => (TypedExpr::Const(DynValue::Bool(*b)), Ty::Known(TypeDesc::Bool)),
+        ExprKind::Int(v) => (TypedExpr::Const(DynValue::I64(*v)), Ty::Known(TypeDesc::I64)),
+        ExprKind::Float(v) => (
             TypedExpr::Const(DynValue::F64(dbsp::algebra::F64::new(*v))),
             Ty::Known(TypeDesc::F64),
         ),
-        Expr::Str(s) => (TypedExpr::Const(DynValue::str(s)), Ty::Known(TypeDesc::SqlString)),
+        ExprKind::Str(s) => (TypedExpr::Const(DynValue::str(s)), Ty::Known(TypeDesc::SqlString)),
 
-        Expr::Var(name) => {
+        ExprKind::Var(name) => {
             let Some(i) = env.iter().position(|(n, _)| n == name) else {
-                return err(line, format!("unknown parameter `{name}`"));
+                return err(span, format!("unknown parameter `{name}`"));
             };
             (TypedExpr::Var(i), Ty::Known(env[i].1.clone()))
         }
 
-        Expr::Field(base, field) => {
-            let (be, bt) = infer(base, env, line)?;
-            let bt = bt.into_known(line, "a field access")?;
+        ExprKind::Field(base, field) => {
+            let (be, bt) = infer(base, env)?;
+            let bt = bt.into_known(span, "a field access")?;
             let rec = bt.non_null();
             let Some(index) = rec.field_index(field) else {
-                return err(line, format!("`{rec}` has no field `{field}`"));
+                return err(span, format!("`{rec}` has no field `{field}`"));
             };
             let fty = rec.field_type(field).unwrap().clone();
             // Reading a field of a possibly-null record yields a possibly-null
@@ -601,27 +592,27 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)], line: usize) -> TResult<(TypedExpr
             (TypedExpr::Field(Box::new(be), index), Ty::Known(fty))
         }
 
-        Expr::Record(fields) => {
+        ExprKind::Record(fields) => {
             let mut exprs = Vec::with_capacity(fields.len());
             let mut types = Vec::with_capacity(fields.len());
             for (name, value) in fields {
-                let (te, ty) = infer(value, env, line)?;
-                let ty = ty.into_known(line, format!("field `{name}`"))?;
+                let (te, ty) = infer(value, env)?;
+                let ty = ty.into_known(span, format!("field `{name}`"))?;
                 exprs.push(te);
                 types.push((name.clone(), ty));
             }
             (TypedExpr::Record(exprs), Ty::Known(TypeDesc::Record(types)))
         }
 
-        Expr::Tuple(_) => {
+        ExprKind::Tuple(_) => {
             return err(
-                line,
+                span,
                 "a tuple is only allowed as the body of a `map_index` function",
             );
         }
 
-        Expr::Unary(op, inner) => {
-            let (ie, it) = infer(inner, env, line)?;
+        ExprKind::Unary(op, inner) => {
+            let (ie, it) = infer(inner, env)?;
             let ty = match it {
                 Ty::Null => Ty::Null,
                 Ty::Known(t) => {
@@ -630,7 +621,7 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)], line: usize) -> TResult<(TypedExpr
                         UnOp::Not => t.non_null() == &TypeDesc::Bool,
                     };
                     if !ok {
-                        return err(line, format!("cannot apply this operator to `{t}`"));
+                        return err(span, format!("cannot apply this operator to `{t}`"));
                     }
                     Ty::Known(t)
                 }
@@ -638,50 +629,50 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)], line: usize) -> TResult<(TypedExpr
             (TypedExpr::Unary(*op, Box::new(ie)), ty)
         }
 
-        Expr::Binary(op, l, r) => {
-            let (le, lt) = infer(l, env, line)?;
-            let (re, rt) = infer(r, env, line)?;
-            let ty = infer_binop(*op, lt, rt, line)?;
+        ExprKind::Binary(op, l, r) => {
+            let (le, lt) = infer(l, env)?;
+            let (re, rt) = infer(r, env)?;
+            let ty = infer_binop(*op, lt, rt, span)?;
             (TypedExpr::Binary(*op, Box::new(le), Box::new(re)), ty)
         }
 
-        Expr::If(c, t, f) => {
-            let (ce, ct) = infer(c, env, line)?;
+        ExprKind::If(c, t, f) => {
+            let (ce, ct) = infer(c, env)?;
             if let Ty::Known(ct) = &ct
                 && ct.non_null() != &TypeDesc::Bool {
-                    return err(line, format!("`if` condition must be bool, found `{ct}`"));
+                    return err(span, format!("`if` condition must be bool, found `{ct}`"));
                 }
-            let (te, tt) = infer(t, env, line)?;
-            let (fe, ft) = infer(f, env, line)?;
-            let ty = unify(tt, ft, line)?;
+            let (te, tt) = infer(t, env)?;
+            let (fe, ft) = infer(f, env)?;
+            let ty = unify(tt, ft, span)?;
             (TypedExpr::If(Box::new(ce), Box::new(te), Box::new(fe)), ty)
         }
 
-        Expr::Call(name, args) => {
+        ExprKind::Call(name, args) => {
             let Some(builtin) = Builtin::from_name(name) else {
-                return err(line, format!("unknown function `{name}`"));
+                return err(span, format!("unknown function `{name}`"));
             };
             if let Some(arity) = builtin.arity()
                 && args.len() != arity {
                     return err(
-                        line,
+                        span,
                         format!("`{name}` takes {arity} argument(s), found {}", args.len()),
                     );
                 }
             let mut exprs = Vec::with_capacity(args.len());
             let mut types = Vec::with_capacity(args.len());
             for a in args {
-                let (te, ty) = infer(a, env, line)?;
+                let (te, ty) = infer(a, env)?;
                 exprs.push(te);
                 types.push(ty);
             }
-            let ty = infer_builtin(builtin, name, &types, line)?;
+            let ty = infer_builtin(builtin, name, &types, span)?;
             (TypedExpr::Call(builtin, exprs), ty)
         }
     })
 }
 
-fn infer_binop(op: BinOp, lt: Ty, rt: Ty, line: usize) -> TResult<Ty> {
+fn infer_binop(op: BinOp, lt: Ty, rt: Ty, span: Span) -> TResult<Ty> {
     use BinOp::*;
     let nullable_result = matches!(lt, Ty::Null) || matches!(rt, Ty::Null) || {
         matches!((&lt, &rt), (Ty::Known(a), Ty::Known(b)) if a.is_nullable() || b.is_nullable())
@@ -692,7 +683,7 @@ fn infer_binop(op: BinOp, lt: Ty, rt: Ty, line: usize) -> TResult<Ty> {
             for t in [&lt, &rt] {
                 if let Ty::Known(t) = t
                     && t.non_null() != &TypeDesc::Bool {
-                        return err(line, format!("`and`/`or` need bool operands, found `{t}`"));
+                        return err(span, format!("`and`/`or` need bool operands, found `{t}`"));
                     }
             }
             Ok(Ty::Known(maybe_null(TypeDesc::Bool, nullable_result)))
@@ -703,7 +694,7 @@ fn infer_binop(op: BinOp, lt: Ty, rt: Ty, line: usize) -> TResult<Ty> {
                     || (is_numeric(a) && is_numeric(b))
                     || (is_stringy(a) && is_stringy(b));
                 if !comparable {
-                    return err(line, format!("cannot compare `{a}` with `{b}`"));
+                    return err(span, format!("cannot compare `{a}` with `{b}`"));
                 }
             }
             Ok(Ty::Known(maybe_null(TypeDesc::Bool, nullable_result)))
@@ -717,7 +708,7 @@ fn infer_binop(op: BinOp, lt: Ty, rt: Ty, line: usize) -> TResult<Ty> {
                     }
                     if !is_numeric(a) || !is_numeric(b) {
                         return err(
-                            line,
+                            span,
                             format!("cannot apply this arithmetic operator to `{a}` and `{b}`"),
                         );
                     }
@@ -739,7 +730,7 @@ fn maybe_null(t: TypeDesc, null: bool) -> TypeDesc {
     if null { nullable(t) } else { t }
 }
 
-fn infer_builtin(b: Builtin, name: &str, args: &[Ty], line: usize) -> TResult<Ty> {
+fn infer_builtin(b: Builtin, name: &str, args: &[Ty], span: Span) -> TResult<Ty> {
     let known = |i: usize| -> Option<&TypeDesc> {
         match &args[i] {
             Ty::Known(t) => Some(t),
@@ -758,7 +749,7 @@ fn infer_builtin(b: Builtin, name: &str, args: &[Ty], line: usize) -> TResult<Ty
                     unify(
                         Ty::Known(x.non_null().clone()),
                         Ty::Known(y.clone()),
-                        line,
+                        span,
                     )?
                 }
                 (Ty::Null, other) | (other, Ty::Null) => other,
@@ -768,13 +759,13 @@ fn infer_builtin(b: Builtin, name: &str, args: &[Ty], line: usize) -> TResult<Ty
         Builtin::Concat | Builtin::Lower | Builtin::Upper | Builtin::Trim => {
             if let Some(t) = known(0)
                 && !is_stringy(t) {
-                    return err(line, format!("`{name}` needs a string, found `{t}`"));
+                    return err(span, format!("`{name}` needs a string, found `{t}`"));
                 }
             Ty::Known(TypeDesc::SqlString)
         }
         Builtin::Abs | Builtin::Floor | Builtin::Ceil | Builtin::Round => match known(0) {
             Some(t) if is_numeric(t) => Ty::Known(t.clone()),
-            Some(t) => return err(line, format!("`{name}` needs a number, found `{t}`")),
+            Some(t) => return err(span, format!("`{name}` needs a number, found `{t}`")),
             None => Ty::Null,
         },
     })

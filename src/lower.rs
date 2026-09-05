@@ -6,6 +6,7 @@
 //! capturing an `Arc<TypedExpr>`, which is the only thing that has to be built
 //! at runtime.
 
+use crate::diag::{Diagnostic, Pass};
 use crate::expr::{eval, is_true};
 use crate::typecheck::{Agg, Plan, PlanOp};
 use crate::value::{BatchType, DynValue};
@@ -17,16 +18,19 @@ use dbsp::{
 use std::collections::HashMap;
 use std::fmt;
 
+/// A failure while *running* a built circuit, as distinct from a failure to
+/// build one. Compilation problems are [`Diagnostic`]s; these are not, because
+/// they have no source location — nothing in the program text caused them.
 #[derive(Debug)]
-pub struct LowerError(pub String);
+pub struct RunError(pub String);
 
-impl fmt::Display for LowerError {
+impl fmt::Display for RunError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl std::error::Error for LowerError {}
+impl std::error::Error for RunError {}
 
 type Flat = Stream<RootCircuit, OrdZSet<DynValue>>;
 type Indexed = Stream<RootCircuit, OrdIndexedZSet<DynValue, DynValue>>;
@@ -40,18 +44,28 @@ enum Node {
 }
 
 impl Node {
-    fn flat(&self, what: &str) -> Result<&Flat, LowerError> {
+    fn flat(&self, node: &crate::typecheck::PlanNode) -> Result<&Flat, Diagnostic> {
         match self {
             Node::Flat(s) => Ok(s),
-            Node::Indexed(_) => Err(LowerError(format!("{what}: expected a flat OrdZSet"))),
+            Node::Indexed(_) => Err(shape_error(node, "a flat OrdZSet")),
         }
     }
-    fn indexed(&self, what: &str) -> Result<&Indexed, LowerError> {
+    fn indexed(&self, node: &crate::typecheck::PlanNode) -> Result<&Indexed, Diagnostic> {
         match self {
             Node::Indexed(s) => Ok(s),
-            Node::Flat(_) => Err(LowerError(format!("{what}: expected an OrdIndexedZSet"))),
+            Node::Flat(_) => Err(shape_error(node, "an OrdIndexedZSet")),
         }
     }
+}
+
+/// A shape mismatch here means the type checker and the lowering disagree,
+/// which is a bug in one of them rather than a problem with the program.
+fn shape_error(node: &crate::typecheck::PlanNode, wanted: &str) -> Diagnostic {
+    Diagnostic::error(
+        Pass::Lower,
+        node.span,
+        format!("`{}` needs {wanted} here, but is `{}`", node.name, node.ty),
+    )
 }
 
 /// An output handle, in whichever shape its node has.
@@ -82,10 +96,14 @@ impl Runner {
     ///
     /// Nodes that are not named are still constructed — there is no dead-code
     /// elimination.
-    pub fn build(plan: &Plan, outputs: &[String]) -> Result<Runner, LowerError> {
+    pub fn build(plan: &Plan, outputs: &[String]) -> Result<Runner, Vec<Diagnostic>> {
         for name in outputs {
             if !plan.by_name.contains_key(name) {
-                return Err(LowerError(format!("no node named `{name}` to output")));
+                return Err(vec![Diagnostic::error(
+                    Pass::Lower,
+                    None,
+                    format!("no node named `{name}` to output"),
+                )]);
             }
         }
 
@@ -117,17 +135,31 @@ impl Runner {
             }
             Ok((inputs, outs))
         })
-        .map_err(|e| LowerError(format!("building the circuit: {e}")))?;
+        .map_err(|e| {
+            // `Runtime::init_circuit` insists on `anyhow::Error`, and wraps it
+            // in `Error::Constructor`, so a Diagnostic raised inside the
+            // constructor round-trips out through two layers.
+            let fallback = |e: &dyn fmt::Display| {
+                vec![Diagnostic::error(Pass::Lower, None, format!("building the circuit: {e}"))]
+            };
+            match e {
+                dbsp::Error::Constructor(any) => match any.downcast::<Diagnostic>() {
+                    Ok(diag) => vec![diag],
+                    Err(other) => fallback(&other),
+                },
+                other => fallback(&other),
+            }
+        })?;
 
         Ok(Runner { dbsp, inputs: inputs.into_iter().collect(), outputs: outs })
     }
 
     /// Queues a change to an input table. Applied at the next [`Self::step`].
-    pub fn push(&self, table: &str, row: DynValue, weight: ZWeight) -> Result<(), LowerError> {
+    pub fn push(&self, table: &str, row: DynValue, weight: ZWeight) -> Result<(), RunError> {
         let handle = self
             .inputs
             .get(table)
-            .ok_or_else(|| LowerError(format!("no input table `{table}`")))?;
+            .ok_or_else(|| RunError(format!("no input table `{table}`")))?;
         handle.push(row, weight);
         Ok(())
     }
@@ -136,10 +168,10 @@ impl Runner {
     ///
     /// A transaction is the semantic unit: the logical clock advances between
     /// transactions, not within them.
-    pub fn step(&mut self) -> Result<Vec<(String, Vec<Delta>)>, LowerError> {
+    pub fn step(&mut self) -> Result<Vec<(String, Vec<Delta>)>, RunError> {
         self.dbsp
             .transaction()
-            .map_err(|e| LowerError(format!("running a transaction: {e}")))?;
+            .map_err(|e| RunError(format!("running a transaction: {e}")))?;
 
         let mut out = Vec::new();
         for (name, handle) in &self.outputs {
@@ -173,7 +205,6 @@ fn build_node(
     inputs: &mut Vec<(String, ZSetHandle<DynValue>)>,
 ) -> Result<Node, anyhow::Error> {
     let _ = plan;
-    let name = &node.name;
     let dep = |i: usize| -> &Node { &built[i] };
 
     Ok(match &node.op {
@@ -185,14 +216,14 @@ fn build_node(
 
         PlanOp::Map { input, f } => {
             let f = f.clone();
-            Node::Flat(dep(*input).flat(name)?.map(move |r: &DynValue| eval(&f, &[r])))
+            Node::Flat(dep(*input).flat(node)?.map(move |r: &DynValue| eval(&f, &[r])))
         }
 
         PlanOp::Filter { input, f } => {
             let f = f.clone();
             Node::Flat(
                 dep(*input)
-                    .flat(name)?
+                    .flat(node)?
                     .filter(move |r: &DynValue| is_true(&eval(&f, &[r]))),
             )
         }
@@ -201,23 +232,23 @@ fn build_node(
             let (key, value) = (key.clone(), value.clone());
             Node::Indexed(
                 dep(*input)
-                    .flat(name)?
+                    .flat(node)?
                     .map_index(move |r: &DynValue| (eval(&key, &[r]), eval(&value, &[r]))),
             )
         }
 
         PlanOp::Join { left, right, f } => {
             let f = f.clone();
-            Node::Flat(dep(*left).indexed(name)?.join(
-                dep(*right).indexed(name)?,
+            Node::Flat(dep(*left).indexed(node)?.join(
+                dep(*right).indexed(node)?,
                 move |k: &DynValue, a: &DynValue, b: &DynValue| eval(&f, &[k, a, b]),
             ))
         }
 
         PlanOp::Antijoin { left, right } => Node::Indexed(
             dep(*left)
-                .indexed(name)?
-                .antijoin(dep(*right).indexed(name)?),
+                .indexed(node)?
+                .antijoin(dep(*right).indexed(node)?),
         ),
 
         PlanOp::Distinct { input } => match dep(*input) {
@@ -230,7 +261,7 @@ fn build_node(
             // the value directly. So re-project the value first, then aggregate.
             let f = f.clone();
             let projected = dep(*input)
-                .indexed(name)?
+                .indexed(node)?
                 .map_index(move |(k, v): (&DynValue, &DynValue)| (k.clone(), eval(&f, &[v])));
             Node::Indexed(match agg {
                 Agg::Min => projected.aggregate(Min),
@@ -241,7 +272,7 @@ fn build_node(
         PlanOp::WeightedCount { input } => {
             // `weighted_count` yields `OrdIndexedZSet<K, ZWeight>` — the value is
             // a raw i64, off the uniform shape — so box it back into a DynValue.
-            let counted = dep(*input).flat(name)?.weighted_count();
+            let counted = dep(*input).flat(node)?.weighted_count();
             Node::Indexed(
                 counted.map_index(|(k, w): (&DynValue, &ZWeight)| (k.clone(), DynValue::I64(*w))),
             )
@@ -255,13 +286,13 @@ fn build_node(
         PlanOp::Plus { left, right } => match (dep(*left), dep(*right)) {
             (Node::Flat(a), Node::Flat(b)) => Node::Flat(a.plus(b)),
             (Node::Indexed(a), Node::Indexed(b)) => Node::Indexed(a.plus(b)),
-            _ => return Err(LowerError(format!("{name}: mismatched shapes in `plus`")).into()),
+            _ => return Err(shape_error(node, "matching shapes in `plus`").into()),
         },
 
         PlanOp::Minus { left, right } => match (dep(*left), dep(*right)) {
             (Node::Flat(a), Node::Flat(b)) => Node::Flat(a.minus(b)),
             (Node::Indexed(a), Node::Indexed(b)) => Node::Indexed(a.minus(b)),
-            _ => return Err(LowerError(format!("{name}: mismatched shapes in `minus`")).into()),
+            _ => return Err(shape_error(node, "matching shapes in `minus`").into()),
         },
 
         PlanOp::Sum { inputs: ins } => {
@@ -270,14 +301,14 @@ fn build_node(
                 Node::Flat(first) => {
                     let rest: Vec<&Flat> = ins[1..]
                         .iter()
-                        .map(|i| dep(*i).flat(name))
+                        .map(|i| dep(*i).flat(node))
                         .collect::<Result<_, _>>()?;
                     Node::Flat(first.sum(rest))
                 }
                 Node::Indexed(first) => {
                     let rest: Vec<&Indexed> = ins[1..]
                         .iter()
-                        .map(|i| dep(*i).indexed(name))
+                        .map(|i| dep(*i).indexed(node))
                         .collect::<Result<_, _>>()?;
                     Node::Indexed(first.sum(rest))
                 }

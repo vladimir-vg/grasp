@@ -36,3 +36,12 @@ anyhow = "1"
 
 [dev-dependencies]
 proptest = "1"
+# Per-case test names for the YAML fixtures, which `libtest` cannot express.
+libtest-mimic = "0.8"
+# Matches the version the Feldera workspace pins. Formally deprecated, but
+# 0.9.34 is its final stable release and is what this ecosystem uses.
+serde_yaml = "0.9.34"
+
+[[test]]
+name = "yaml"
+harness = false
