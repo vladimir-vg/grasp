@@ -57,22 +57,24 @@ pub struct Instantiation {
     pub span: Span,
 }
 
-/// `name`, or `instance.node`.
+/// A dotted path: `name`, `instance.node`, or `outer.inner.node` when circuits
+/// nest.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeRef {
-    pub base: String,
-    pub field: Option<String>,
+    pub path: Vec<String>,
     pub span: Span,
 }
 
 impl NodeRef {
-    /// The mangled name a body node is registered under, so `fp.path` is an
-    /// ordinary lookup rather than a second resolution mechanism.
+    /// The name a node is registered under, so a reference is an ordinary
+    /// lookup rather than a second resolution mechanism.
     pub fn key(&self) -> String {
-        match &self.field {
-            Some(f) => format!("{}.{}", self.base, f),
-            None => self.base.clone(),
-        }
+        self.path.join(".")
+    }
+
+    /// The first segment — the name that introduces whatever the rest selects.
+    pub fn base(&self) -> &String {
+        &self.path[0]
     }
 }
 
@@ -670,9 +672,11 @@ impl Parser {
 
     fn node_ref(&mut self) -> PResult<NodeRef> {
         let span = self.span();
-        let base = self.ident()?;
-        let field = if self.eat(&Tok::Dot) { Some(self.ident()?) } else { None };
-        Ok(NodeRef { base, field, span })
+        let mut path = vec![self.ident()?];
+        while self.eat(&Tok::Dot) {
+            path.push(self.ident()?);
+        }
+        Ok(NodeRef { path, span })
     }
 
     fn op_call(&mut self) -> PResult<OpCall> {

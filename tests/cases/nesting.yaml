@@ -79,7 +79,7 @@
         - [1, {v: 1}]
         - [1, {v: 2}]
 
-- name: a nested call is a node per occurrence, not a shared one
+- name: identical work is built once, and still adds twice
   source: |
     a := input("a")
     a :: zset(record(v: i64))
@@ -89,9 +89,9 @@
     - a:
         - [1, {v: 1}]
 
-  # There is no common-subexpression elimination: the two identical filters are
-  # two nodes, so `plus` adds their weights. Name a shared intermediate if you
-  # want it evaluated once.
+  # The two identical filters are one node, but `plus` still adds that stream
+  # to itself, so the weight doubles either way. Deduplication changes which
+  # nodes are built, never what comes out.
   expected_exact_output:
     - doubled:
         - [2, {v: 1}]

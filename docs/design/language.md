@@ -167,9 +167,14 @@ used more than once — rather than because the grammar insists.
 **`input` is the one exception.** Its schema comes from a `::` typespec, which
 needs a name to attach to, so `map(input("emp"), f)` is rejected. Bind it first.
 
-A nested call becomes a node **per occurrence**: there is no
-common-subexpression elimination, so `plus(filter(a,f), filter(a,f))` builds two
-filters and adds both their weights. Name the intermediate to share it.
+**Nodes are content-addressed.** Identical operator, identical inputs and
+identical parameters means one node, however many times it is written. So
+`plus(filter(a,f), filter(a,f))` builds one filter — and still doubles the
+weights, because `plus` adds that stream to itself. Deduplication changes which
+nodes are built, never what comes out.
+
+It applies to `input` too: two declarations of one table are one node, and so
+one input handle.
 
 A nested node has no name, so it cannot be selected as an output. It is still a
 node, and diagnostics about it are labelled by operator and position —
@@ -310,8 +315,18 @@ be supplied, each exactly once, and the body may not define another circuit.
 adds no node, it only gives an existing one another name. That is how a body
 node becomes selectable as a program output, since only declared names can be.
 
-Expansion is per instantiation: two instantiations of one circuit produce two
-independent sets of nodes, exactly as writing the body twice would.
+A circuit body may instantiate another circuit, and its nodes are reached by a
+longer path — `t.second.out` for the node `out` of the instance `second` inside
+the instance `t`. Inside a body, a shorter path resolves against the enclosing
+instance first, so `second.out` works there.
+
+Definition-level cycles are rejected: expansion is inlining, so a circuit that
+instantiates itself, directly or through others, would never finish. `fixpoint`
+is the only recursion.
+
+Expansion is per instantiation, but content addressing then merges whatever
+turns out identical — two instantiations with the same arguments collapse
+entirely.
 
 ### `fixpoint`
 

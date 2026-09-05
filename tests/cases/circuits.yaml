@@ -127,3 +127,49 @@
   expected_exact_output:
     - out:
         - [1, {v: 1}]
+
+- name: a circuit body instantiating another circuit
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+
+    circuit double(src: s) {
+        out := map(s, fun((r) -> record(v: r.v * 2)))
+    }
+
+    circuit twice(src: s) {
+        first  := double(src: s)
+        second := double(src: first.out)
+    }
+
+    t   := twice(src: a)
+    out := t.second.out
+
+  # `t.second.out` is a three-part path: the inner instantiation's node, reached
+  # through the outer instance.
+  input:
+    - a:
+        - [1, {v: 1}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: 4}]
+
+- name: two declarations of one table are one input
+  source: |
+    a := input("t")
+    a :: zset(record(v: i64))
+    b := input("t")
+    b :: zset(record(v: i64))
+    out := plus(a, b)
+
+  # Both names are the same node, so a row pushed once arrives once on each
+  # side of the `plus` -- weight 2. Before deduplication one of the two input
+  # handles was dropped and half the circuit received nothing.
+  input:
+    - t:
+        - [1, {v: 1}]
+
+  expected_exact_output:
+    - out:
+        - [2, {v: 1}]

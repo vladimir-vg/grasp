@@ -71,6 +71,71 @@ fn a_nested_node_cannot_be_an_output() {
     Runner::build(&plan, &["out".to_string()]).expect("a declared node is addressable");
 }
 
+/// Nodes are content-addressed, so identical work is built once. This is
+/// invisible in a program's output — `plus(x, x)` doubles weights whether `x`
+/// is one node or two — so it can only be asserted on the plan itself.
+#[test]
+fn identical_work_becomes_one_node() {
+    let plan = compile(
+        "a := input(\"a\")\n\
+         a :: zset(record(v: i64))\n\
+         out := plus(filter(a, fun((r) -> r.v > 0)), filter(a, fun((r) -> r.v > 0)))\n",
+    )
+    .expect("compiles");
+
+    let filters = plan.nodes.iter().filter(|n| n.name.starts_with("filter@")).count();
+    assert_eq!(filters, 1, "the two identical filters should be one node");
+    // input, filter, plus.
+    assert_eq!(plan.nodes.len(), 3);
+}
+
+/// Two instantiations with the same arguments collapse entirely.
+#[test]
+fn identical_instantiations_share_their_nodes() {
+    let plan = compile(
+        "a := input(\"a\")\n\
+         a :: zset(record(v: i64))\n\
+         circuit c(src: s) { out := distinct(s) }\n\
+         x := c(src: a)\n\
+         y := c(src: a)\n",
+    )
+    .expect("compiles");
+
+    assert_eq!(plan.nodes.len(), 2, "input and one distinct");
+    assert_eq!(plan.by_name["x.out"], plan.by_name["y.out"]);
+}
+
+/// Two declarations of one table are one node, so the single input handle
+/// `Runner` keeps is the one both names refer to.
+#[test]
+fn one_table_is_one_input_node() {
+    let plan = compile(
+        "a := input(\"t\")\n\
+         a :: zset(record(v: i64))\n\
+         b := input(\"t\")\n\
+         b :: zset(record(v: i64))\n",
+    )
+    .expect("compiles");
+
+    assert_eq!(plan.nodes.len(), 1);
+    assert_eq!(plan.by_name["a"], plan.by_name["b"]);
+}
+
+/// Different work still gets different nodes — dedup must not over-merge.
+#[test]
+fn different_work_stays_separate() {
+    let plan = compile(
+        "a := input(\"a\")\n\
+         a :: zset(record(v: i64))\n\
+         p := filter(a, fun((r) -> r.v > 0))\n\
+         q := filter(a, fun((r) -> r.v > 1))\n",
+    )
+    .expect("compiles");
+
+    assert_ne!(plan.by_name["p"], plan.by_name["q"], "different predicates, different nodes");
+    assert_eq!(plan.nodes.len(), 3);
+}
+
 fn operands(op: &PlanOp) -> Vec<usize> {
     match op {
         PlanOp::Input { .. } | PlanOp::Empty => vec![],

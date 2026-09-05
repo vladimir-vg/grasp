@@ -40,6 +40,12 @@ the circuit and output changes are emitted as they are produced.
   here because it represents a Z-set delta exactly, `insert_delete` for
   compatibility with Feldera's own default. Both work in both directions.
 
+One level of `fixpoint` is supported, and that is deliberate rather than
+pending: a `fixpoint` inside a `fixpoint` is rejected. `dbsp` allows circuits at
+arbitrary depth, but each level is a distinct Rust circuit type needing its own
+instantiation of the lowering, and one level covers the recursive queries this
+language is for.
+
 Outputs are **not** part of the source language. A program declares streams; the
 set of nodes to observe is supplied when the runner starts, by node name.
 

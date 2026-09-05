@@ -485,3 +485,29 @@
   expected_diagnostics:
     - pass: typecheck
       message: "so it starts empty: pass `empty()`"
+
+- name: circuits cannot instantiate each other in a cycle
+  source: |
+    circuit a(src: s) {
+        x := b(src: s)
+    }
+    circuit b(src: s) {
+        y := a(src: s)
+    }
+
+  # Expansion is inlining, so this would not terminate. Without the check it is
+  # a stack overflow rather than a diagnostic.
+  expected_diagnostics:
+    - pass: typecheck
+      message: "instantiates itself through"
+
+- name: a table cannot have two types
+  source: |
+    a := input("t")
+    a :: zset(record(v: i64))
+    b := input("t")
+    b :: zset(record(w: sql.SqlString))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "declared with two different types"
