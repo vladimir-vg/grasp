@@ -28,7 +28,7 @@
     - out:
         - [1, {v: 22}]
 
-- name: an absent value compares as less than every value
+- name: an none value compares as less than every value
   source: |
     a := input("a")
     a :: zset(record(id: i64, x: optional(i64)))
@@ -39,17 +39,17 @@
         - [1, {id: 1, x: 10}]
         - [1, {id: 2, x: null}]
 
-  # Not propagation: `ABSENT > 5` is a definite `false`, because ABSENT sorts
+  # Not propagation: `NONE > 5` is a definite `false`, because NONE sorts
   # before every value. The comparison yields a plain bool either way.
   expected_exact_output:
     - kept:
         - [1, {id: 1, x: 10}]
 
-- name: ABSENT is compared like any other value
+- name: NONE is compared like any other value
   source: |
     a := input("a")
     a :: zset(record(id: i64, x: optional(i64)))
-    out := map(a, fun((r) -> record(missing: r.x == ABSENT, v: coalesce(r.x, 0))))
+    out := map(a, fun((r) -> record(missing: r.x == NONE, v: coalesce(r.x, 0))))
 
   input:
     - a:
@@ -61,7 +61,7 @@
         - [1, {missing: false, v: 10}]
         - [1, {missing: true, v: 0}]
 
-- name: two absent values are equal
+- name: two none values are equal
   source: |
     a := input("a")
     a :: zset(record(id: i64, x: optional(i64), y: optional(i64)))

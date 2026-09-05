@@ -30,7 +30,7 @@ fn hash_of(v: &DynValue) -> u64 {
 /// representation interesting, so records must be in the mix.
 fn any_value() -> impl Strategy<Value = DynValue> {
     let leaf = prop_oneof![
-        Just(DynValue::Absent),
+        Just(DynValue::None),
         any::<bool>().prop_map(DynValue::Bool),
         any::<i64>().prop_map(DynValue::I64),
         any::<f64>()
@@ -94,13 +94,13 @@ fn signed_zero_hashes_consistently() {
 #[test]
 fn archived_round_trip_preserves_values() {
     let cases = vec![
-        DynValue::Absent,
+        DynValue::None,
         DynValue::Bool(true),
         DynValue::I64(-7),
         DynValue::F64(dbsp::algebra::F64::new(1.5)),
         DynValue::String("hello".into()),
         DynValue::str("world"),
-        DynValue::record([DynValue::I64(1), DynValue::str("x"), DynValue::Absent]),
+        DynValue::record([DynValue::I64(1), DynValue::str("x"), DynValue::None]),
         // Nested records exercise the `#[omit_bounds]` recursion.
         DynValue::record([DynValue::record([DynValue::I64(2)]), DynValue::Bool(false)]),
     ];

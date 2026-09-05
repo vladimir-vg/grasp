@@ -80,7 +80,7 @@ set of nodes to observe is supplied when the runner starts, by node name.
 - **Conditionals** — `if`/`then`/`else`, which shipped ahead of their design and
   were withdrawn. They are also what a propagating form of arithmetic would need:
   `optional(T)` operands are rejected today, so an expression that should be
-  absent when its input is cannot yet be written.
+  none when its input is cannot yet be written.
 
 - **`cast`**, which needs a type argument in expression position and a
   conversion matrix over the value vocabulary — so it is worth doing once that

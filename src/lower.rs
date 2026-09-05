@@ -292,7 +292,7 @@ fn build_node(
                     },
                     move |acc: Acc| match agg {
                         Agg::Count => DynValue::I64(acc.rows),
-                        _ if acc.rows == 0 => DynValue::Absent,
+                        _ if acc.rows == 0 => DynValue::None,
                         Agg::Sum if float => DynValue::F64(acc.sum_float),
                         Agg::Sum => DynValue::I64(acc.sum_int),
                         Agg::Avg => {

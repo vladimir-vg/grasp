@@ -54,8 +54,8 @@ pub struct Expr {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
-    /// The `ABSENT` literal: a value meaning "this field has none".
-    Absent,
+    /// The `NONE` literal: a value meaning "this field has none".
+    None,
     Bool(bool),
     Int(i64),
     Float(f64),
@@ -127,7 +127,7 @@ const TYPE_NAMES: &[&str] = &[
 /// Literals and keywords. `if`/`then`/`else` are reserved although the language
 /// has no conditionals yet, so adding them later is not a breaking change.
 const KEYWORDS: &[&str] =
-    &["true", "false", "ABSENT", "null", "fun", "and", "or", "not", "if", "then", "else"];
+    &["true", "false", "NONE", "null", "fun", "and", "or", "not", "if", "then", "else"];
 
 /// Whether `name` is reserved, and so may not name a node or a parameter.
 ///
@@ -763,12 +763,12 @@ impl Parser {
         match word.as_str() {
             "true" => return Ok(self.mk(start, ExprKind::Bool(true))),
             "false" => return Ok(self.mk(start, ExprKind::Bool(false))),
-            "ABSENT" => return Ok(self.mk(start, ExprKind::Absent)),
+            "NONE" => return Ok(self.mk(start, ExprKind::None)),
             "null" => {
                 return parse_error(
                     start,
                     "`null` is reserved for the JSON null value inside `sql.Variant`, \
-                     which is not implemented; write `ABSENT` for a missing value",
+                     which is not implemented; write `NONE` for a missing value",
                 );
             }
             "record" => {

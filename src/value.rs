@@ -24,8 +24,9 @@ use size_of::SizeOf;
 /// discriminant, which is a persisted storage format. **Append new variants at
 /// the end.**
 ///
-/// Nullability is represented by [`DynValue::Absent`] rather than by an `Option`
-/// variant, matching `Variant`'s `SqlNull`.
+/// Absence is a variant rather than a wrapping `Option`, matching `Variant`'s
+/// `SqlNull` — so there is exactly one `None`, and no `Some(None)` to
+/// distinguish from it.
 #[derive(
     Debug,
     Default,
@@ -51,12 +52,12 @@ use size_of::SizeOf;
 ))]
 #[archive_attr(derive(Eq, Ord, PartialEq, PartialOrd))]
 pub enum DynValue {
-    /// No value. Written `ABSENT` in source; encoded as JSON `null`.
+    /// No value. Written `NONE` in source; encoded as JSON `null`.
     ///
     /// Being variant 0 makes it sort before every value, which is what both
     /// `min`/`max` and the language's comparison operators rely on.
     #[default]
-    Absent,
+    None,
     Bool(bool),
     I64(i64),
     F64(F64),
@@ -79,8 +80,8 @@ pub enum DynValue {
 }
 
 impl DynValue {
-    pub fn is_absent(&self) -> bool {
-        matches!(self, DynValue::Absent)
+    pub fn is_none(&self) -> bool {
+        matches!(self, DynValue::None)
     }
 
     pub fn record(fields: impl IntoIterator<Item = DynValue>) -> Self {
@@ -108,7 +109,7 @@ impl DynValue {
     /// The name of this value's variant, for error messages.
     pub fn type_name(&self) -> &'static str {
         match self {
-            DynValue::Absent => "ABSENT",
+            DynValue::None => "NONE",
             DynValue::Bool(_) => "bool",
             DynValue::I64(_) => "i64",
             DynValue::F64(_) => "f64",

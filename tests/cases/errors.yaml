@@ -290,7 +290,7 @@
 
   expected_diagnostics:
     - pass: parse
-      message: "write `ABSENT` for a missing value"
+      message: "write `NONE` for a missing value"
 
 - name: arithmetic needs a definite value, not an optional
   source: |
@@ -300,7 +300,7 @@
 
   expected_diagnostics:
     - pass: typecheck
-      message: "may be absent"
+      message: "may be none"
 
 - name: not needs a definite value
   source: |

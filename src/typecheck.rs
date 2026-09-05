@@ -132,29 +132,29 @@ impl Plan {
 // Expression types
 // ---------------------------------------------------------------------------
 
-/// The type of an expression. `Absent` is the type of a bare `null` literal: it
+/// The type of an expression. `None` is the type of a bare `null` literal: it
 /// has no type of its own and takes one from context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Ty {
     Known(TypeDesc),
-    Absent,
+    None,
 }
 
 impl Ty {
     fn into_known(self, span: Span, what: impl fmt::Display) -> TResult<TypeDesc> {
         match self {
             Ty::Known(t) => Ok(t),
-            Ty::Absent => err(span, format!("cannot infer a type for `ABSENT` in {what}")),
+            Ty::None => err(span, format!("cannot infer a type for `NONE` in {what}")),
         }
     }
 }
 
-/// Unifies two types, as `coalesce` needs. An absent side makes the other
+/// Unifies two types, as `coalesce` needs. An none side makes the other
 /// side's type optional.
 fn unify(a: Ty, b: Ty, span: Span) -> TResult<Ty> {
     Ok(match (a, b) {
-        (Ty::Absent, Ty::Absent) => Ty::Absent,
-        (Ty::Absent, Ty::Known(t)) | (Ty::Known(t), Ty::Absent) => Ty::Known(optional(t)),
+        (Ty::None, Ty::None) => Ty::None,
+        (Ty::None, Ty::Known(t)) | (Ty::Known(t), Ty::None) => Ty::Known(optional(t)),
         (Ty::Known(x), Ty::Known(y)) => {
             if x == y {
                 Ty::Known(x)
@@ -753,7 +753,7 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)]) -> TResult<(TypedExpr, Ty)> {
     // the enclosing declaration.
     let span = e.span;
     Ok(match &e.kind {
-        ExprKind::Absent => (TypedExpr::Const(DynValue::Absent), Ty::Absent),
+        ExprKind::None => (TypedExpr::Const(DynValue::None), Ty::None),
         ExprKind::Bool(b) => (TypedExpr::Const(DynValue::Bool(*b)), Ty::Known(TypeDesc::Bool)),
         ExprKind::Int(v) => (TypedExpr::Const(DynValue::I64(*v)), Ty::Known(TypeDesc::I64)),
         ExprKind::Float(v) => (
@@ -819,14 +819,14 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)]) -> TResult<(TypedExpr, Ty)> {
                 UnOp::Not => "not",
             };
             let ty = match it {
-                Ty::Absent => {
-                    return err(span, format!("`{name}` needs a value, but this is `ABSENT`"));
+                Ty::None => {
+                    return err(span, format!("`{name}` needs a value, but this is `NONE`"));
                 }
                 Ty::Known(t) if t.is_optional() => {
                     return err(
                         span,
                         format!(
-                            "`{name}` needs a value, but `{t}` may be absent; \
+                            "`{name}` needs a value, but `{t}` may be none; \
                              use `coalesce` to supply a default first"
                         ),
                     );
@@ -883,14 +883,14 @@ fn infer_binop(op: BinOp, lt: Ty, rt: Ty, span: Span) -> TResult<Ty> {
     /// than yielding absence, which would be propagation by another name.
     fn definite(t: &Ty, op: &str, span: Span) -> TResult<()> {
         match t {
-            Ty::Absent => err(
+            Ty::None => err(
                 span,
-                format!("`{op}` needs a value, but this is `ABSENT`"),
+                format!("`{op}` needs a value, but this is `NONE`"),
             ),
             Ty::Known(t) if t.is_optional() => err(
                 span,
                 format!(
-                    "`{op}` needs a value, but `{t}` may be absent; \
+                    "`{op}` needs a value, but `{t}` may be none; \
                      use `coalesce` to supply a default first"
                 ),
             ),
@@ -911,7 +911,7 @@ fn infer_binop(op: BinOp, lt: Ty, rt: Ty, span: Span) -> TResult<Ty> {
             Ok(Ty::Known(TypeDesc::Bool))
         }
 
-        // Comparisons are total. `ABSENT` is a value: it equals itself, sorts
+        // Comparisons are total. `NONE` is a value: it equals itself, sorts
         // before every other value, and comparing against it always decides.
         // So the result is a plain bool even when an operand is optional, and
         // `filter` can consume it directly.
@@ -938,7 +938,7 @@ fn infer_binop(op: BinOp, lt: Ty, rt: Ty, span: Span) -> TResult<Ty> {
             definite(&lt, name, span)?;
             definite(&rt, name, span)?;
             let (Ty::Known(a), Ty::Known(b)) = (&lt, &rt) else {
-                unreachable!("definite() rejected the absent cases");
+                unreachable!("definite() rejected the none cases");
             };
             // `+` doubles as string concatenation.
             if op == Add && is_stringy(a) && is_stringy(b) {
@@ -963,7 +963,7 @@ fn infer_builtin(b: Builtin, name: &str, args: &[Ty], span: Span) -> TResult<Ty>
     let known = |i: usize| -> Option<&TypeDesc> {
         match &args[i] {
             Ty::Known(t) => Some(t),
-            Ty::Absent => None,
+            Ty::None => None,
         }
     };
     Ok(match b {
@@ -980,7 +980,7 @@ fn infer_builtin(b: Builtin, name: &str, args: &[Ty], span: Span) -> TResult<Ty>
                         span,
                     )?
                 }
-                (Ty::Absent, other) | (other, Ty::Absent) => other,
+                (Ty::None, other) | (other, Ty::None) => other,
             }
         }
         Builtin::Length => Ty::Known(TypeDesc::I64),
@@ -994,7 +994,7 @@ fn infer_builtin(b: Builtin, name: &str, args: &[Ty], span: Span) -> TResult<Ty>
         Builtin::Abs | Builtin::Floor | Builtin::Ceil | Builtin::Round => match known(0) {
             Some(t) if is_numeric(t) => Ty::Known(t.clone()),
             Some(t) => return err(span, format!("`{name}` needs a number, found `{t}`")),
-            None => Ty::Absent,
+            None => Ty::None,
         },
     })
 }

@@ -193,7 +193,7 @@ unop       := "-" | "not"
 binop      := "+" | "-" | "*" | "/" | "%"
             | "==" | "!=" | "<" | "<=" | ">" | ">="
             | "and" | "or"
-literal    := INT | FLOAT | STRING | "true" | "false" | "ABSENT"
+literal    := INT | FLOAT | STRING | "true" | "false" | "NONE"
 ```
 
 The parameter list binds the row(s) the operator feeds the function. `map`,
@@ -245,17 +245,17 @@ above and with each other.
 ### Absence
 
 A value that may be missing has type `optional(T)`, and the literal for its
-absence is `ABSENT`.
+absence is `NONE`.
 
-**`ABSENT` is a value, not SQL's `NULL`.** SQL propagates `NULL` because it
-means *unknown*; `ABSENT` means *this field has no value*, so it behaves the way
+**`NONE` is a value, not SQL's `NULL`.** SQL propagates `NULL` because it
+means *unknown*; `NONE` means *this field has no value*, so it behaves the way
 Rust's `None` does:
 
 | expression | result |
 |---|---|
-| `r.x == ABSENT` | `bool` — always decides |
-| `r.a == r.b`, both absent | `true` |
-| `r.x > 5`, `r.x` absent | `false` — `ABSENT` sorts before every value |
+| `r.x == NONE` | `bool` — always decides |
+| `r.a == r.b`, both none | `true` |
+| `r.x > 5`, `r.x` none | `false` — `NONE` sorts before every value |
 | `r.x + 1` | a type error — write `coalesce(r.x, 0) + 1` |
 
 Every comparison yields a plain `bool`, so `filter` accepts one directly.
@@ -263,7 +263,7 @@ Arithmetic, `and`, `or` and `not` reject an `optional(T)` operand rather than
 returning absence, because returning it would be propagation under another name;
 `coalesce` supplies a definite value first.
 
-`ABSENT` sorting first is the same order `min` and `max` use, so expressions and
+`NONE` sorting first is the same order `min` and `max` use, so expressions and
 aggregates agree about where absence sits.
 
 **`null` is not the absence literal.** It is reserved for the JSON null *value*
@@ -277,7 +277,7 @@ column, and absence still encodes as JSON `null`.
 These may not name a node or a `fun` parameter: the 19 operator names, the 5
 aggregator names, the builtin names, the type constructors (`bool`, `i64`,
 `f64`, `String`, `optional`, `record`, `sql`, `zset`, `indexed_zset`), and
-`true`, `false`, `ABSENT`, `null`, `fun`, `and`, `or`, `not`, `if`, `then`,
+`true`, `false`, `NONE`, `null`, `fun`, `and`, `or`, `not`, `if`, `then`,
 `else`.
 
 `if`, `then` and `else` are reserved although there are no conditionals yet, so

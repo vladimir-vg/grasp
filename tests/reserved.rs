@@ -59,7 +59,7 @@ fn every_builtin_name_resolves() {
 /// are not — the list should not have grown to swallow everything.
 #[test]
 fn the_reserved_set_has_the_right_shape() {
-    for name in ["zset", "indexed_zset", "optional", "record", "sql", "ABSENT", "null", "fun", "if"]
+    for name in ["zset", "indexed_zset", "optional", "record", "sql", "NONE", "null", "fun", "if"]
     {
         assert!(is_reserved(name), "`{name}` should be reserved");
     }
