@@ -91,10 +91,6 @@ set of nodes to observe is supplied when the runner starts, by node name.
   conversion matrix over the value vocabulary — so it is worth doing once that
   vocabulary has settled.
 
-- **Nested operator calls.** Every stream argument must name a declared node, so
-  a composite expression is several declarations. Named intermediates are often
-  clearer, so this is a convenience rather than a gap.
-
 - **A richer expression library** — user-defined functions, and a fuller
   arithmetic/string/temporal builtin set.
 - **Convenience operator macros** — ergonomic forms (for example field-based

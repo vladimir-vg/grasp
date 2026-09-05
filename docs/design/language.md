@@ -21,6 +21,7 @@ comment      := "#" [^\n]*
 
 op_call      := OP "(" [arg ("," arg)*] ")"
 arg          := NAME                    # a stream declared elsewhere
+              | op_call                 # a nested operator, except `input`
               | STRING                  # a table name, for `input`
               | AGGREGATOR              # min | max | count | sum | avg
               | fun
@@ -158,8 +159,21 @@ one row; for an indexed stream it is the `(key, value)` pair, so the function
 takes two parameters — `fun((k, v) -> …)` — matching `dbsp`'s `ItemRef` for
 each shape.
 
-**Operator calls do not nest.** Every argument that is a stream must name a
-declared node, so `weighted_count(map(s, f))` is two declarations, not one.
+**Operator calls nest.** A stream argument may be another operator call rather
+than a name, so `weighted_count(map(emp, f))` is one declaration. A named node
+then exists because it is worth naming — as an output, or as an intermediate
+used more than once — rather than because the grammar insists.
+
+**`input` is the one exception.** Its schema comes from a `::` typespec, which
+needs a name to attach to, so `map(input("emp"), f)` is rejected. Bind it first.
+
+A nested call becomes a node **per occurrence**: there is no
+common-subexpression elimination, so `plus(filter(a,f), filter(a,f))` builds two
+filters and adds both their weights. Name the intermediate to share it.
+
+A nested node has no name, so it cannot be selected as an output. It is still a
+node, and diagnostics about it are labelled by operator and position —
+`filter@3:12`.
 
 `join`, `join_index` and `antijoin` require equal key type `K` on both sides;
 `plus`/`minus`/`sum` require identical batch types.

@@ -1,0 +1,112 @@
+# Operator calls nest. A named node now exists because it is worth naming, not
+# because the grammar insists. `input` is the one exception: its schema comes
+# from a `::` typespec, which needs a name to attach to.
+
+- name: one declaration instead of two
+  source: |
+    emp := input("emp")
+    emp :: zset(record(id: i64, dept_id: i64))
+    per_dept := weighted_count(map(emp, fun((r) -> r.dept_id)))
+
+  input:
+    - emp:
+        - [1, {id: 1, dept_id: 10}]
+        - [1, {id: 2, dept_id: 10}]
+        - [1, {id: 3, dept_id: 20}]
+
+  expected_exact_output:
+    - per_dept:
+        - [1, 10, 2]
+        - [1, 20, 1]
+
+- name: both sides of a join nested
+  source: |
+    emp := input("emp")
+    emp :: zset(record(id: i64, name: sql.SqlString, dept_id: i64))
+    dept := input("dept")
+    dept :: zset(record(id: i64, dname: sql.SqlString))
+
+    joined := join(
+        map_index(emp,  fun((r) -> (r.dept_id, record(name: r.name)))),
+        map_index(dept, fun((r) -> (r.id, record(dname: r.dname)))),
+        fun((k, e, d) -> record(name: e.name, dname: d.dname)))
+
+  input:
+    - emp:
+        - [1, {id: 1, name: "ada", dept_id: 10}]
+      dept:
+        - [1, {id: 10, dname: "eng"}]
+
+  expected_exact_output:
+    - joined:
+        - [1, {name: "ada", dname: "eng"}]
+
+- name: nesting several levels deep
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    out := distinct(map(filter(a, fun((r) -> r.v > 1)), fun((r) -> record(w: r.v * 10))))
+
+  input:
+    - a:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+        - [1, {v: 3}]
+
+  expected_exact_output:
+    - out:
+        - [1, {w: 20}]
+        - [1, {w: 30}]
+
+- name: nested and named arguments mixed in one call
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    b := input("b")
+    b :: zset(record(v: i64))
+    small := filter(a, fun((r) -> r.v < 10))
+    both := plus(small, filter(b, fun((r) -> r.v < 10)))
+
+  input:
+    - a:
+        - [1, {v: 1}]
+        - [1, {v: 99}]
+      b:
+        - [1, {v: 2}]
+
+  expected_exact_output:
+    - both:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+
+- name: a nested call is a node per occurrence, not a shared one
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    doubled := plus(filter(a, fun((r) -> r.v > 0)), filter(a, fun((r) -> r.v > 0)))
+
+  input:
+    - a:
+        - [1, {v: 1}]
+
+  # There is no common-subexpression elimination: the two identical filters are
+  # two nodes, so `plus` adds their weights. Name a shared intermediate if you
+  # want it evaluated once.
+  expected_exact_output:
+    - doubled:
+        - [2, {v: 1}]
+
+- name: an aggregator name is still not a nested call
+  source: |
+    a := input("a")
+    a :: zset(record(k: i64, x: i64))
+    hi := aggregate(map_index(a, fun((r) -> (r.k, r))), max, fun((v) -> v.x))
+
+  input:
+    - a:
+        - [1, {k: 1, x: 5}]
+        - [1, {k: 1, x: 9}]
+
+  expected_exact_output:
+    - hi:
+        - [1, 1, 9]

@@ -28,6 +28,9 @@ pub enum Decl {
 pub struct OpCall {
     pub op: String,
     pub args: Vec<Arg>,
+    /// The operator name's own position, which a nested call needs for its
+    /// diagnostics and its synthesized name.
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,6 +40,9 @@ pub enum Arg {
     Name(String),
     Str(String),
     Fun(FunLit),
+    /// A nested operator call, which the type checker turns into an anonymous
+    /// node. `Vec<Arg>` inside `OpCall` breaks the recursion, so no `Box`.
+    Op(OpCall),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -403,6 +409,11 @@ impl Parser {
         self.toks[self.pos].1
     }
 
+    fn peek_ahead(&self, n: usize) -> &Tok {
+        let i = (self.pos + n).min(self.toks.len() - 1);
+        &self.toks[i].0
+    }
+
     fn bump(&mut self) -> Tok {
         let t = self.toks[self.pos].0.clone();
         self.prev = self.toks[self.pos].1;
@@ -497,6 +508,7 @@ impl Parser {
     }
 
     fn op_call(&mut self) -> PResult<OpCall> {
+        let span = self.span();
         let op = self.ident()?;
         self.expect(&Tok::LParen, "`(` after an operator name")?;
         let mut args = Vec::new();
@@ -510,7 +522,7 @@ impl Parser {
                 break;
             }
         }
-        Ok(OpCall { op, args })
+        Ok(OpCall { op, args, span })
     }
 
     fn arg(&mut self) -> PResult<Arg> {
@@ -522,6 +534,11 @@ impl Parser {
             Tok::Ident(name) if name == "fun" => {
                 self.bump();
                 Ok(Arg::Fun(self.fun_literal()?))
+            }
+            // An identifier followed by `(` is a nested operator call;
+            // otherwise it names a node, or is a bare aggregator.
+            Tok::Ident(_) if matches!(self.peek_ahead(1), Tok::LParen) => {
+                Ok(Arg::Op(self.op_call()?))
             }
             Tok::Ident(name) => {
                 self.bump();

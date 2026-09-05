@@ -220,7 +220,7 @@ pub fn check(program: &Program) -> TResult<Plan> {
     let mut plan = Plan { nodes: Vec::new(), by_name: HashMap::new() };
     for decl_idx in order {
         let (name, op, span) = node_decls[decl_idx];
-        let (ty, plan_op) = check_op(name, op, span, &plan, &specs)?;
+        let (ty, plan_op) = check_op(name, op, span, &mut plan, &specs)?;
 
         // An explicit typespec on a non-input node is checked, not used to drive
         // inference.
@@ -236,6 +236,19 @@ pub fn check(program: &Program) -> TResult<Plan> {
         plan.nodes.push(PlanNode { name: name.clone(), ty, op: plan_op, span });
     }
     Ok(plan)
+}
+
+/// Every node name an operator call refers to, including inside nested calls.
+/// A nested call is an inline tree, so it cannot itself participate in a cycle
+/// — but a name buried in one is still a dependency.
+fn collect_names<'a>(call: &'a OpCall, out: &mut Vec<&'a String>) {
+    for a in &call.args {
+        match a {
+            Arg::Name(n) => out.push(n),
+            Arg::Op(inner) => collect_names(inner, out),
+            _ => {}
+        }
+    }
 }
 
 /// Dependency order, rejecting cycles. Recursion needs `delay`, which this cut
@@ -267,14 +280,8 @@ fn topo_order(decls: &[(&String, &OpCall, Span)]) -> TResult<Vec<usize>> {
                 }
                 marks[node] = Mark::Active;
             }
-            let deps: Vec<&String> = op
-                .args
-                .iter()
-                .filter_map(|a| match a {
-                    Arg::Name(n) => Some(n),
-                    _ => None,
-                })
-                .collect();
+            let mut deps: Vec<&String> = Vec::new();
+            collect_names(op, &mut deps);
             if child < deps.len() {
                 stack.push((node, child + 1));
                 let dep = deps[child];
@@ -306,40 +313,86 @@ fn topo_order(decls: &[(&String, &OpCall, Span)]) -> TResult<Vec<usize>> {
 // Operators
 // ---------------------------------------------------------------------------
 
+/// An argument after nested calls have been resolved into nodes.
+enum RArg<'a> {
+    /// A node index — either a declared name or a nested call already pushed.
+    Stream(usize),
+    /// A bare name that is not a declared node: an aggregator, or a mistake.
+    Name(&'a str),
+    /// Only the shape matters: the `input` arm reads the table name from the
+    /// unresolved argument.
+    Str,
+    Fun(&'a FunLit),
+}
+
+type Specs<'a> = HashMap<&'a str, (&'a BatchType, Span)>;
+
+/// Resolves one argument, checking and pushing a node for a nested call.
+///
+/// Recursion is depth-first and pushes before returning, so a nested node
+/// always lands at a lower index than the node using it — which is what
+/// `lower.rs` needs, since it builds `plan.nodes` in order.
+fn resolve_arg<'a>(
+    arg: &'a Arg,
+    plan: &mut Plan,
+    specs: &Specs<'_>,
+) -> TResult<RArg<'a>> {
+    Ok(match arg {
+        Arg::Str(_) => RArg::Str,
+        Arg::Fun(f) => RArg::Fun(f),
+        Arg::Name(n) => match plan.by_name.get(n.as_str()) {
+            Some(i) => RArg::Stream(*i),
+            // Not a node: an aggregator name, or an error the caller reports
+            // with the context to say what was expected.
+            None => RArg::Name(n),
+        },
+        Arg::Op(call) => {
+            if call.op == "input" {
+                return err(
+                    call.span,
+                    "`input` cannot be nested: its schema comes from a `::` typespec, \
+                     which needs a name to attach to. Bind it to one first.",
+                );
+            }
+            // Anonymous, so it is named for diagnostics only and deliberately
+            // kept out of `by_name`: it cannot be an output and cannot collide.
+            let name = format!("{}@{}", call.op, call.span);
+            let (ty, op) = check_op(&name, call, call.span, plan, specs)?;
+            plan.nodes.push(PlanNode { name, ty, op, span: call.span });
+            RArg::Stream(plan.nodes.len() - 1)
+        }
+    })
+}
+
 struct Ctx<'a> {
     plan: &'a Plan,
     span: Span,
 }
 
 impl Ctx<'_> {
-    fn stream(&self, name: &str) -> TResult<usize> {
-        self.plan
-            .by_name
-            .get(name)
-            .copied()
-            .ok_or_else(|| {
-                Diagnostic::error(Pass::Typecheck, self.span, format!("unknown stream `{name}`"))
-            })
+    /// Already resolved; this exists so the operator arms read uniformly.
+    fn stream(&self, i: usize) -> TResult<usize> {
+        Ok(i)
     }
 
-    fn zset(&self, name: &str) -> TResult<(usize, TypeDesc)> {
-        let i = self.stream(name)?;
-        match &self.plan.nodes[i].ty {
+    fn zset(&self, i: usize) -> TResult<(usize, TypeDesc)> {
+        let node = &self.plan.nodes[i];
+        match &node.ty {
             BatchType::ZSet(t) => Ok((i, t.clone())),
             other => err(
                 self.span,
-                format!("`{name}` is `{other}`, but a flat zset is required here"),
+                format!("`{}` is `{other}`, but a flat zset is required here", node.name),
             ),
         }
     }
 
-    fn indexed(&self, name: &str) -> TResult<(usize, TypeDesc, TypeDesc)> {
-        let i = self.stream(name)?;
-        match &self.plan.nodes[i].ty {
+    fn indexed(&self, i: usize) -> TResult<(usize, TypeDesc, TypeDesc)> {
+        let node = &self.plan.nodes[i];
+        match &node.ty {
             BatchType::IndexedZSet(k, v) => Ok((i, k.clone(), v.clone())),
             other => err(
                 self.span,
-                format!("`{name}` is `{other}`, but an indexed_zset is required here"),
+                format!("`{}` is `{other}`, but an indexed_zset is required here", node.name),
             ),
         }
     }
@@ -349,12 +402,20 @@ fn check_op(
     name: &str,
     call: &OpCall,
     span: Span,
-    plan: &Plan,
-    specs: &HashMap<&str, (&BatchType, Span)>,
+    plan: &mut Plan,
+    specs: &Specs<'_>,
 ) -> TResult<(BatchType, PlanOp)> {
-    let cx = Ctx { plan, span };
     let op = call.op.as_str();
     let args = &call.args;
+
+    // Resolve nested calls first, so the mutable borrow of `plan` ends before
+    // anything below reads it.
+    let mut rargs = Vec::with_capacity(args.len());
+    for a in args {
+        rargs.push(resolve_arg(a, plan, specs)?);
+    }
+
+    let cx = Ctx { plan, span };
 
     let want = |n: usize| -> TResult<()> {
         if args.len() == n {
@@ -363,15 +424,16 @@ fn check_op(
             err(span, format!("`{op}` takes {n} argument(s), found {}", args.len()))
         }
     };
-    let stream_arg = |i: usize| -> TResult<&String> {
-        match &args[i] {
-            Arg::Name(n) => Ok(n),
+    let stream_arg = |i: usize| -> TResult<usize> {
+        match &rargs[i] {
+            RArg::Stream(idx) => Ok(*idx),
+            RArg::Name(n) => err(span, format!("unknown stream `{n}`")),
             _ => err(span, format!("argument {} of `{op}` must name a stream", i + 1)),
         }
     };
     let fun_arg = |i: usize| -> TResult<&FunLit> {
-        match &args[i] {
-            Arg::Fun(f) => Ok(f),
+        match &rargs[i] {
+            RArg::Fun(f) => Ok(f),
             _ => err(span, format!("argument {} of `{op}` must be a `fun(...)`", i + 1)),
         }
     };

@@ -343,3 +343,11 @@
   expected_diagnostics:
     - pass: typecheck
       message: "cannot be applied to `f64`"
+
+- name: input cannot be nested
+  source: |
+    out := map(input("emp"), fun((r) -> r))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "`input` cannot be nested"
