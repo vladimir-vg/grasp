@@ -5,6 +5,10 @@ that name streams and describe how they are derived from inputs. The grammar is
 borrowed from grasp-dbsp; the operators and types it refers to come from
 `dbsp`.
 
+This describes the language as implemented.
+[`expressions.md`](expressions.md) and [`json.md`](json.md) hold a designed but
+unbuilt rewrite of the function, expression and type surface.
+
 ## Program structure
 
 A program is a sequence of declarations. Declarations may appear in any order;

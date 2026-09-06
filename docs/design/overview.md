@@ -54,6 +54,12 @@ language is for.
 Outputs are **not** part of the source language. A program declares streams; the
 set of nodes to observe is supplied when the runner starts, by node name.
 
+Two designs are settled but not implemented, and live in their own documents
+until they land: [`expressions.md`](expressions.md) rewrites the expression
+language around multi-statement `function` and `match`, and
+[`json.md`](json.md) adds a `json` type. Neither is reflected in the scope or
+future-work lists below, which describe the language as it exists.
+
 ## Future work
 
 - **Checkpoint and restore.** Every stateful `dbsp` operator takes a

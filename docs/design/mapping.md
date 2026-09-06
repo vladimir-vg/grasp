@@ -6,6 +6,10 @@ incrementalization principle, and input/output handling. It assumes the DBSP
 computational model (Z-sets, weights, deltas, epochs, stateful operators) and
 describes only how we use it.
 
+It describes the mapping as implemented. [`json.md`](json.md) designs a
+`FlatVariant`-backed `json` type against the invariants recorded below, and
+[`expressions.md`](expressions.md) the expression language it needs.
+
 ## Value model
 
 Every stream in the circuit carries the same Rust value type. There is one
