@@ -60,6 +60,24 @@ impl<C: Circuit> Clone for Node<C> {
 }
 
 impl<C: Circuit> Node<C> {
+    /// Names the operator behind this stream, so its state can be checkpointed
+    /// and restored.
+    ///
+    /// The name is the node's *content id* rather than its name or position:
+    /// `dbsp` requires an id that "identifies the same computation across
+    /// restarts", derived "from the program … rather than from anything
+    /// positional" (`dbsp/src/operator/recursive.rs`). A nested node's name is
+    /// `filter@3:12`, which is exactly what that rules out.
+    fn named(self, id: &str) -> Self {
+        match self {
+            Node::Flat(s) => Node::Flat(s.set_persistent_id(Some(id))),
+            Node::Indexed(s) => Node::Indexed(s.set_persistent_id(Some(id))),
+            // A fixpoint is not itself a stream; its members are named as they
+            // are exported.
+            Node::Group(v) => Node::Group(v),
+        }
+    }
+
     fn flat(&self, node: &crate::typecheck::PlanNode) -> Result<&Flat<C>, Diagnostic> {
         match self {
             Node::Flat(s) => Ok(s),
@@ -71,6 +89,29 @@ impl<C: Circuit> Node<C> {
             Node::Indexed(s) => Ok(s),
             _ => Err(shape_error(node, "an indexed_zset")),
         }
+    }
+}
+
+/// Splits the `record(key:, value:)` an indexing operator's function returned.
+///
+/// The checker has already established that this is a two-field record and
+/// where each field sits, so a value of any other shape means the two passes
+/// disagree — hence `NONE` rather than a panic, which would take the worker
+/// thread and the circuit with it.
+fn split_kv(row: DynValue, kv: crate::typecheck::KeyValue) -> (DynValue, DynValue) {
+    match row.fields() {
+        Some(f) if f.len() == 2 => (f[kv.key].clone(), f[kv.value].clone()),
+        _ => (DynValue::None, DynValue::None),
+    }
+}
+
+/// The rows a fan-out function produced. Total for the same reason as
+/// `split_kv`: the checker guarantees an array, and a panic here would kill the
+/// circuit rather than one row.
+fn rows(v: DynValue) -> Vec<DynValue> {
+    match v {
+        DynValue::Array(items) => items,
+        _ => Vec::new(),
     }
 }
 
@@ -113,18 +154,28 @@ impl Runner {
     /// Nodes that are not named are still constructed — there is no dead-code
     /// elimination.
     pub fn build(plan: &Plan, outputs: &[String]) -> Result<Runner, Vec<Diagnostic>> {
+        // A node may be selected by its declared name or by its content id, so
+        // a nested node — which has no name, only a `filter@3:12` label — can
+        // still be observed.
+        let ids = crate::typecheck::content_ids(plan);
+        let index_of = |name: &String| -> Option<usize> {
+            plan.by_name.get(name).copied().or_else(|| ids.iter().position(|i| i == name))
+        };
+        let mut wanted: Vec<(String, usize)> = Vec::with_capacity(outputs.len());
         for name in outputs {
-            if !plan.by_name.contains_key(name) {
-                return Err(vec![Diagnostic::error(
-                    Pass::Lower,
-                    None,
-                    format!("no node named `{name}` to output"),
-                )]);
+            match index_of(name) {
+                Some(i) => wanted.push((name.clone(), i)),
+                None => {
+                    return Err(vec![Diagnostic::error(
+                        Pass::Lower,
+                        None,
+                        format!("no node named `{name}` to output"),
+                    )]);
+                }
             }
         }
 
         let plan = plan.clone();
-        let wanted = outputs.to_vec();
 
         // `Runtime::init_circuit` runs this closure once per worker and asserts
         // the circuits match, so it must be deterministic: nodes are visited in
@@ -133,14 +184,14 @@ impl Runner {
             let mut nodes: Vec<Node<RootCircuit>> = Vec::with_capacity(plan.nodes.len());
             let mut inputs: Vec<(String, ZSetHandle<DynValue>)> = Vec::new();
 
-            for node in &plan.nodes {
-                let built = build_root(circuit, &plan, &nodes, node, &mut inputs)?;
-                nodes.push(built);
+            for (i, node) in plan.nodes.iter().enumerate() {
+                let built = build_root(circuit, &plan, &nodes, node, &mut inputs, &ids)?;
+                nodes.push(built.named(&ids[i]));
             }
 
             let mut outs: Vec<(String, Out)> = Vec::new();
-            for name in &wanted {
-                let idx = plan.by_name[name];
+            for (name, idx) in &wanted {
+                let idx = *idx;
                 outs.push((
                     name.clone(),
                     match &nodes[idx] {
@@ -250,12 +301,15 @@ macro_rules! operator_arms {
                 }
             }
 
-            PlanOp::MapIndex { input, key, value } => {
-                let (key, value) = (key.clone(), value.clone());
+            // The function returns one `record(key:, value:)`, which is split
+            // here. `kv` carries where the two fields sit, so writing them in
+            // either order means the same thing.
+            PlanOp::MapIndex { input, f, kv } => {
+                let (f, kv) = (f.clone(), *kv);
                 Node::Indexed(
                     $dep(*input)
                         .flat($node)?
-                        .map_index(move |r: &DynValue| (eval(&key, &[r]), eval(&value, &[r]))),
+                        .map_index(move |r: &DynValue| split_kv(eval(&f, &[r]), kv)),
                 )
             }
 
@@ -299,6 +353,10 @@ macro_rules! operator_arms {
                 Agg::Sum | Agg::Avg | Agg::Count => {
                     let proj = f.clone();
                     let agg = *agg;
+                    // `sum`'s result type is optional exactly when its projection
+                    // is, so the node's own type says whether absence is legal.
+                    let sum_may_be_none =
+                        matches!(&$node.ty, BatchType::IndexedZSet(_, v) if v.is_optional());
                     Node::Indexed($dep(*input).indexed($node)?.aggregate_linear_postprocess(
                         move |v: &DynValue| match eval(&proj, &[v]) {
                             DynValue::I64(n) => Acc::value(n),
@@ -310,11 +368,19 @@ macro_rules! operator_arms {
                         },
                         move |acc: Acc| match agg {
                             Agg::Count => DynValue::I64(acc.rows),
-                            _ if acc.rows == 0 => DynValue::None,
-                            Agg::Sum => DynValue::I64(acc.sum),
+                            // A mean of no rows is undefined, which is why `avg`
+                            // is typed optional whatever the projection was.
+                            Agg::Avg if acc.rows == 0 => DynValue::None,
                             // The division happens here, not in the accumulator, so
                             // integer inputs still give a fractional mean.
                             Agg::Avg => DynValue::F64(F64::new(acc.sum as f64 / acc.rows as f64)),
+                            // Only an all-`NONE` group has no sum to report, and
+                            // that needs an optional projection to arise at all.
+                            // With a definite projection the weighted sum is the
+                            // answer even when the group's weights cancel — so
+                            // this never returns absence in a column typed `i64`.
+                            Agg::Sum if acc.rows == 0 && sum_may_be_none => DynValue::None,
+                            Agg::Sum => DynValue::I64(acc.sum),
                             Agg::Min | Agg::Max => unreachable!("handled above"),
                         },
                     ))
@@ -348,31 +414,30 @@ macro_rules! operator_arms {
                 _ => return Err(shape_error($node, "matching shapes in `minus`").into()),
             },
 
-            PlanOp::FlatMap { input, outputs } => {
-                let outputs = outputs.clone();
-                Node::Flat($dep(*input).flat($node)?.flat_map(move |r: &DynValue| {
-                    outputs.iter().map(|e| eval(e, &[r])).collect::<Vec<_>>()
-                }))
+            // One row per element of the array the function returns, so the
+            // fan-out is whatever the data says.
+            PlanOp::FlatMap { input, f } => {
+                let f = f.clone();
+                Node::Flat(
+                    $dep(*input).flat($node)?.flat_map(move |r: &DynValue| rows(eval(&f, &[r]))),
+                )
             }
 
-            PlanOp::FlatMapIndex { input, pairs } => {
-                let pairs = pairs.clone();
+            PlanOp::FlatMapIndex { input, f, kv } => {
+                let (f, kv) = (f.clone(), *kv);
                 Node::Indexed($dep(*input).flat($node)?.flat_map_index(move |r: &DynValue| {
-                    pairs
-                        .iter()
-                        .map(|(k, v)| (eval(k, &[r]), eval(v, &[r])))
-                        .collect::<Vec<_>>()
+                    rows(eval(&f, &[r])).into_iter().map(move |row| split_kv(row, kv)).collect::<Vec<_>>()
                 }))
             }
 
-            PlanOp::JoinIndex { left, right, key, value } => {
-                let (key, value) = (key.clone(), value.clone());
+            PlanOp::JoinIndex { left, right, f, kv } => {
+                let (f, kv) = (f.clone(), *kv);
                 Node::Indexed($dep(*left).indexed($node)?.join_index(
                     $dep(*right).indexed($node)?,
                     move |k: &DynValue, a: &DynValue, b: &DynValue| {
                         // `join_index` takes an iterator of pairs; ours is always
-                        // exactly one, since the body is a single `(key, value)`.
-                        std::iter::once((eval(&key, &[k, a, b]), eval(&value, &[k, a, b])))
+                        // exactly one, since the body returns a single record.
+                        std::iter::once(split_kv(eval(&f, &[k, a, b]), kv))
                     },
                 ))
             }
@@ -438,6 +503,7 @@ fn build_root(
     built: &[Node<RootCircuit>],
     node: &crate::typecheck::PlanNode,
     inputs: &mut Vec<(String, ZSetHandle<DynValue>)>,
+    ids: &[String],
 ) -> Result<Node<RootCircuit>, anyhow::Error> {
     let _ = plan;
     let dep = |i: usize| -> &Node<RootCircuit> { &built[i] };
@@ -462,7 +528,7 @@ fn build_root(
         }
 
         PlanOp::Fixpoint { body, outputs } => {
-            build_fixpoint(circuit, built, node, body, outputs)?
+            build_fixpoint(circuit, built, node, body, outputs, ids)?
         }
 
         // One convergent stream of a fixpoint. Only recursive members are
@@ -486,9 +552,10 @@ fn build_body(
     vars: &[Node<NestedCircuit>],
     body: &[crate::typecheck::PlanNode],
     outer: &[Node<RootCircuit>],
+    ids: &[String],
 ) -> Result<Vec<Node<NestedCircuit>>, Diagnostic> {
     let mut nodes: Vec<Node<NestedCircuit>> = Vec::with_capacity(body.len());
-    for bn in body {
+    for (i, bn) in body.iter().enumerate() {
         let built = match &bn.op {
             // `delta0` carries a parent stream into the child circuit. It needs
             // `HasZero`, which `TypedBatch` has and the erased batches do not.
@@ -503,7 +570,10 @@ fn build_body(
                     .unwrap_or_else(|o| Diagnostic::error(Pass::Lower, bn.span, o.to_string()))
             })?,
         };
-        nodes.push(built);
+        // Every stream created inside a recursive scope needs a persistent id,
+        // or taking a checkpoint fails with `NoPersistentId`. A `RecVar` was
+        // already named by the caller, before anything was built from it.
+        nodes.push(if matches!(bn.op, PlanOp::RecVar { .. }) { built } else { built.named(&ids[i]) });
     }
     Ok(nodes)
 }
@@ -514,10 +584,22 @@ fn build_fixpoint(
     node: &crate::typecheck::PlanNode,
     body: &[crate::typecheck::PlanNode],
     outputs: &[usize],
+    parent_ids: &[String],
 ) -> Result<Node<RootCircuit>, anyhow::Error> {
     // The checker guarantees every recursive stream shares one shape, which is
     // what lets a single nested batch type serve them all.
     let flat = matches!(body[outputs[0]].ty, BatchType::ZSet(_));
+
+    // Ids for the body, and for the recursive slots within it. A slot's id is
+    // its own `RecVar` node's, so it identifies the same recursive stream
+    // across restarts however the program was written.
+    let body_ids = crate::typecheck::body_content_ids(parent_ids, body);
+    let mut rec_ids: Vec<String> = vec![String::new(); outputs.len()];
+    for (i, bn) in body.iter().enumerate() {
+        if let PlanOp::RecVar { slot } = &bn.op {
+            rec_ids[*slot] = body_ids[i].clone();
+        }
+    }
 
     // A failure inside the closure means the checker and the lowering disagree.
     // `recursive_dynamic` cannot carry a Diagnostic out, so it is parked here
@@ -528,8 +610,16 @@ fn build_fixpoint(
         let exports = circuit.recursive_dynamic(
             outputs.len(),
             |child: &NestedCircuit, vars: Vec<Flat<NestedCircuit>>| {
-                let wrapped: Vec<_> = vars.iter().cloned().map(Node::Flat).collect();
-                match build_body(child, &wrapped, body, built) {
+                // `dbsp` derives the ids of the implicit `distinct` and the
+                // exporting integral from the recursive stream's own id, and
+                // does so as they are constructed — so these must be named
+                // before `build_body` builds anything from them.
+                let wrapped: Vec<_> = vars
+                    .iter()
+                    .enumerate()
+                    .map(|(slot, v)| Node::Flat(v.set_persistent_id(Some(&rec_ids[slot]))))
+                    .collect();
+                match build_body(child, &wrapped, body, built, &body_ids) {
                     Ok(nodes) => Ok(outputs
                         .iter()
                         .map(|i| match &nodes[*i] {
@@ -549,8 +639,16 @@ fn build_fixpoint(
         let exports = circuit.recursive_dynamic(
             outputs.len(),
             |child: &NestedCircuit, vars: Vec<Indexed<NestedCircuit>>| {
-                let wrapped: Vec<_> = vars.iter().cloned().map(Node::Indexed).collect();
-                match build_body(child, &wrapped, body, built) {
+                // `dbsp` derives the ids of the implicit `distinct` and the
+                // exporting integral from the recursive stream's own id, and
+                // does so as they are constructed — so these must be named
+                // before `build_body` builds anything from them.
+                let wrapped: Vec<_> = vars
+                    .iter()
+                    .enumerate()
+                    .map(|(slot, v)| Node::Indexed(v.set_persistent_id(Some(&rec_ids[slot]))))
+                    .collect();
+                match build_body(child, &wrapped, body, built, &body_ids) {
                     Ok(nodes) => Ok(outputs
                         .iter()
                         .map(|i| match &nodes[*i] {

@@ -3,13 +3,13 @@
 - name: join two tables on a shared key
   source: |
     emp := input("emp")
-    emp :: zset(record(id: i64, name: sql.SqlString, dept_id: i64))
+    emp :: zset(record(id: i64, name: String, dept_id: i64))
     dept := input("dept")
-    dept :: zset(record(id: i64, dname: sql.SqlString))
+    dept :: zset(record(id: i64, dname: String))
 
-    emp_idx  := map_index(emp,  fun((r) -> (r.dept_id, record(name: r.name))))
-    dept_idx := map_index(dept, fun((r) -> (r.id, record(dname: r.dname))))
-    joined   := join(emp_idx, dept_idx, fun((k, e, d) -> record(name: e.name, dname: d.dname)))
+    emp_idx  := map_index(emp,  function((r) -> record(key: r.dept_id, value: record(name: r.name))))
+    dept_idx := map_index(dept, function((r) -> record(key: r.id, value: record(dname: r.dname))))
+    joined   := join(emp_idx, dept_idx, function((k, e, d) -> record(name: e.name, dname: d.dname)))
 
   input:
     - emp:
@@ -32,9 +32,9 @@
     l :: zset(record(k: i64, a: i64))
     r := input("r")
     r :: zset(record(k: i64, b: i64))
-    li := map_index(l, fun((x) -> (x.k, record(a: x.a))))
-    ri := map_index(r, fun((x) -> (x.k, record(b: x.b))))
-    j  := join(li, ri, fun((k, x, y) -> record(k: k, a: x.a, b: y.b)))
+    li := map_index(l, function((x) -> record(key: x.k, value: record(a: x.a))))
+    ri := map_index(r, function((x) -> record(key: x.k, value: record(b: x.b))))
+    j  := join(li, ri, function((k, x, y) -> record(k: k, a: x.a, b: y.b)))
 
   input:
     - l:
@@ -53,9 +53,9 @@
     l :: zset(record(k: i64, a: i64))
     r := input("r")
     r :: zset(record(k: i64, b: i64))
-    li := map_index(l, fun((x) -> (x.k, record(a: x.a))))
-    ri := map_index(r, fun((x) -> (x.k, record(b: x.b))))
-    j  := join(li, ri, fun((k, x, y) -> record(a: x.a, b: y.b)))
+    li := map_index(l, function((x) -> record(key: x.k, value: record(a: x.a))))
+    ri := map_index(r, function((x) -> record(key: x.k, value: record(b: x.b))))
+    j  := join(li, ri, function((k, x, y) -> record(a: x.a, b: y.b)))
 
   input:
     - l:
@@ -74,8 +74,8 @@
     pos :: zset(record(k: i64, a: i64))
     excluded := input("excluded")
     excluded :: zset(record(k: i64))
-    pi := map_index(pos, fun((x) -> (x.k, record(a: x.a))))
-    ni := map_index(excluded, fun((x) -> (x.k, record(k: x.k))))
+    pi := map_index(pos, function((x) -> record(key: x.k, value: record(a: x.a))))
+    ni := map_index(excluded, function((x) -> record(key: x.k, value: record(k: x.k))))
     out := antijoin(pi, ni)
 
   input:
@@ -96,15 +96,15 @@
     dept := input("dept")
     dept :: zset(record(id: i64, region_id: i64))
     region := input("region")
-    region :: zset(record(id: i64, rname: sql.SqlString))
+    region :: zset(record(id: i64, rname: String))
 
-    ei := map_index(emp,  fun((r) -> (r.dept_id, record(id: r.id))))
-    di := map_index(dept, fun((r) -> (r.id, record(region_id: r.region_id))))
+    ei := map_index(emp,  function((r) -> record(key: r.dept_id, value: record(id: r.id))))
+    di := map_index(dept, function((r) -> record(key: r.id, value: record(region_id: r.region_id))))
     # Re-key onto region_id without a separate map_index step.
-    by_region := join_index(ei, di, fun((k, e, d) -> (d.region_id, record(id: e.id))))
+    by_region := join_index(ei, di, function((k, e, d) -> record(key: d.region_id, value: record(id: e.id))))
 
-    ri := map_index(region, fun((r) -> (r.id, record(rname: r.rname))))
-    out := join(by_region, ri, fun((k, e, r) -> record(id: e.id, rname: r.rname)))
+    ri := map_index(region, function((r) -> record(key: r.id, value: record(rname: r.rname))))
+    out := join(by_region, ri, function((k, e, r) -> record(id: e.id, rname: r.rname)))
 
   input:
     - emp:
@@ -117,3 +117,23 @@
   expected_exact_output:
     - out:
         - [1, {id: 1, rname: "emea"}]
+
+- name: key and value are matched by name, not position
+  source: |
+    a := input("a")
+    a :: zset(record(k: i64, v: i64))
+    forward  := map_index(a, function((r) -> record(key: r.k, value: r)))
+    reversed := map_index(a, function((r) -> record(value: r, key: r.k)))
+
+  # `key` and `value` are the one place a field *name* carries meaning, so the
+  # order they are written in does not matter — unlike every other record,
+  # where the literal's order defines the type.
+  input:
+    - a:
+        - [1, {k: 7, v: 1}]
+
+  expected_exact_output:
+    - forward:
+        - [1, 7, {k: 7, v: 1}]
+      reversed:
+        - [1, 7, {k: 7, v: 1}]

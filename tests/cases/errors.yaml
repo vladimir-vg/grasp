@@ -9,20 +9,20 @@
   source: |
     a := input("a")
     a :: zset(record(id: i64))
-    b := filter(a, fun((r) -> r.nope > 1))
+    b := filter(a, function((r) -> r.nope > 1))
 
   expected_diagnostics:
     - severity: error
       pass: typecheck
       message: "has no field `nope`"
       line: 3
-      column: 27
+      column: 32
 
 - name: unknown parameter
   source: |
     a := input("a")
     a :: zset(record(id: i64))
-    b := filter(a, fun((r) -> q.id > 1))
+    b := filter(a, function((r) -> q.id > 1))
 
   expected_diagnostics:
     - pass: typecheck
@@ -33,10 +33,10 @@
     a := input("a")
     a :: zset(record(id: i64))
     b := input("b")
-    b :: zset(record(name: sql.SqlString))
-    ai := map_index(a, fun((r) -> (r.id, r)))
-    bi := map_index(b, fun((r) -> (r.name, r)))
-    j  := join(ai, bi, fun((k, x, y) -> k))
+    b :: zset(record(name: String))
+    ai := map_index(a, function((r) -> record(key: r.id, value: r)))
+    bi := map_index(b, function((r) -> record(key: r.name, value: r)))
+    j  := join(ai, bi, function((k, x, y) -> k))
 
   expected_diagnostics:
     - pass: typecheck
@@ -63,8 +63,8 @@
   source: |
     a := input("a")
     a :: zset(record(id: i64))
-    b := map(c, fun((r) -> r))
-    c := map(b, fun((r) -> r))
+    b := map(c, function((r) -> r))
+    c := map(b, function((r) -> r))
 
   expected_diagnostics:
     - pass: typecheck
@@ -73,8 +73,8 @@
 - name: comparing incompatible types
   source: |
     a := input("a")
-    a :: zset(record(id: i64, name: sql.SqlString))
-    b := filter(a, fun((r) -> r.id == r.name))
+    a :: zset(record(id: i64, name: String))
+    b := filter(a, function((r) -> r.id == r.name))
 
   expected_diagnostics:
     - pass: typecheck
@@ -84,7 +84,7 @@
   source: |
     a := input("a")
     a :: zset(record(id: i64))
-    b := filter(a, fun((r) -> r.id))
+    b := filter(a, function((r) -> r.id))
 
   expected_diagnostics:
     - pass: typecheck
@@ -94,8 +94,8 @@
   source: |
     a := input("a")
     a :: zset(record(id: i64))
-    b := map(a, fun((r) -> r.id))
-    b :: zset(sql.SqlString)
+    b := map(a, function((r) -> r.id))
+    b :: zset(String)
 
   expected_diagnostics:
     - pass: typecheck
@@ -111,15 +111,18 @@
     - pass: typecheck
       message: "unknown operator `frobnicate`"
 
-- name: a tuple is only allowed as a map_index body
+- name: a pair is not a value
   source: |
     a := input("a")
     a :: zset(record(id: i64))
-    b := map(a, fun((r) -> (r.id, r.id)))
+    b := map(a, function((r) -> (r.id, r.id)))
 
+  # `(...)` groups an expression and nothing else. The three indexing operators
+  # take an ordinary `record(key: ..., value: ...)`, so there is no pair form
+  # left in the language to be legal anywhere.
   expected_diagnostics:
-    - pass: typecheck
-      message: "only allowed as the body of a `map_index`"
+    - pass: parse
+      message: "it does not build a pair"
 
 - name: a stray character is a parse error
   source: |
@@ -145,7 +148,7 @@
   source: |
     a := input("a")
     a :: zset(record(id: i64))
-    b := map(a, fun((r) -> record(x: r.id, x: r.id)))
+    b := map(a, function((r) -> record(x: r.id, x: r.id)))
 
   expected_diagnostics:
     - pass: parse
@@ -160,62 +163,66 @@
     - pass: parse
       message: "not a distinct type"
 
-- name: a flat_map body must be a list
+- name: a flat_map body must be an array
   source: |
     a := input("a")
     a :: zset(record(id: i64))
-    b := flat_map(a, fun((r) -> r))
+    b := flat_map(a, function((r) -> r))
 
   expected_diagnostics:
     - pass: typecheck
-      message: "must return a list of rows"
+      message: "must return an array of rows"
 
 - name: an empty flat_map list has no inferable type
   source: |
     a := input("a")
     a :: zset(record(id: i64))
-    b := flat_map(a, fun((r) -> []))
+    b := flat_map(a, function((r) -> []))
 
   expected_diagnostics:
     - pass: typecheck
       message: "at least one element"
 
-- name: flat_map rows must share one type
+- name: an array has one element type
   source: |
     a := input("a")
-    a :: zset(record(id: i64, name: sql.SqlString))
-    b := flat_map(a, fun((r) -> [record(x: r.id), record(y: r.name)]))
+    a :: zset(record(id: i64, name: String))
+    b := flat_map(a, function((r) -> [record(x: r.id), record(y: r.name)]))
 
+  # An array is an ordinary value now, so this is the array's own rule rather
+  # than one `flat_map` imposes on a list of output rows.
   expected_diagnostics:
     - pass: typecheck
-      message: "must share one type"
+      message: "incompatible types"
 
-- name: every flat_map_index element must be a pair
-  source: |
-    a := input("a")
-    a :: zset(record(id: i64))
-    b := flat_map_index(a, fun((r) -> [record(id: r.id)]))
-
-  expected_diagnostics:
-    - pass: typecheck
-      message: "must be a `(key, value)` pair"
-
-- name: a list is not a value
+- name: flat_map_index elements must carry key and value
   source: |
     a := input("a")
     a :: zset(record(id: i64))
-    b := map(a, fun((r) -> [r.id]))
+    b := flat_map_index(a, function((r) -> [record(id: r.id)]))
 
   expected_diagnostics:
     - pass: typecheck
-      message: "a list is only allowed as the body of a `flat_map`"
+      message: "must return `record(key: ..., value: ...)`"
+
+- name: an empty array has no element type
+  source: |
+    a := input("a")
+    a :: zset(record(id: i64))
+    b := flat_map(a, function((r) -> []))
+
+  # Arrays are values now, so `[...]` is legal anywhere — but an empty one
+  # names no element type, and nothing else in the expression supplies it.
+  expected_diagnostics:
+    - pass: typecheck
+      message: "an empty array has no element type"
 
 - name: unknown aggregator
   source: |
     a := input("a")
     a :: zset(record(id: i64, k: i64))
-    idx := map_index(a, fun((r) -> (r.k, r)))
-    b := aggregate(idx, median, fun((v) -> v.id))
+    idx := map_index(a, function((r) -> record(key: r.k, value: r)))
+    b := aggregate(idx, median, function((v) -> v.id))
 
   expected_diagnostics:
     - pass: typecheck
@@ -224,9 +231,9 @@
 - name: sum needs a numeric projection
   source: |
     a := input("a")
-    a :: zset(record(k: i64, name: sql.SqlString))
-    idx := map_index(a, fun((r) -> (r.k, r)))
-    b := aggregate(idx, sum, fun((v) -> v.name))
+    a :: zset(record(k: i64, name: String))
+    idx := map_index(a, function((r) -> record(key: r.k, value: r)))
+    b := aggregate(idx, sum, function((v) -> v.name))
 
   expected_diagnostics:
     - pass: typecheck
@@ -236,8 +243,8 @@
   source: |
     a := input("a")
     a :: zset(record(k: i64, v: i64))
-    idx := map_index(a, fun((r) -> (r.k, r)))
-    b := filter(idx, fun((r) -> true))
+    idx := map_index(a, function((r) -> record(key: r.k, value: r)))
+    b := filter(idx, function((r) -> true))
 
   expected_diagnostics:
     - pass: typecheck
@@ -258,7 +265,7 @@
   source: |
     a := input("a")
     a :: zset(record(v: i64))
-    min := map(a, fun((r) -> r))
+    min := map(a, function((r) -> r))
 
   expected_diagnostics:
     - pass: parse
@@ -276,7 +283,7 @@
   source: |
     a := input("a")
     a :: zset(record(v: i64))
-    b := map(a, fun((abs) -> abs))
+    b := map(a, function((abs) -> abs))
 
   expected_diagnostics:
     - pass: parse
@@ -286,7 +293,7 @@
   source: |
     a := input("a")
     a :: zset(record(v: optional(i64)))
-    b := map(a, fun((r) -> record(v: null)))
+    b := map(a, function((r) -> record(v: null)))
 
   expected_diagnostics:
     - pass: parse
@@ -296,7 +303,7 @@
   source: |
     a := input("a")
     a :: zset(record(x: optional(i64)))
-    b := map(a, fun((r) -> record(v: r.x + 1)))
+    b := map(a, function((r) -> record(v: r.x + 1)))
 
   expected_diagnostics:
     - pass: typecheck
@@ -306,7 +313,7 @@
   source: |
     a := input("a")
     a :: zset(record(p: optional(bool)))
-    b := filter(a, fun((r) -> not r.p))
+    b := filter(a, function((r) -> not r.p))
 
   expected_diagnostics:
     - pass: typecheck
@@ -316,7 +323,7 @@
   source: |
     a := input("a")
     a :: zset(record(x: i64))
-    b := map(a, fun((r) -> if r.x then 1 else 2))
+    b := map(a, function((r) -> if r.x then 1 else 2))
 
   expected_diagnostics:
     - pass: parse
@@ -326,8 +333,8 @@
   source: |
     a := input("a")
     a :: zset(record(k: i64, x: f64))
-    idx := map_index(a, fun((r) -> (r.k, r)))
-    b := aggregate(idx, sum, fun((v) -> v.x))
+    idx := map_index(a, function((r) -> record(key: r.k, value: r)))
+    b := aggregate(idx, sum, function((v) -> v.x))
 
   expected_diagnostics:
     - pass: typecheck
@@ -337,8 +344,8 @@
   source: |
     a := input("a")
     a :: zset(record(k: i64, x: f64))
-    idx := map_index(a, fun((r) -> (r.k, r)))
-    b := aggregate(idx, avg, fun((v) -> v.x))
+    idx := map_index(a, function((r) -> record(key: r.k, value: r)))
+    b := aggregate(idx, avg, function((v) -> v.x))
 
   expected_diagnostics:
     - pass: typecheck
@@ -346,7 +353,7 @@
 
 - name: input cannot be nested
   source: |
-    out := map(input("emp"), fun((r) -> r))
+    out := map(input("emp"), function((r) -> r))
 
   expected_diagnostics:
     - pass: typecheck
@@ -464,7 +471,7 @@
     a := input("a")
     a :: zset(record(v: i64))
     circuit c(src: s, out: o) {
-        out := map_index(o, fun((r) -> (r.v, r)))
+        out := map_index(o, function((r) -> record(key: r.v, value: r)))
     }
     fp := fixpoint(c(src: a, out: empty()))
 
@@ -522,8 +529,217 @@
     a := input("t")
     a :: zset(record(v: i64))
     b := input("t")
-    b :: zset(record(w: sql.SqlString))
+    b :: zset(record(w: String))
 
   expected_diagnostics:
     - pass: typecheck
       message: "declared with two different types"
+
+# --- The type system does not lie -------------------------------------------
+#
+# Every operation whose result may be absent says so in its type, and every
+# operation that cannot handle absence rejects it. See the "Absence" section of
+# docs/design/language.md.
+
+- name: length needs a string
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    out := map(a, function((r) -> length(r.v)))
+
+  # `length` used to accept any argument and return a bare `i64`, so this
+  # compiled and then evaluated to NONE in a column typed `i64`.
+  expected_diagnostics:
+    - pass: typecheck
+      message: "argument 1 of `length` must be a string"
+
+- name: concat rejects an optional operand
+  source: |
+    a := input("a")
+    a :: zset(record(v: optional(String)))
+    out := map(a, function((r) -> concat(r.v, r.v)))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "use `coalesce` to supply a default first"
+
+- name: abs rejects an optional operand
+  source: |
+    a := input("a")
+    a :: zset(record(v: optional(i64)))
+    out := map(a, function((r) -> abs(r.v)))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "use `coalesce` to supply a default first"
+
+- name: division yields an optional, so a definite typespec is rejected
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64, w: i64))
+    out :: zset(record(q: i64))
+    out := map(a, function((r) -> record(q: r.v / r.w)))
+
+  # A zero divisor has no value to return, so `/` is the one arithmetic whose
+  # result may be absent — and the type says so rather than the runtime
+  # producing a NONE the schema forbids.
+  expected_diagnostics:
+    - pass: typecheck
+      message: "is declared as `zset(record(q: i64))` but is inferred as `zset(record(q: optional(i64)))`"
+
+- name: a fixpoint cannot be nested inside a fixpoint
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    circuit inner(base: ib, p: ip) {
+        p :: zset(record(v: i64))
+        p := plus(ib, ip)
+    }
+    circuit outer(base: ob, q: oq) {
+        q :: zset(record(v: i64))
+        f := fixpoint(inner(base: ob, p: empty()))
+        q := plus(oq, f.p)
+    }
+    fp := fixpoint(outer(base: a, q: empty()))
+
+  # `dbsp` allows circuits at arbitrary depth, but each level is a distinct Rust
+  # circuit type needing its own instantiation of the lowering. This used to
+  # compile and then fail inside `Runner::build` with a Debug dump of the plan,
+  # from a branch whose own comment says the checker should have caught it.
+  expected_diagnostics:
+    - pass: typecheck
+      message: "`fixpoint` cannot be nested"
+
+# --- One way to write each thing --------------------------------------------
+
+- name: the sql namespace has no types
+  source: |
+    a := input("a")
+    a :: zset(record(v: sql.SqlString))
+
+  # `sql.SqlString` and `String` were two ways to write one thing, with silent
+  # coercion between them: every string builtin returned `sql.SqlString`
+  # whatever it was given. The namespace stays reserved so it can come back with
+  # types that are genuinely distinct.
+  expected_diagnostics:
+    - pass: parse
+      message: "the `sql.*` namespace is reserved but has no types in this build"
+
+- name: plus is arithmetic, not concatenation
+  source: |
+    a := input("a")
+    a :: zset(record(v: String))
+    out := map(a, function((r) -> r.v + r.v))
+
+  # `+` used to double as string concatenation and return the *other* string
+  # type. `concat` is the one way to join strings.
+  expected_diagnostics:
+    - pass: typecheck
+      message: "cannot apply `+`"
+
+# --- No implicit conversion --------------------------------------------------
+#
+# Arithmetic and comparison need operands of one type. A *literal* takes the
+# type beside it, which is what lets one function body serve every numeric type;
+# a *value* must already be the type you need.
+
+- name: arithmetic will not mix two numeric types
+  source: |
+    a := input("a")
+    a :: zset(record(i: i64, f: f64))
+    out := map(a, function((r) -> record(v: r.i + r.f)))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "there is no implicit conversion"
+
+- name: comparison will not mix two numeric types either
+  source: |
+    a := input("a")
+    a :: zset(record(i: i64, f: f64))
+    out := filter(a, function((r) -> r.i > r.f))
+
+  # Comparison and arithmetic answer "can these two types meet?" the same way,
+  # because both go through one `unify`.
+  expected_diagnostics:
+    - pass: typecheck
+      message: "cannot compare them"
+
+- name: a float literal has no integer type
+  source: |
+    a := input("a")
+    a :: zset(record(i: i64))
+    out := map(a, function((r) -> record(v: r.i + 1.5)))
+
+  # An integer literal inhabits any numeric type; a float literal only the
+  # floating ones. Neither drags the other operand anywhere.
+  expected_diagnostics:
+    - pass: typecheck
+      message: "a float literal has no `i64` value"
+
+# --- Functions --------------------------------------------------------------
+
+- name: a function cannot call itself
+  source: |
+    function loop(x) { return loop(x) + 1 }
+
+    a := input("a")
+    a :: zset(record(v: i64))
+    out := map(a, function((r) -> loop(r.v)))
+
+  # A function is inlined at check time, so this would not terminate while
+  # *compiling*, never mind at runtime.
+  expected_diagnostics:
+    - pass: typecheck
+      message: "calls itself through"
+
+- name: mutual recursion is a cycle too
+  source: |
+    function ping(x) { return pong(x) }
+    function pong(x) { return ping(x) }
+
+    a := input("a")
+    a :: zset(record(v: i64))
+    out := map(a, function((r) -> ping(r.v)))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "calls itself through"
+
+- name: an error in a body names the call site that caused it
+  source: |
+    function scale(x) { return x * 2 }
+
+    a := input("a")
+    a :: zset(record(s: String))
+    out := map(a, function((r) -> scale(r.s)))
+
+  # The body is fine at every numeric type and wrong at this one, so pointing
+  # only at the body would not say what to change. The span stays on the
+  # offending expression; the message carries the call site.
+  expected_diagnostics:
+    - pass: typecheck
+      message: "in `scale`, instantiated at"
+
+- name: a name means one thing
+  source: |
+    function dup(x) { return x }
+
+    dup := input("a")
+    dup :: zset(record(v: i64))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "is both a function and a node"
+
+- name: a function is called with the right number of arguments
+  source: |
+    function add(x, y) { return x + y }
+
+    a := input("a")
+    a :: zset(record(v: i64))
+    out := map(a, function((r) -> add(r.v)))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "`add` takes 2 argument(s), found 1"

@@ -43,8 +43,8 @@ arity is what distinguishes them.
   source: |
     emp := input("emp")
     emp :: zset(record(id: i64, dept_id: i64, salary: i64))
-    idx := map_index(emp, fun((r) -> (r.dept_id, r)))
-    by_dept := aggregate(idx, max, fun((v) -> v.salary))
+    idx := map_index(emp, function((r) -> record(key: r.dept_id, value: r)))
+    by_dept := aggregate(idx, max, function((v) -> v.salary))
 
   input:
     - emp:
@@ -76,7 +76,7 @@ rows nobody expected, which is the bug class these tests exist to catch.
   source: |
     a := input("a")
     a :: zset(record(id: i64))
-    b := filter(a, fun((r) -> r.nope > 1))
+    b := filter(a, function((r) -> r.nope > 1))
 
   expected_diagnostics:
     - severity: error

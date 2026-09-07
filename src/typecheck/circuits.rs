@@ -277,7 +277,13 @@ pub(super) fn check_fixpoint(
 
     for i in topo_order(&group.nodes)? {
         let (bname, rhs, bspan) = group.nodes[i];
-        check_decl(bname, rhs, bspan, &mut sub, Env { specs: &group.specs, scope: &scope, prefix: "", ..env })?;
+        check_decl(
+            bname,
+            rhs,
+            bspan,
+            &mut sub,
+            Env { specs: &group.specs, scope: &scope, prefix: "", in_fixpoint: true, ..env },
+        )?;
         if let Some(idx) = sub.by_name.get(bname.as_str()).copied() {
             scope.insert(bname.clone(), idx);
         }

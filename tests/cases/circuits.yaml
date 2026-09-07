@@ -8,8 +8,8 @@
     a :: zset(record(v: i64))
 
     circuit normalize(src: s) {
-        big     := filter(s, fun((r) -> r.v > 1))
-        doubled := map(big, fun((r) -> record(v: r.v * 2)))
+        big     := filter(s, function((r) -> r.v > 1))
+        doubled := map(big, function((r) -> record(v: r.v * 2)))
     }
 
     n   := normalize(src: a)
@@ -32,7 +32,7 @@
     b :: zset(record(v: i64))
 
     circuit double(src: s) {
-        out := map(s, fun((r) -> record(v: r.v * 2)))
+        out := map(s, function((r) -> record(v: r.v * 2)))
     }
 
     x   := double(src: a)
@@ -58,9 +58,9 @@
     r :: zset(record(k: i64, b: i64))
 
     circuit pair(left: x, right: y) {
-        li     := map_index(x, fun((e) -> (e.k, record(a: e.a))))
-        ri     := map_index(y, fun((e) -> (e.k, record(b: e.b))))
-        joined := join(li, ri, fun((k, p, q) -> record(a: p.a, b: q.b)))
+        li     := map_index(x, function((e) -> record(key: e.k, value: record(a: e.a))))
+        ri     := map_index(y, function((e) -> record(key: e.k, value: record(b: e.b))))
+        joined := join(li, ri, function((k, p, q) -> record(a: p.a, b: q.b)))
     }
 
     j   := pair(left: l, right: r)
@@ -82,7 +82,7 @@
     a :: zset(record(v: i64))
 
     circuit double(src: s) {
-        out := map(s, fun((r) -> record(v: r.v * 2)))
+        out := map(s, function((r) -> record(v: r.v * 2)))
     }
 
     once  := double(src: a)
@@ -134,7 +134,7 @@
     a :: zset(record(v: i64))
 
     circuit double(src: s) {
-        out := map(s, fun((r) -> record(v: r.v * 2)))
+        out := map(s, function((r) -> record(v: r.v * 2)))
     }
 
     circuit twice(src: s) {

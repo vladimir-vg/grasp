@@ -13,11 +13,11 @@
     edges := input("edges")
     edges :: zset(record(src: i64, dst: i64))
     # keyed by the far end, so a path and an outgoing edge meet on that node
-    base  := map_index(edges, fun((r) -> (r.dst, record(src: r.src))))
-    fwd   := map_index(edges, fun((r) -> (r.src, record(dst: r.dst))))
+    base  := map_index(edges, function((r) -> record(key: r.dst, value: record(src: r.src))))
+    fwd   := map_index(edges, function((r) -> record(key: r.src, value: record(dst: r.dst))))
 
     circuit tc(base: b, fwd: f, path: p) {
-        step := join_index(p, f, fun((k, a, e) -> (e.dst, record(src: a.src))))
+        step := join_index(p, f, function((k, a, e) -> record(key: e.dst, value: record(src: a.src))))
         path := plus(b, step)
     }
 
@@ -46,11 +46,11 @@
     edges := input("edges")
     edges :: zset(record(src: i64, dst: i64))
     # keyed by the far end, so a path and an outgoing edge meet on that node
-    base  := map_index(edges, fun((r) -> (r.dst, record(src: r.src))))
-    fwd   := map_index(edges, fun((r) -> (r.src, record(dst: r.dst))))
+    base  := map_index(edges, function((r) -> record(key: r.dst, value: record(src: r.src))))
+    fwd   := map_index(edges, function((r) -> record(key: r.src, value: record(dst: r.dst))))
 
     circuit tc(base: b, fwd: f, path: p) {
-        step := join_index(p, f, fun((k, a, e) -> (e.dst, record(src: a.src))))
+        step := join_index(p, f, function((k, a, e) -> record(key: e.dst, value: record(src: a.src))))
         path := plus(b, step)
     }
 
@@ -70,11 +70,11 @@
     edges := input("edges")
     edges :: zset(record(src: i64, dst: i64))
     # keyed by the far end, so a path and an outgoing edge meet on that node
-    base  := map_index(edges, fun((r) -> (r.dst, record(src: r.src))))
-    fwd   := map_index(edges, fun((r) -> (r.src, record(dst: r.dst))))
+    base  := map_index(edges, function((r) -> record(key: r.dst, value: record(src: r.src))))
+    fwd   := map_index(edges, function((r) -> record(key: r.src, value: record(dst: r.dst))))
 
     circuit tc(base: b, fwd: f, path: p) {
-        step := join_index(p, f, fun((k, a, e) -> (e.dst, record(src: a.src))))
+        step := join_index(p, f, function((k, a, e) -> record(key: e.dst, value: record(src: a.src))))
         path := plus(b, step)
     }
 
@@ -103,11 +103,11 @@
   source: |
     edges := input("edges")
     edges :: zset(record(src: i64, dst: i64))
-    base  := map_index(edges, fun((r) -> (r.dst, record(src: r.src))))
-    fwd   := map_index(edges, fun((r) -> (r.src, record(dst: r.dst))))
+    base  := map_index(edges, function((r) -> record(key: r.dst, value: record(src: r.src))))
+    fwd   := map_index(edges, function((r) -> record(key: r.src, value: record(dst: r.dst))))
 
     circuit tc(base: b, fwd: f, path: p) {
-        step := join_index(p, f, fun((k, a, e) -> (e.dst, record(src: a.src))))
+        step := join_index(p, f, function((k, a, e) -> record(key: e.dst, value: record(src: a.src))))
         path := distinct(plus(b, step))
     }
 
@@ -130,12 +130,12 @@
   source: |
     edges := input("edges")
     edges :: zset(record(src: i64, dst: i64))
-    base  := map_index(edges, fun((r) -> (r.dst, record(src: r.src))))
-    fwd   := map_index(edges, fun((r) -> (r.src, record(dst: r.dst))))
+    base  := map_index(edges, function((r) -> record(key: r.dst, value: record(src: r.src))))
+    fwd   := map_index(edges, function((r) -> record(key: r.src, value: record(dst: r.dst))))
 
     circuit tc(base: b, fwd: f, path: p) {
         path :: indexed_zset(i64, record(src: i64))
-        step := join_index(p, f, fun((k, a, e) -> (e.dst, record(src: a.src))))
+        step := join_index(p, f, function((k, a, e) -> record(key: e.dst, value: record(src: a.src))))
         path := plus(b, step)
     }
 

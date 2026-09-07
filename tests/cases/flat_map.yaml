@@ -5,7 +5,7 @@
   source: |
     emp := input("emp")
     emp :: zset(record(id: i64))
-    tags := flat_map(emp, fun((r) ->
+    tags := flat_map(emp, function((r) ->
         [record(id: r.id, tag: "primary"),
          record(id: r.id, tag: "backup")]))
 
@@ -22,7 +22,7 @@
   source: |
     emp := input("emp")
     emp :: zset(record(id: i64))
-    out := flat_map(emp, fun((r) -> [record(id: r.id)]))
+    out := flat_map(emp, function((r) -> [record(id: r.id)]))
 
   input:
     - emp:
@@ -36,7 +36,7 @@
   source: |
     emp := input("emp")
     emp :: zset(record(id: i64))
-    two := flat_map(emp, fun((r) -> [record(v: r.id), record(v: r.id + 100)]))
+    two := flat_map(emp, function((r) -> [record(v: r.id), record(v: r.id + 100)]))
 
   input:
     - emp:
@@ -51,7 +51,7 @@
   source: |
     emp := input("emp")
     emp :: zset(record(id: i64))
-    dup := flat_map(emp, fun((r) -> [record(id: r.id), record(id: r.id)]))
+    dup := flat_map(emp, function((r) -> [record(id: r.id), record(id: r.id)]))
 
   input:
     - emp:
@@ -66,9 +66,9 @@
   source: |
     emp := input("emp")
     emp :: zset(record(id: i64, dept_id: i64, mgr_id: i64))
-    both := flat_map_index(emp, fun((r) ->
-        [(r.dept_id, record(id: r.id)),
-         (r.mgr_id, record(id: r.id))]))
+    both := flat_map_index(emp, function((r) ->
+        [record(key: r.dept_id, value: record(id: r.id)),
+         record(key: r.mgr_id, value: record(id: r.id))]))
 
   input:
     - emp:
@@ -84,11 +84,11 @@
     emp := input("emp")
     emp :: zset(record(id: i64, dept_id: i64, mgr_id: i64))
     dept := input("dept")
-    dept :: zset(record(id: i64, dname: sql.SqlString))
-    ei := flat_map_index(emp, fun((r) ->
-        [(r.dept_id, record(id: r.id)), (r.mgr_id, record(id: r.id))]))
-    di := map_index(dept, fun((r) -> (r.id, record(dname: r.dname))))
-    j  := join(ei, di, fun((k, e, d) -> record(id: e.id, dname: d.dname)))
+    dept :: zset(record(id: i64, dname: String))
+    ei := flat_map_index(emp, function((r) ->
+        [record(key: r.dept_id, value: record(id: r.id)), record(key: r.mgr_id, value: record(id: r.id))]))
+    di := map_index(dept, function((r) -> record(key: r.id, value: record(dname: r.dname))))
+    j  := join(ei, di, function((k, e, d) -> record(id: e.id, dname: d.dname)))
 
   input:
     - emp:
@@ -101,3 +101,41 @@
     - j:
         - [1, {id: 1, dname: "eng"}]
         - [1, {id: 1, dname: "ops"}]
+
+# --- Arrays are values ------------------------------------------------------
+
+- name: fan-out follows the data, not the source
+  source: |
+    posts := input("posts")
+    posts :: zset(record(id: i64, tags: array(String)))
+    tags := flat_map(posts, function((r) -> r.tags))
+
+  # The array comes out of the row, so one input row emits as many rows as it
+  # happens to carry — none, one, or three. With `[...]` as fan-out *syntax*
+  # the count was fixed by the program text and this was not expressible at
+  # all; it is what a SQL frontend needs for `UNNEST`.
+  input:
+    - posts:
+        - [1, {id: 1, tags: ["a", "b", "c"]}]
+        - [1, {id: 2, tags: ["b"]}]
+        - [1, {id: 3, tags: []}]
+
+  expected_exact_output:
+    - tags:
+        - [2, "b"]
+        - [1, "a"]
+        - [1, "c"]
+
+- name: an array survives a round trip, and length measures it
+  source: |
+    posts := input("posts")
+    posts :: zset(record(id: i64, tags: array(String)))
+    out := map(posts, function((r) -> record(tags: r.tags, n: length(r.tags))))
+
+  input:
+    - posts:
+        - [1, {id: 1, tags: ["a", "b"]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {tags: ["a", "b"], n: 2}]

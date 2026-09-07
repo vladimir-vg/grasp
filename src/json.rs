@@ -37,18 +37,27 @@ fn bad<T>(msg: impl Into<String>) -> JResult<T> {
 // ---------------------------------------------------------------------------
 
 pub fn encode_value(v: &DynValue, ty: &TypeDesc) -> JResult<J> {
+    // The mirror of `decode_value`'s check, and for the same reason: a declared
+    // type is a promise the runtime cannot break. Emitting `null` here would
+    // produce output this codec would refuse to read back.
     if v.is_none() {
-        return Ok(J::Null);
+        return if ty.is_optional() {
+            Ok(J::Null)
+        } else {
+            bad(format!("NONE where `{ty}` was expected; the column is not optional"))
+        };
     }
     let ty = ty.non_null();
     Ok(match (v, ty) {
         (DynValue::Bool(b), TypeDesc::Bool) => J::Bool(*b),
         (DynValue::I64(n), TypeDesc::I64) => J::from(*n),
-        (DynValue::F64(f), TypeDesc::F64) => serde_json::Number::from_f64(f.into_inner())
-            .map(J::Number)
-            .unwrap_or(J::Null),
+        // NaN and the infinities have no JSON representation. Silently writing
+        // `null` would put absence in a column that is not optional.
+        (DynValue::F64(f), TypeDesc::F64) => match serde_json::Number::from_f64(f.into_inner()) {
+            Some(n) => J::Number(n),
+            None => return bad(format!("`{}` has no JSON representation", f.into_inner())),
+        },
         (DynValue::String(s), TypeDesc::String) => J::String(s.clone()),
-        (DynValue::SqlString(s), TypeDesc::SqlString) => J::String(s.str().to_string()),
         (DynValue::Record(fields), TypeDesc::Record(schema)) => {
             if fields.len() != schema.len() {
                 return bad(format!(
@@ -63,6 +72,9 @@ pub fn encode_value(v: &DynValue, ty: &TypeDesc) -> JResult<J> {
             }
             J::Object(obj)
         }
+        (DynValue::Array(items), TypeDesc::Array(elem)) => J::Array(
+            items.iter().map(|v| encode_value(v, elem)).collect::<JResult<Vec<_>>>()?,
+        ),
         (v, t) => return bad(format!("cannot encode a {} as `{t}`", v.type_name())),
     })
 }
@@ -93,10 +105,6 @@ pub fn decode_value(j: &J, ty: &TypeDesc) -> JResult<DynValue> {
             Some(s) => DynValue::String(s.to_string()),
             None => return bad(format!("expected a string, found `{j}`")),
         },
-        TypeDesc::SqlString => match j.as_str() {
-            Some(s) => DynValue::str(s),
-            None => return bad(format!("expected a string, found `{j}`")),
-        },
         TypeDesc::Record(schema) => {
             let Some(obj) = j.as_object() else {
                 return bad(format!("expected an object, found `{j}`"));
@@ -116,6 +124,20 @@ pub fn decode_value(j: &J, ty: &TypeDesc) -> JResult<DynValue> {
                 return bad(format!("unknown field `{extra}`"));
             }
             DynValue::Record(fields)
+        }
+        TypeDesc::Array(elem) => {
+            let Some(items) = j.as_array() else {
+                return bad(format!("expected an array, found `{j}`"));
+            };
+            DynValue::Array(
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        decode_value(v, elem).map_err(|e| JsonError(format!("element {i}: {e}")))
+                    })
+                    .collect::<JResult<Vec<_>>>()?,
+            )
         }
         TypeDesc::Optional(_) => unreachable!("stripped by non_null"),
     })

@@ -7,8 +7,8 @@ computational model (Z-sets, weights, deltas, epochs, stateful operators) and
 describes only how we use it.
 
 It describes the mapping as implemented. [`json.md`](json.md) designs a
-`FlatVariant`-backed `json` type against the invariants recorded below, and
-[`expressions.md`](expressions.md) the expression language it needs.
+`FlatVariant`-backed `json` type against the invariants recorded below, together
+with the `match` and pattern language that converting one needs.
 
 ## Value model
 
@@ -27,18 +27,26 @@ implemented:
   propagating `NULL`.
 - `Bool(bool)`, `I64(i64)`, `F64(F64)` — `dbsp::algebra::F64`, since bare
   `f64` is not `Ord`.
-- `String(String)` and `SqlString(SqlString)` — `std::String` and sqllib's
-  cheaply-cloned `ArcStr`.
+- `String(String)` — one string type. An earlier cut also had `SqlString`, a
+  cheaply-cloned `ArcStr`; it was withdrawn along with the `sql.*` namespace,
+  because two spellings of one thing is a decision an emitter has to make with
+  no information.
 - `Record(Vec<DynValue>)` — the language's `record(...)`. **Positional.**
+- `Array(Vec<DynValue>)` — the language's `array(T)`.
 
-The rest of the vocabulary — the other integer widths, `f32`, a list value, and
-every `sql.*` type but `SqlString` — is future work, listed in
-[`overview.md`](overview.md). **Append new variants at the end**: the variant
-order is the archived discriminant, which is a storage format.
+The rest of the vocabulary — the other integer widths, `f32`, and the `sql.*`
+types — is future work, listed in [`overview.md`](overview.md). **Append new
+variants at the end**: the variant order is the archived discriminant, which is
+a storage format. Removing one shifts it too, which is why `SqlString` could go
+now and could not once anything is stored.
 
-There is no tuple variant, and there will not be one for the language's
-`(key, value)` pairs: those are syntax, destructured by the type checker, and
-never streamed.
+`Record` and `Array` are the two containers whose `Ord`, `Hash` and archived
+ordering are ours rather than borrowed, so both are covered by the proptests in
+`tests/invariants.rs`.
+
+There is no tuple variant. `map_index`, `join_index` and `flat_map_index` take
+an ordinary `record(key: …, value: …)` and the lowering splits it, so nothing
+pair-shaped is ever streamed.
 
 ### Records are positional
 
@@ -57,7 +65,7 @@ with the field names coming from the schema rather than the value.
 ### `TypeDesc`
 
 The schema, carried alongside the value: a tree mirroring the value grammar —
-`Bool | I64 | F64 | String | SqlString | Optional(T) | Record(fields)` — and
+`Bool | I64 | F64 | String | Optional(T) | Record(fields) | Array(T)` — and
 growing alongside `DynValue`. The type checker produces a
 `TypeDesc` for every node; the JSON codec uses it to know which `DynValue`
 variant is expected at each position. This is what makes I/O schema-driven
@@ -142,6 +150,23 @@ numerically ordered against each other. If the runtime can produce the same
 logical number in two variants, normalize on construction or define `Ord`
 manually.
 
+**Why this does not bite today, which is the part worth writing down.** Every
+column is statically typed and the language has no implicit conversion, so two
+numeric variants never meet inside one batch: a join requires equal key types,
+`plus` requires identical batch types, and arithmetic requires identical operand
+types. The invariant is therefore about values whose type is *dynamic*.
+
+That has two consequences for what comes next. Adding `i32` and `f32` is safe —
+they are separate language types that never compare against `i64` — even though
+appending them puts `I32(5)` after `String("a")` in the derived order, which
+looks alarming and is unobservable. But [`json.md`](json.md)'s `json` is exactly
+the dynamic case: `FlatVariant` compares tag-first, so a document holding `5` and
+one holding `5.0` are **different Z-set keys** while the language deliberately
+shows both as `f64` and gives a program no way to tell them apart. That is a
+matter of key identity — grouping, join matching, weight annihilation — not only
+of sort order, and it is the open question `json` has to answer before it lands
+as a key or an `==` operand.
+
 One thing the design gets for free: dbsp's `Comparable`/`Clonable` vtables assume
 both operands behind a `DynData` are the same concrete Rust type, and check it
 only in debug builds (`dbsp/src/dynamic/comparable.rs:56-60`). With exactly one
@@ -210,6 +235,36 @@ body nodes hold slot indices meaningful only within their own fixpoint, so
 structural equality between two of them would not mean what it means everywhere
 else.
 
+### A node's identity is its content
+
+That same identity — `(batch type, PlanOp)`, with the name and span deliberately
+excluded — becomes a stable string in `typecheck/content.rs`. It is a **Merkle
+hash**: an operand contributes its own id rather than its index, so the result
+depends on the shape of the computation and not on where a node landed in the
+list, what it was called, or how the source was laid out.
+
+Two things use it.
+
+**It is the `persistent_id` of every operator.** `dbsp` requires ids that
+"identify the same computation across restarts", derived "from the program (a
+view name, a hash of the subgraph) rather than from anything positional"
+(`dbsp/src/operator/recursive.rs`). Node *names* do not qualify: a nested node's
+name is `filter@3:12`, which is a source position, and a deduplicated node keeps
+whichever name happened to be written first. This matters more than it would for
+a hand-written language, because an emitting agent **regenerates** whole programs
+rather than editing them — whitespace, declaration order and the names of
+intermediates are all unstable across emissions while the computation is not.
+`tests/plan.rs` pins that: the same dataflow written two ways produces the same
+ids.
+
+**It is the name any node can be observed by.** Outputs are chosen when the
+runner starts, and a nested node has no declared name — so without this, "any
+node" would quietly exclude every anonymous one.
+
+The hash is xxh3, the same algorithm `dbsp` uses for its own stable hashing and
+for the same reason. Rust's `DefaultHasher` is explicitly not guaranteed stable
+across releases, which a persistent id cannot tolerate.
+
 ### An ordinary `circuit` has no runtime form
 
 "Nested circuit" means different things in the language and in `dbsp`, and only
@@ -230,9 +285,9 @@ Each language operator lowers to one typed `dbsp` method.
 | `input("t")` | `RootCircuit::add_input_zset` | returns a stream and an input handle |
 | `map(s, f)` | `map` | `f` compiled to a `DynValue` closure |
 | `filter(s, f)` | `filter` | `f` compiled to a predicate |
-| `flat_map(s, f)` | `flat_map` | `f` returns an iterator |
-| `map_index(s, f)` | `map_index` | `f` returns a `(K,V)` pair |
-| `flat_map_index(s, f)` | `flat_map_index` | |
+| `flat_map(s, f)` | `flat_map` | `f` returns an `array`, so fan-out follows the data |
+| `map_index(s, f)` | `map_index` | `f` returns `record(key:, value:)`, split by the lowering |
+| `flat_map_index(s, f)` | `flat_map_index` | as both of the above |
 | `join(l, r, f)` | `join` | `f` maps `(K,V₁,V₂)` to an output row |
 | `join_index(l, r, f)` | `join_index` | keeps the result indexed |
 | `antijoin(l, r)` | `antijoin` | |
@@ -288,10 +343,9 @@ Feldera's SQL compiler uses for every aggregate it can.
   so linear aggregation uses a **separate numeric accumulator type**, not
   `DynValue`.
 - A linear aggregate cannot tell "the group summed to zero" from "the group is
-  empty", because `post_fn` is not invoked for a zero result. This needs **two**
-  counters, which is easy to get wrong:
-  - `rows` counts projections that are not `NONE`. It is `count` itself, and
-    `post_fn` reports `NONE` when it is zero.
+  empty", because `post_fn` is not invoked for a zero accumulator. This needs
+  **two** counters, which is easy to get wrong:
+  - `rows` counts projections that are not `NONE`. It is `count` itself.
   - `present` counts *every* row. Without it, a group whose projections are all
     `NONE` zeroes every field, and `dbsp` drops the group entirely rather than
     reporting `NONE`. Feldera carries the same extra counter for the same reason
@@ -299,6 +353,23 @@ Feldera's SQL compiler uses for every aggregate it can.
 
   This was found by a fixture, not by reasoning — the first version had only
   `rows`, and an all-`NONE` group silently vanished.
+
+  **What the second counter does not fix.** All three fields are weight-scaled,
+  so a retraction of a *different* row can cancel them: a group holding one
+  all-`NONE` row at `+1` and another at `−1` has every field zero and disappears
+  even though the Z-set is not empty. That is inherent to linear aggregation
+  rather than a gap in the counters, and it is worth stating because the fixture
+  style that caught the first bug does not reach this one.
+
+- **What each aggregator reports, and its type.** These follow one rule — a
+  result that may be absent says so in its type, and one that cannot be absent
+  never returns `NONE`:
+  - `count` is `i64`, never optional. An all-`NONE` group counts `0`.
+  - `sum` is optional exactly when its projection is. With a definite
+    projection the weighted sum is the answer even for a group whose weights
+    cancel, so it never returns absence in a column typed `i64`.
+  - `avg` is *always* optional, whatever the projection: a mean of no
+    contributing rows is undefined, and that can happen at any projection type.
 
 - Floating point is **rejected** for `sum` and `avg`, at type-check time. fp
   addition is not associative, so an incrementally maintained sum would depend
@@ -369,15 +440,18 @@ cycle.
 supplied when the runner starts, by node name. Each named node gets a
 `Stream::output()` handle, which requires only `T: Debug + Clone + Send`
 (`dbsp/src/operator/output.rs:41`) and so applies to any node in the program. A
-name that does not match a declared node is a startup error. Nodes that are not
-named are still constructed — there is no dead-code elimination in v1.
+node may be named either by its declared name — including a circuit body node's
+dotted `<instance>.<node>` path — or by its **content id**, which is how a
+nested node with no declared name is selected. A name matching neither is a
+startup error. Nodes that are not named are still constructed: there is no
+dead-code elimination.
 
 At each clock cycle the handle exposes the deltas produced by the circuit,
 encoded back to JSON. The runner emits these deltas as they are produced; it does
 not materialize a final table.
 
-**Encodings.** Two formats, both Feldera-native, and both implemented for input
-and output. See <https://docs.feldera.com/formats/json/>
+**Encodings.** Two formats, both Feldera-native. See
+<https://docs.feldera.com/formats/json/>
 (`feldera-types/src/format/json.rs:79-120`):
 
 - `weighted` — `{"weight": 2, "data": {…}}`. This represents a Z-set delta
@@ -405,7 +479,18 @@ indexed   {"weight": 1, "key": 10,              {"insert": {"key": 10,
 ```
 
 The indexed encoding is **ours**, not a Feldera convention: Feldera's relations
-are flat, so it has nothing to say about a keyed stream.
+are flat, so it has nothing to say about a keyed stream. It is an *output*
+shape only — an input is always an `input` node, which is always
+`zset(record(...))`, so there is no indexed decoder and nothing that would use
+one.
+
+**Encoding refuses what decoding would refuse.** `encode_value` will not write a
+`null` into a column that is not optional, and rejects NaN and the infinities,
+which JSON cannot represent. Both used to be emitted silently as `null`,
+producing output this codec would then decline to read back. The rule is the one
+in [`language.md`](language.md): a declared type is a promise, and the codec is
+where a broken one surfaces. `tests/invariants.rs` pins it as a property —
+generated values of a generated type encode and decode to themselves.
 
 **Conventions Feldera fixes, which this codec follows.** A null may be written
 as JSON `null` *or by omitting the column entirely*; both decode to `NONE`.
@@ -429,12 +514,18 @@ read output deltas" is the transaction.
 
 ## Checkpointing and parallelism
 
-**Persistent ids.** Every stateful operator accepts a
-`persistent_id: Option<&str>`, which is what lets its state be checkpointed and
-restored. v1 may pass `None`, but the choice should be deliberate: node names are
-the natural stable ids, and retrofitting them later changes which checkpoints are
-restorable. Feldera's own dataflow IR carries one per node
-(`crates/ir/src/mir.rs:21-46`).
+**Persistent ids.** Every stateful operator carries one, and it is the node's
+[content id](#a-nodes-identity-is-its-content) — set through
+`Stream::set_persistent_id` as each node is built. Feldera's own dataflow IR
+carries one per node for the same reason (`crates/ir/src/mir.rs:21-46`).
+
+Inside a `fixpoint` the requirement is stricter, and shapes the code rather than
+decorating it. In persistent mode a missing id fails the checkpoint outright with
+`NoPersistentId`, and `dbsp` derives the ids of the implicit `distinct` and of
+the exporting integral from the recursive stream's own id **as they are
+constructed** — so each recursive stream is named as the closure's first act,
+before `build_body` builds anything from it
+(`dbsp/src/operator/recursive.rs:150-171`).
 
 **Determinism.** `Runtime::init_circuit` runs the constructor closure **once per
 worker thread** and asserts that the resulting circuits have identical

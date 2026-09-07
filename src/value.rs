@@ -9,7 +9,6 @@
 use dbsp::ZWeight;
 use dbsp::algebra::{AddAssignByRef, AddByRef, F64, HasZero, MulByRef};
 use feldera_macros::IsNone;
-use feldera_sqllib::SqlString;
 use size_of::SizeOf;
 
 /// The universal runtime value.
@@ -62,7 +61,6 @@ pub enum DynValue {
     I64(i64),
     F64(F64),
     String(String),
-    SqlString(SqlString),
     /// `#[omit_bounds]` stops rkyv's derived bounds recursing through the
     /// element type.
     ///
@@ -77,6 +75,15 @@ pub enum DynValue {
     /// payloads, so reported sizes under-count. A hand-written `SizeOf` impl
     /// would fix it and is the obvious follow-up.
     Record(#[omit_bounds] #[size_of(skip, skip_bounds)] Vec<DynValue>),
+    /// `array(T)` — a sequence of one element type.
+    ///
+    /// **Appended, and new variants must be too**: the variant order is the
+    /// archived discriminant, which is a storage format.
+    ///
+    /// Like `Record`, this is a container whose `Ord`, `Hash` and archived
+    /// ordering are ours rather than borrowed, so it is covered by the
+    /// proptests in `tests/invariants.rs`. Same derive caveats as `Record`.
+    Array(#[omit_bounds] #[size_of(skip, skip_bounds)] Vec<DynValue>),
 }
 
 impl DynValue {
@@ -89,7 +96,7 @@ impl DynValue {
     }
 
     pub fn str(s: &str) -> Self {
-        DynValue::SqlString(SqlString::from_ref(s))
+        DynValue::String(s.to_string())
     }
 
     /// The fields of a record, or `None` for any other value.
@@ -114,8 +121,8 @@ impl DynValue {
             DynValue::I64(_) => "i64",
             DynValue::F64(_) => "f64",
             DynValue::String(_) => "String",
-            DynValue::SqlString(_) => "sql.SqlString",
             DynValue::Record(_) => "record",
+            DynValue::Array(_) => "array",
         }
     }
 }
@@ -223,19 +230,19 @@ impl MulByRef<ZWeight> for Acc {
 /// This is the schema half of the value model. Record field names live here and
 /// never in a [`DynValue`], which is what keeps column-name strings out of every
 /// row of every batch.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeDesc {
     Bool,
     I64,
     F64,
     /// Plain `String`.
     String,
-    /// `sql.SqlString`.
-    SqlString,
     /// `optional(T)`. `T` may not itself be optional.
     Optional(Box<TypeDesc>),
     /// `record(name: T, ...)`, in declaration order.
     Record(Vec<(String, TypeDesc)>),
+    /// `array(T)`. Every element has type `T`.
+    Array(Box<TypeDesc>),
 }
 
 impl TypeDesc {
@@ -281,8 +288,8 @@ impl std::fmt::Display for TypeDesc {
             TypeDesc::I64 => write!(f, "i64"),
             TypeDesc::F64 => write!(f, "f64"),
             TypeDesc::String => write!(f, "String"),
-            TypeDesc::SqlString => write!(f, "sql.SqlString"),
             TypeDesc::Optional(inner) => write!(f, "optional({inner})"),
+            TypeDesc::Array(elem) => write!(f, "array({elem})"),
             TypeDesc::Record(fields) => {
                 write!(f, "record(")?;
                 for (i, (name, ty)) in fields.iter().enumerate() {
@@ -298,7 +305,7 @@ impl std::fmt::Display for TypeDesc {
 }
 
 /// The type of a stream's batches: the language's `batch_type`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BatchType {
     ZSet(TypeDesc),
     IndexedZSet(TypeDesc, TypeDesc),

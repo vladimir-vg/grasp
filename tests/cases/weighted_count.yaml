@@ -4,7 +4,7 @@
   source: |
     emp := input("emp")
     emp :: zset(record(id: i64, dept_id: i64))
-    depts := map(emp, fun((r) -> r.dept_id))
+    depts := map(emp, function((r) -> r.dept_id))
     per_dept := weighted_count(depts)
 
   input:
@@ -22,7 +22,7 @@
   source: |
     emp := input("emp")
     emp :: zset(record(dept_id: i64))
-    depts := map(emp, fun((r) -> r.dept_id))
+    depts := map(emp, function((r) -> r.dept_id))
     per_dept := weighted_count(depts)
 
   input:
@@ -37,7 +37,7 @@
   source: |
     emp := input("emp")
     emp :: zset(record(id: i64, dept_id: i64))
-    depts := map(emp, fun((r) -> r.dept_id))
+    depts := map(emp, function((r) -> r.dept_id))
     per_dept := weighted_count(depts)
 
   input:

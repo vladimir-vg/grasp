@@ -35,6 +35,19 @@ pub const OPERATORS: &[&str] = &[
 /// node named `min` would be silently shadowed if they were not reserved.
 pub const AGGREGATORS: &[&str] = &["min", "max", "sum", "avg", "count"];
 
+/// Where the `key` and `value` fields sit in the record an indexing operator's
+/// function returns.
+///
+/// They are resolved by *name*, so writing `record(value: ..., key: ...)` means
+/// the same thing — unlike every other record, where the literal's order defines
+/// the type. Carrying the two indices is what lets the lowering split the record
+/// without caring which order it was written in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyValue {
+    pub key: usize,
+    pub value: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Agg {
     Min,
@@ -49,7 +62,7 @@ pub enum PlanOp {
     Input { table: String },
     Map { input: usize, f: Arc<TypedExpr> },
     Filter { input: usize, f: Arc<TypedExpr> },
-    MapIndex { input: usize, key: Arc<TypedExpr>, value: Arc<TypedExpr> },
+    MapIndex { input: usize, f: Arc<TypedExpr>, kv: KeyValue },
     Join { left: usize, right: usize, f: Arc<TypedExpr> },
     Antijoin { left: usize, right: usize },
     Distinct { input: usize },
@@ -65,9 +78,11 @@ pub enum PlanOp {
     Sum { inputs: Vec<usize> },
     /// One expression per output row: fan-out is fixed by the source, not by
     /// the data.
-    FlatMap { input: usize, outputs: Vec<Arc<TypedExpr>> },
-    FlatMapIndex { input: usize, pairs: Vec<(Arc<TypedExpr>, Arc<TypedExpr>)> },
-    JoinIndex { left: usize, right: usize, key: Arc<TypedExpr>, value: Arc<TypedExpr> },
+    /// `f` returns an `array`, so the number of rows emitted per input row
+    /// follows the data rather than being fixed by the source.
+    FlatMap { input: usize, f: Arc<TypedExpr> },
+    FlatMapIndex { input: usize, f: Arc<TypedExpr>, kv: KeyValue },
+    JoinIndex { left: usize, right: usize, f: Arc<TypedExpr>, kv: KeyValue },
     Integrate { input: usize },
     Differentiate { input: usize },
     Delay { input: usize },

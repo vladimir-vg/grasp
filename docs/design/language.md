@@ -5,9 +5,14 @@ that name streams and describe how they are derived from inputs. The grammar is
 borrowed from grasp-dbsp; the operators and types it refers to come from
 `dbsp`.
 
-This describes the language as implemented.
-[`expressions.md`](expressions.md) and [`json.md`](json.md) hold a designed but
-unbuilt rewrite of the function, expression and type surface.
+This describes the language as implemented. [`json.md`](json.md) holds a
+designed but unbuilt `json` type, and with it `match` and the pattern language
+that conversion needs.
+
+The language is a **compilation target**. It is written by a compiler frontend
+or by an agent, not by hand, so it does not have to be convenient — but it does
+have to be explicit and uniform. Where that principle decides something, the
+text says so.
 
 ## Program structure
 
@@ -17,18 +22,18 @@ allowed).
 
 ```
 program      := declaration*
-declaration  := node_def | typespec | comment
+declaration  := node_def | typespec | function_def | circuit_def | comment
 
 node_def     := NAME ":=" op_call
 typespec     := NAME "::" batch_type
 comment      := "#" [^\n]*
 
 op_call      := OP "(" [arg ("," arg)*] ")"
-arg          := NAME                    # a stream declared elsewhere
+arg          := NAME                    # a stream, or a named function
               | op_call                 # a nested operator, except `input`
               | STRING                  # a table name, for `input`
               | AGGREGATOR              # min | max | count | sum | avg
-              | fun
+              | anon_function
 ```
 
 `OP` is one of the operators listed under [Operators](#operators); `AGGREGATOR`
@@ -36,8 +41,14 @@ is accepted only as the second argument of `aggregate`, so a bare name is never
 ambiguous with a stream reference.
 
 Node definitions assign a name to a derived stream. A `typespec` attaches a
-type to a name; it is required only for `input` nodes and optional (but checked)
-everywhere else.
+type to a name. It is required in three places — an `input` node, a standalone
+`empty()`, and a recursive `fixpoint` stream whose type inference cannot reach —
+and optional but checked everywhere else.
+
+**A typespec is always checked, never used to drive inference.** Inference is a
+convenience; an emitter always knows the type it intends and can write it down.
+So an ascription is the answer wherever inference falls short, and inference is
+never made cleverer to avoid one.
 
 A program declares streams only. **It does not say which of them are observed** —
 the set of output nodes is supplied when the runner starts, by node name. See
@@ -70,52 +81,43 @@ language's. [`mapping.md`](mapping.md) records which Rust types these become.
 ### Value types
 
 ```
-value_type := builtin | "sql" "." sql_type | record_type
+value_type := scalar | record_type | array_type
 
-builtin    := bool | i64 | f64 | String | optional "(" value_type ")"
-
-sql_type   := SqlString
+scalar      := bool | i64 | f64 | String | optional "(" value_type ")"
 
 record_type := "record" "(" field ("," field)* ")"
 field       := FIELD_NAME ":" value_type
+
+array_type  := "array" "(" value_type ")"
 ```
 
-The set above is what is implemented. The namespaces below are designed to hold
-more — the other integer widths, `f32`, `Vec`, `Tup*`, and the rest of the
-`sql.*` types — and those are listed under future work in
+That is the whole vocabulary. It is deliberately narrow: the other integer
+widths, `f32`, and the Feldera `sql.*` types are listed under future work in
 [`overview.md`](overview.md).
 
-Two namespaces are deliberately separated:
+**There is exactly one way to write each type.** An earlier cut had a second
+string type, `sql.SqlString`, alongside `String`; it was withdrawn. Two
+spellings of one thing is a choice an emitter must make with no information, and
+these two were not even disjoint in practice — every string builtin returned one
+of them whatever it was given. The `sql` namespace stays reserved, for types
+that would be genuinely distinct.
 
-- **Plain builtins** (`i64`, `f64`, `bool`, `String`, `optional`) are Rust
-  primitive/std types `dbsp` works with directly.
-- **`sql.*` types** mirror the Feldera SQL value types from `feldera-sqllib`
-  (`SqlString`, `Date`, `SqlDecimal`, …). The `sql.` prefix says "this is a
-  `sqllib` type, not a plain Rust type". For example `sql.Array(T)`
-  would be `Arc<Vec<T>>` rather than `Vec<T>`, and `sql.SqlDecimal(p,s)` a
-  fixed-point type rather than `f64`.
+**Absence is `optional(T)`.** There is no separate nullable flag, and an
+`optional` never wraps another.
 
-The two namespaces do not overlap. `feldera-sqllib` has no integer, float or
-boolean types of its own — in Feldera, SQL `BIGINT` *is* `i64` and SQL `DOUBLE`
-*is* `f64` — so those are spelled with the plain builtin names and there is
-exactly one way to write them. Where both namespaces appear to offer the same
-thing they are genuinely different runtime types: `String` is `std::String`
-while `sql.SqlString` is a cheaply-cloned `ArcStr`, and `Vec(T)` is `Vec<_>`
-while `sql.Array(T)` is `Arc<Vec<_>>`.
-
-**Absence is `optional(T)`, in both namespaces.** There is no separate nullable
-flag; a SQL string that may be missing is `optional(sql.SqlString)`.
-
-`record(f: T, …)` is a named-field record. Field names are bare identifiers; quote a name that is not a valid
-identifier (`record("total count": i64)`).
+`record(f: T, …)` is a named-field record. Field names are bare identifiers;
+quote a name that is not a valid identifier (`record("total count": i64)`).
 
 Note that `record` is spelled the same way in type position and in expression
 position — the type names the fields, and the literal fills them:
 
 ```
-r :: zset(record(id: i64, name: sql.SqlString))     # the type
-map(s, fun((row) -> record(id: row.id, name: row.name)))   # a value
+r :: zset(record(id: i64, name: String))                        # the type
+map(s, function((row) -> record(id: row.id, name: row.name)))   # a value
 ```
+
+`array(T)` is a sequence of one element type, and an ordinary value: it can sit
+in a record, in a column and in a stream, and `flat_map` turns one into rows.
 
 ### Typing rules
 
@@ -140,11 +142,11 @@ is preserved. Which `dbsp` method each lowers to is in
 | `input("t")` | → `zset(T)` |
 | `map(s, f)` | `zset(T) → zset(U)`, `f : T → U` |
 | `filter(s, f)` | `X → X`, `f : T → bool` |
-| `flat_map(s, f)` | `zset(T) → zset(U)`, `f : T → [U, …]` |
-| `map_index(s, f)` | `zset(T) → indexed_zset(K,V)`, `f : T → (K,V)` |
-| `flat_map_index(s, f)` | `zset(T) → indexed_zset(K,V)`, `f : T → [(K,V), …]` |
+| `flat_map(s, f)` | `zset(T) → zset(U)`, `f : T → array(U)` |
+| `map_index(s, f)` | `zset(T) → indexed_zset(K,V)`, `f : T → record(key: K, value: V)` |
+| `flat_map_index(s, f)` | `zset(T) → indexed_zset(K,V)`, `f : T → array(record(key: K, value: V))` |
 | `join(l, r, f)` | `indexed_zset(K,V₁) × indexed_zset(K,V₂) → zset(OV)`, `f : (K,V₁,V₂) → OV` |
-| `join_index(l, r, f)` | as `join`, but `f : (K,V₁,V₂) → (OK,OV)` → `indexed_zset(OK,OV)` |
+| `join_index(l, r, f)` | as `join`, but `f : (K,V₁,V₂) → record(key: OK, value: OV)` → `indexed_zset(OK,OV)` |
 | `antijoin(l, r)` | `indexed_zset(K,V) × indexed_zset(K,V₂) → indexed_zset(K,V)` |
 | `distinct(s)` | `X → X` (deduplicated) |
 | `aggregate(s, agg, f)` | `indexed_zset(K,V) → indexed_zset(K,A)`, `f : V → A` — see [Aggregators](#aggregators) |
@@ -161,7 +163,7 @@ Operator arity follows `dbsp`: `plus` and `minus` are binary, `sum` is n-ary.
 
 **`filter`'s function takes the stream's element.** For a flat stream that is
 one row; for an indexed stream it is the `(key, value)` pair, so the function
-takes two parameters — `fun((k, v) -> …)` — matching `dbsp`'s `ItemRef` for
+takes two parameters — `function((k, v) -> …)` — matching `dbsp`'s `ItemRef` for
 each shape.
 
 **Operator calls nest.** A stream argument may be another operator call rather
@@ -200,7 +202,7 @@ There is no `output` operator. Outputs are named when the runner starts.
 applied to each value in the group. Aggregators are bare names:
 
 ```
-aggregate(idx, max, fun((v) -> v.salary))
+aggregate(idx, max, function((v) -> v.salary))
 ```
 
 | aggregator | result | lowering |
@@ -232,18 +234,19 @@ Operators that transform rows (`map`, `filter`, `flat_map`, `map_index`,
 `flat_map_index`, `join`, `join_index`, `aggregate`) take a function argument:
 
 ```
-fun        := "fun" "(" "(" params ")" "->" expr ")"
-params     := NAME ("," NAME)*
+function_def  := "function" NAME "(" [params] ")" "{" "return" expr "}"
+anon_function := "function" "(" "(" [params] ")" "->" expr ")"
+params        := NAME ("," NAME)*
 
 expr       := literal
             | NAME                                        # a bound parameter
             | expr "." FIELD_NAME                         # record field
             | "record" "(" FIELD_NAME ":" expr ("," FIELD_NAME ":" expr)* ")"
-            | "(" expr "," expr ")"                       # a (key, value) pair
-            | "[" expr ("," expr)* "]"                    # a list of output rows
+            | "[" expr ("," expr)* "]"                    # an array
+            | "(" expr ")"                                # grouping, only
             | unop expr
             | expr binop expr
-            | BUILTIN "(" [expr ("," expr)*] ")"
+            | NAME "(" [expr ("," expr)*] ")"             # a builtin, or a named function
 
 unop       := "-" | "not"
 binop      := "+" | "-" | "*" | "/" | "%"
@@ -258,32 +261,92 @@ The parameter list binds the row(s) the operator feeds the function. `map`,
 takes one value.
 
 ```
-fun((row) -> row)
-fun((row) -> row.id)
-fun((row) -> record(id: row.id, name: row.name))
-fun((row) -> (row.dept_id, record(id: row.id)))
-fun((row) -> row.salary > 100000 and row.dept_id == 3)
-fun((k, e, d) -> record(name: e.name, dname: d.dname))
+function((row) -> row)
+function((row) -> row.id)
+function((row) -> record(id: row.id, name: row.name))
+function((row) -> record(key: row.dept_id, value: record(id: row.id)))
+function((row) -> row.salary > 100000 and row.dept_id == 3)
+function((k, e, d) -> record(name: e.name, dname: d.dname))
 ```
 
 Duplicate field names within one `record(...)` literal are a parse error.
 
-### Pairs and lists are syntax, not values
+### Named functions are templates
 
-`(key, value)` and `[…]` describe *what a node does*; they are not values and
-never flow through a stream. There is no pair type and no list type, and the
-runtime has no variant for either.
+A `function` declaration names a body that can be called from an expression or
+passed straight to an operator:
 
-- A `(key, value)` pair is legal only as the body of `map_index` or
-  `join_index`, or as an element of a `flat_map_index` list. The type checker
-  splits it into two independent expressions.
-- A `[…]` list is legal only as the body of `flat_map` or `flat_map_index`,
-  where its length fixes how many rows the operator emits per input row. The
-  checker splits it into one expression per row.
+```
+function scale(x)    { return x * 2 + 1 }
+function positive(r) { return r.v > 0 }
 
-The consequence worth knowing: **fan-out is fixed by the source, not the data.**
-Exploding a column holding many values into a variable number of rows needs a
-real list value, and is future work along with `Vec(T)`.
+kept   := filter(a, positive)
+scaled := map(a, function((r) -> scale(r.v)))
+```
+
+**Parameters carry no types.** The body is checked afresh against the types at
+each call site, so one definition serves every type it happens to work at:
+
+```
+ints   := map(a, function((r) -> scale(r.i)))   # i64 arithmetic
+floats := map(a, function((r) -> scale(r.f)))   # f64 arithmetic
+```
+
+That works because the literals inside `scale` resolve against the parameter
+type like any other operand — see [Numbers](#numbers). It is the reason a
+function is a *macro* rather than a value.
+
+Three consequences, taken deliberately:
+
+- **A function nobody calls is never checked.** This is the C++/Zig template
+  bargain.
+- **An error in a body is caused by a call site**, so the diagnostic names it —
+  `in `scale`, instantiated at 12:5: …` — while the span still points at the
+  offending expression inside the body.
+- **Recursion is rejected**, directly or mutually. A function is fully inlined
+  at check time, so a cycle would not terminate while *compiling*. `fixpoint`
+  is what recursion is for.
+
+A function has no runtime form: what reaches the lowering is one expression tree
+per operator. Inlining is substitution, so an argument used twice in a body is
+evaluated twice; sharing it needs body bindings and a slot table, which are
+future work.
+
+A name means one thing — a function and a node may not share one.
+
+### `key` and `value`
+
+`map_index`, `join_index` and `flat_map_index` produce a keyed stream, so their
+function returns a two-field record naming the halves:
+
+```
+map_index(s, function((r) -> record(key: r.dept_id, value: r)))
+```
+
+**These are the one place a field *name* carries meaning.** Everywhere else
+field names are their own unrestricted namespace. Two things follow:
+
+- The record has exactly `key` and `value`. A third field is an error, because
+  there is nowhere for it to go.
+- **Their order is not significant.** They are matched by name, so
+  `record(value: …, key: …)` means the same thing — unlike every other record,
+  where the literal's order defines the type. The match happens at check time,
+  so it costs nothing at runtime.
+
+An earlier cut wrote these as `(key, value)` pairs: a construct legal only in
+those three positions, destructured by the type checker rather than being a
+value. `[…]` was the same — fan-out syntax rather than an array. Both are gone,
+because **every construct in this language is a value in every position**. A
+construct legal only in certain syntactic slots is one an emitter cannot
+compose; it would have to know where it is before knowing what it may write.
+
+The payoff shows in `flat_map`, whose function returns an `array(T)`: it emits
+one row per element, so **fan-out follows the data** rather than the source text.
+
+```
+posts :: zset(record(id: i64, tags: array(String)))
+tags  := flat_map(posts, function((r) -> r.tags))
+```
 
 ### Builtins
 
@@ -292,11 +355,64 @@ above and with each other.
 
 | builtin | signature | result |
 |---|---|---|
-| `coalesce` | `(x, y)` | `x` if present, else `y` |
-| `abs` / `floor` / `ceil` / `round` | `(x)` | numeric |
-| `length` | `(x)` | length of a string, list or array |
-| `concat` | `(x, y)` | string concatenation |
-| `lower` / `upper` / `trim` | `(x)` | string |
+| `coalesce` | `optional(T) × T → T` | `x` if present, else `y` |
+| `abs` / `floor` / `ceil` / `round` | `T → T`, `T` numeric | type-preserving |
+| `length` | `String → i64`, `array(T) → i64` | element or character count |
+| `concat` | `String × String → String` | concatenation |
+| `lower` / `upper` / `trim` | `String → String` | |
+
+Every builtin but `coalesce` rejects an `optional` argument, for the reason
+under [Absence](#absence). `coalesce` is the one that inspects absence rather
+than being rejected for it.
+
+There is no `+` on strings. `concat` is the one way to join them, and `+` is
+arithmetic only.
+
+### Numbers
+
+**A numeric literal has no type of its own; it takes one from the operand
+beside it.** An integer literal inhabits any numeric type, a float literal any
+floating one. Standing alone, they settle to `i64` and `f64`.
+
+```
+r.i * 2       # i64, and `2` is an i64
+r.f * 2       # f64, and the same `2` is an f64
+2             # i64, since nothing else decides
+```
+
+This is the same mechanism `NONE` and `empty()` already use — a construct with
+no type of its own, resolved from context — and it is what makes a function
+usable at several numeric types without being written twice.
+
+**There is no implicit conversion.** Arithmetic and comparison need operands of
+one type; `i64` and `f64` do not meet:
+
+```
+r.i + r.f     # error: no implicit conversion
+r.i + 1.5     # error: a float literal has no `i64` value
+```
+
+That is deliberate rather than austere. Implicit promotion would need a lattice
+that gets worse with every numeric type added, and an emitter would have to
+model it exactly to predict the type of its own output. One rule — operands
+match, literals adapt — is computable in one bottom-up pass, by the emitter as
+well as by the checker.
+
+**Integer arithmetic wraps.** Overflow in `+`, `-`, `*`, unary `-` and `abs`
+wraps rather than trapping or vanishing, so the result stays a definite value of
+the type its column declares. Float arithmetic is IEEE.
+
+**Division is the one arithmetic that can be absent.** A zero divisor has no
+value to return, so `/` and `%` have type `optional(T)` at every numeric type:
+
+```
+r.a / r.b                    # optional(i64)
+coalesce(r.a / r.b, 0)       # i64
+```
+
+An operation whose result may be missing says so in its type. That is the rule
+the whole value model rests on — see [Absence](#absence) — and it is why these
+two are typed differently from the rest.
 
 ### Absence
 
@@ -322,10 +438,18 @@ returning absence, because returning it would be propagation under another name;
 `NONE` sorting first is the same order `min` and `max` use, so expressions and
 aggregates agree about where absence sits.
 
+**A declared type is a promise the runtime cannot break.** Nothing produces a
+`NONE` in a column whose type forbids one: that is why `/` is typed
+`optional`, why integer overflow wraps rather than vanishing, and why the string
+builtins reject a non-string rather than returning absence for it. The JSON
+codec enforces the same rule from the other side — it refuses to write a `null`
+into a column that is not optional, which is exactly what it would refuse to
+read back.
+
 **`null` is not the absence literal.** It is reserved for the JSON null *value*
-inside `sql.Variant` — a distinct thing, once `sql.Variant` is implemented — so
-that JSON pasted into source keeps its meaning. On the wire it is unchanged: a
-JSON `null` in a data position still decodes to absence for an `optional(T)`
+inside a `json` document — a distinct thing, once [`json.md`](json.md) lands —
+so that JSON pasted into source keeps its meaning. On the wire it is unchanged:
+a JSON `null` in a data position still decodes to absence for an `optional(T)`
 column, and absence still encodes as JSON `null`.
 
 ## Circuits
@@ -336,8 +460,8 @@ the call site: the body becomes ordinary nodes, reachable as
 
 ```
 circuit normalize(src: s) {
-    big     := filter(s, fun((r) -> r.v > 1))
-    doubled := map(big, fun((r) -> record(v: r.v * 2)))
+    big     := filter(s, function((r) -> r.v > 1))
+    doubled := map(big, function((r) -> record(v: r.v * 2)))
 }
 
 n   := normalize(src: a)
@@ -349,8 +473,9 @@ here the caller passes `src:` and the body refers to `s`. Every parameter must
 be supplied, each exactly once, and the body may not define another circuit.
 
 `out := n.doubled` is an **alias**: a right-hand side that is just a reference
-adds no node, it only gives an existing one another name. That is how a body
-node becomes selectable as a program output, since only declared names can be.
+adds no node, it only gives an existing one another name. It is a convenience,
+not a requirement — a body node is registered as `<instance>.<node>` and can be
+selected as an output by that dotted path directly.
 
 A circuit body may instantiate another circuit, and its nodes are reached by a
 longer path — `t.second.out` for the node `out` of the instance `second` inside
@@ -373,7 +498,7 @@ internal name is the *previous round's* value.
 
 ```
 circuit tc(base: b, fwd: f, path: p) {
-    step := join_index(p, f, fun((k, a, e) -> (e.dst, record(src: a.src))))
+    step := join_index(p, f, function((k, a, e) -> record(key: e.dst, value: record(src: a.src))))
     path := plus(b, step)
 }
 
@@ -417,11 +542,14 @@ Anywhere else it is an error saying so, rather than guessing.
 
 ## Reserved words
 
-These may not name a node or a `fun` parameter: the 20 operator names, the 5
-aggregator names, the builtin names, the type constructors (`bool`, `i64`,
-`f64`, `String`, `optional`, `record`, `sql`, `zset`, `indexed_zset`), and
-`true`, `false`, `NONE`, `null`, `fun`, `and`, `or`, `not`, `if`, `then`,
-`else`, `circuit`, `fixpoint`.
+These may not name a node, a function or a parameter: the 20 operator names,
+the 5 aggregator names, the builtin names, the type constructors (`bool`,
+`i64`, `f64`, `String`, `optional`, `record`, `array`, `sql`, `zset`,
+`indexed_zset`), and `true`, `false`, `NONE`, `null`, `function`, `return`,
+`and`, `or`, `not`, `if`, `then`, `else`, `circuit`, `fixpoint`.
+
+`sql` is reserved although the namespace is empty, so the Feldera value types
+can arrive later without breaking a program that used the name meanwhile.
 
 `if`, `then` and `else` are reserved although there are no conditionals yet, so
 adding them later will not break existing programs. Record *field* names are
@@ -431,23 +559,26 @@ unrestricted — they are their own namespace and can be quoted.
 
 ```
 emp := input("emp")
-emp :: zset(record(id: i64, name: sql.SqlString,
-                      dept_id: i64, salary: i64))
+emp :: zset(record(id: i64, name: String, dept_id: i64, salary: i64))
 
 dept := input("dept")
-dept :: zset(record(id: i64, dname: sql.SqlString))
+dept :: zset(record(id: i64, dname: String))
 
-high_paid := filter(emp, fun((row) -> row.salary > 100000))
+high_paid := filter(emp, function((row) -> row.salary > 100000))
 
-emp_idx  := map_index(emp,  fun((row) ->
-                (row.dept_id, record(id: row.id, name: row.name, salary: row.salary))))
-dept_idx := map_index(dept, fun((row) -> (row.id, record(dname: row.dname))))
+emp_idx  := map_index(emp,  function((row) ->
+                record(key: row.dept_id, value: record(id: row.id, name: row.name, salary: row.salary))))
+dept_idx := map_index(dept, function((row) -> record(key: row.id, value: record(dname: row.dname))))
 
-joined   := join(emp_idx, dept_idx, fun((k, e, d) -> record(name: e.name, dname: d.dname)))
+joined   := join(emp_idx, dept_idx, function((k, e, d) -> record(name: e.name, dname: d.dname)))
 
-by_dept  := aggregate(emp_idx, max, fun((v) -> v.salary))
+by_dept  := aggregate(emp_idx, max, function((v) -> v.salary))
 ```
 
 Both sides of the `join` are keyed by `i64`, so the key types are equal and the
 join typechecks. Running this program with `joined` and `by_dept` named as
 outputs emits their deltas; `high_paid` is still constructed, but not observed.
+
+A node may also be named by its **content id** — a hash of the computation it
+performs, described in [`mapping.md`](mapping.md). That is what makes a nested
+node observable, since it has no declared name of its own.

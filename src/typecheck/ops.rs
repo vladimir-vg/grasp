@@ -1,10 +1,10 @@
 //! Checking one operator call, and resolving its arguments to nodes.
 
-use super::infer::{check_fun, check_fun_body, is_numeric, optional};
-use super::{Env, TResult, err, lookup, push_node};
-use super::plan::{Agg, Plan, PlanOp};
+use super::infer::{check_fun, is_numeric, optional};
+use super::{Env, Functions, TResult, err, lookup, push_node};
+use super::plan::{Agg, KeyValue, Plan, PlanOp};
 use crate::diag::Span;
-use crate::lang::{Arg, ExprKind, FunLit, OpCall};
+use crate::lang::{Arg, Expr, FunLit, OpCall};
 use crate::value::{BatchType, TypeDesc};
 use std::sync::Arc;
 
@@ -77,6 +77,17 @@ struct Ctx<'a> {
     span: Span,
     args: &'a [Arg],
     rargs: Vec<RArg<'a>>,
+    funcs: &'a Functions<'a>,
+}
+
+/// The function an operator was given: written inline, or named elsewhere.
+///
+/// Both reach the checker as parameter names plus one body expression, because
+/// that is all a template is. Passing a named function directly — `map(a,
+/// scale)` — is what makes one helper usable at several call sites.
+struct FnArg<'a> {
+    params: &'a [String],
+    body: &'a Expr,
 }
 
 impl<'a> Ctx<'a> {
@@ -106,11 +117,22 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn fun_arg(&self, i: usize) -> TResult<&'a FunLit> {
+    fn fun_arg(&self, i: usize) -> TResult<FnArg<'a>> {
         let (op, span) = (self.op, self.span);
         match &self.rargs[i] {
-            RArg::Fun(f) => Ok(f),
-            _ => err(span, format!("argument {} of `{op}` must be a `fun(...)`", i + 1)),
+            RArg::Fun(f) => Ok(FnArg { params: &f.params, body: &f.body }),
+            // A bare name that is not a stream may still be a function.
+            RArg::Name(n) => match self.funcs.get(n) {
+                Some(def) => Ok(FnArg { params: &def.params, body: &def.body }),
+                None => err(span, format!("unknown stream or function `{n}`")),
+            },
+            _ => err(
+                span,
+                format!(
+                    "argument {} of `{op}` must be a `function(...)` or the name of one",
+                    i + 1
+                ),
+            ),
         }
     }
 
@@ -142,6 +164,39 @@ impl<'a> Ctx<'a> {
     }
 }
 
+/// The `record(key: ..., value: ...)` the three indexing operators return.
+///
+/// `key` and `value` are the one place in the language where a field *name*
+/// carries meaning; everywhere else field names are their own unrestricted
+/// namespace. They are matched by name, so the order they are written in does
+/// not matter, and the two indices travel to the lowering in a [`KeyValue`].
+fn key_value(ty: &TypeDesc, op: &str, span: Span) -> TResult<(KeyValue, TypeDesc, TypeDesc)> {
+    let wanted = format!(
+        "`{op}`'s function must return `record(key: ..., value: ...)`, found `{ty}`"
+    );
+    let TypeDesc::Record(fields) = ty else {
+        return err(span, wanted);
+    };
+    let (Some(key), Some(value)) = (ty.field_index("key"), ty.field_index("value")) else {
+        return err(span, wanted);
+    };
+    if fields.len() != 2 {
+        let extra: Vec<&str> = fields
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .filter(|n| *n != "key" && *n != "value")
+            .collect();
+        return err(
+            span,
+            format!(
+                "`{op}`'s record has no room for {}: it takes exactly `key` and `value`",
+                extra.join("`, `")
+            ),
+        );
+    }
+    Ok((KeyValue { key, value }, fields[key].1.clone(), fields[value].1.clone()))
+}
+
 /// Checks one operator call.
 ///
 /// The work is split by family, and each family answers `None` for a name it
@@ -163,7 +218,7 @@ pub(super) fn check_op(
     for a in &call.args {
         rargs.push(resolve_arg(a, plan, env)?);
     }
-    let cx = Ctx { op, span, args: &call.args, rargs };
+    let cx = Ctx { op, span, args: &call.args, rargs, funcs: env.funcs };
 
     if let Some(r) = check_source(name, &cx, env)? {
         return Ok(r);
@@ -241,8 +296,10 @@ fn check_map_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pla
         "map" => {
             cx.want(2)?;
             let (input, elem) = cx.zset(plan, cx.stream_arg(0)?)?;
-            let (f, out) = check_fun(cx.fun_arg(1)?, &[elem], span)?;
-            let out = out.into_known(span, "the body of `map`")?;
+            let (f, out) = {
+                let f = cx.fun_arg(1)?;
+                check_fun(f.params, f.body, &[elem], span, "the body of `map`", cx.funcs)?
+            };
             Ok((BatchType::ZSet(out), PlanOp::Map { input, f: Arc::new(f) }))
         }
 
@@ -255,8 +312,10 @@ fn check_map_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pla
                 BatchType::ZSet(t) => vec![t.clone()],
                 BatchType::IndexedZSet(k, v) => vec![k.clone(), v.clone()],
             };
-            let (f, out) = check_fun(cx.fun_arg(1)?, &params, span)?;
-            let out = out.into_known(span, "the body of `filter`")?;
+            let (f, out) = {
+                let f = cx.fun_arg(1)?;
+                check_fun(f.params, f.body, &params, span, "the body of `filter`", cx.funcs)?
+            };
             if out.non_null() != &TypeDesc::Bool {
                 return err(span, format!("`filter`'s function must return bool, found `{out}`"));
             }
@@ -266,95 +325,53 @@ fn check_map_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pla
         "flat_map" => {
             cx.want(2)?;
             let (input, elem) = cx.zset(plan, cx.stream_arg(0)?)?;
-            let fun = cx.fun_arg(1)?;
-            let ExprKind::List(items) = &fun.body.kind else {
-                return err(span, "`flat_map`'s function must return a list of rows");
+            let (f, out) =
+                {
+                let f = cx.fun_arg(1)?;
+                check_fun(f.params, f.body, &[elem], span, "the body of `flat_map`", cx.funcs)?
             };
-            if items.is_empty() {
-                return err(span, "`flat_map`'s list must have at least one element, \
-                                  or the output type cannot be inferred");
-            }
-            let mut outputs = Vec::with_capacity(items.len());
-            let mut out_ty: Option<TypeDesc> = None;
-            for item in items {
-                let (e, t) = check_fun_body(fun, item, std::slice::from_ref(&elem), span)?;
-                let t = t.into_known(span, "an element of a `flat_map` list")?;
-                match &out_ty {
-                    None => out_ty = Some(t),
-                    Some(prev) if *prev == t => {}
-                    Some(prev) => {
-                        return err(
-                            span,
-                            format!("`flat_map`'s rows must share one type, found `{prev}` and `{t}`"),
-                        );
-                    }
-                }
-                outputs.push(Arc::new(e));
-            }
-            Ok((
-                BatchType::ZSet(out_ty.expect("non-empty")),
-                PlanOp::FlatMap { input, outputs },
-            ))
+            // One row per element, so the fan-out follows the data.
+            let TypeDesc::Array(row) = out else {
+                return err(
+                    span,
+                    format!("`flat_map`'s function must return an array of rows, found `{out}`"),
+                );
+            };
+            Ok((BatchType::ZSet(*row), PlanOp::FlatMap { input, f: Arc::new(f) }))
         }
 
         "flat_map_index" => {
             cx.want(2)?;
             let (input, elem) = cx.zset(plan, cx.stream_arg(0)?)?;
-            let fun = cx.fun_arg(1)?;
-            let ExprKind::List(items) = &fun.body.kind else {
-                return err(span, "`flat_map_index`'s function must return a list of pairs");
+            let (f, out) =
+                {
+                let f = cx.fun_arg(1)?;
+                check_fun(f.params, f.body, &[elem], span, "the body of `flat_map_index`", cx.funcs)?
             };
-            if items.is_empty() {
-                return err(span, "`flat_map_index`'s list must have at least one element, \
-                                  or the output type cannot be inferred");
-            }
-            let mut pairs = Vec::with_capacity(items.len());
-            let mut kv: Option<(TypeDesc, TypeDesc)> = None;
-            for item in items {
-                let ExprKind::Tuple(parts) = &item.kind else {
-                    return err(item.span, "every element must be a `(key, value)` pair");
-                };
-                if parts.len() != 2 {
-                    return err(item.span, "a pair has exactly two elements");
-                }
-                let (k, kt) = check_fun_body(fun, &parts[0], std::slice::from_ref(&elem), span)?;
-                let (v, vt) = check_fun_body(fun, &parts[1], std::slice::from_ref(&elem), span)?;
-                let kt = kt.into_known(item.span, "a `flat_map_index` key")?;
-                let vt = vt.into_known(item.span, "a `flat_map_index` value")?;
-                match &kv {
-                    None => kv = Some((kt, vt)),
-                    Some((pk, pv)) if *pk == kt && *pv == vt => {}
-                    Some((pk, pv)) => {
-                        return err(
-                            item.span,
-                            format!("every pair must have the same types, found \
-                                     `({pk}, {pv})` and `({kt}, {vt})`"),
-                        );
-                    }
-                }
-                pairs.push((Arc::new(k), Arc::new(v)));
-            }
-            let (kt, vt) = kv.expect("non-empty");
-            Ok((BatchType::IndexedZSet(kt, vt), PlanOp::FlatMapIndex { input, pairs }))
+            let TypeDesc::Array(row) = out else {
+                return err(
+                    span,
+                    format!(
+                        "`flat_map_index`'s function must return an array of \
+                         `record(key: ..., value: ...)`, found `{out}`"
+                    ),
+                );
+            };
+            let (kv, kt, vt) = key_value(&row, op, span)?;
+            Ok((BatchType::IndexedZSet(kt, vt), PlanOp::FlatMapIndex { input, f: Arc::new(f), kv }))
         }
 
         "map_index" => {
             cx.want(2)?;
             let (input, elem) = cx.zset(plan, cx.stream_arg(0)?)?;
-            let fun = cx.fun_arg(1)?;
-            let ExprKind::Tuple(parts) = &fun.body.kind else {
-                return err(span, "`map_index`'s function must return a `(key, value)` pair");
+            let (f, out) = {
+                let f = cx.fun_arg(1)?;
+                check_fun(f.params, f.body, &[elem], span, "the body of `map_index`", cx.funcs)?
             };
-            if parts.len() != 2 {
-                return err(span, "`map_index`'s function must return exactly two elements");
-            }
-            let (key, kt) = check_fun_body(fun, &parts[0], std::slice::from_ref(&elem), span)?;
-            let (value, vt) = check_fun_body(fun, &parts[1], &[elem], span)?;
-            let kt = kt.into_known(span, "a `map_index` key")?;
-            let vt = vt.into_known(span, "a `map_index` value")?;
+            let (kv, kt, vt) = key_value(&out, op, span)?;
             Ok((
                 BatchType::IndexedZSet(kt, vt),
-                PlanOp::MapIndex { input, key: Arc::new(key), value: Arc::new(value) },
+                PlanOp::MapIndex { input, f: Arc::new(f), kv },
             ))
         }
 
@@ -378,8 +395,11 @@ fn check_join_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pl
                     format!("`join` needs equal key types, found `{k1}` and `{k2}`"),
                 );
             }
-            let (f, out) = check_fun(cx.fun_arg(2)?, &[k1, v1, v2], span)?;
-            let out = out.into_known(span, "the body of `join`")?;
+            let (f, out) =
+                {
+                let f = cx.fun_arg(2)?;
+                check_fun(f.params, f.body, &[k1, v1, v2], span, "the body of `join`", cx.funcs)?
+            };
             Ok((BatchType::ZSet(out), PlanOp::Join { left, right, f: Arc::new(f) }))
         }
 
@@ -393,21 +413,15 @@ fn check_join_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pl
                     format!("`join_index` needs equal key types, found `{k1}` and `{k2}`"),
                 );
             }
-            let fun = cx.fun_arg(2)?;
-            let ExprKind::Tuple(parts) = &fun.body.kind else {
-                return err(span, "`join_index`'s function must return a `(key, value)` pair");
+            let (f, out) =
+                {
+                let f = cx.fun_arg(2)?;
+                check_fun(f.params, f.body, &[k1, v1, v2], span, "the body of `join_index`", cx.funcs)?
             };
-            if parts.len() != 2 {
-                return err(span, "`join_index`'s function must return exactly two elements");
-            }
-            let params = [k1, v1, v2];
-            let (key, kt) = check_fun_body(fun, &parts[0], &params, span)?;
-            let (value, vt) = check_fun_body(fun, &parts[1], &params, span)?;
-            let kt = kt.into_known(span, "a `join_index` key")?;
-            let vt = vt.into_known(span, "a `join_index` value")?;
+            let (kv, kt, vt) = key_value(&out, op, span)?;
             Ok((
                 BatchType::IndexedZSet(kt, vt),
-                PlanOp::JoinIndex { left, right, key: Arc::new(key), value: Arc::new(value) },
+                PlanOp::JoinIndex { left, right, f: Arc::new(f), kv },
             ))
         }
 
@@ -456,8 +470,10 @@ fn check_aggregate(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Plan
                     );
                 }
             };
-            let (f, out) = check_fun(cx.fun_arg(2)?, &[v], span)?;
-            let out = out.into_known(span, "the body of `aggregate`")?;
+            let (f, out) = {
+                let f = cx.fun_arg(2)?;
+                check_fun(f.params, f.body, &[v], span, "the body of `aggregate`", cx.funcs)?
+            };
             let optional_in = out.is_optional();
 
             // `min`/`max` return the projected value; the linear aggregators
@@ -487,11 +503,18 @@ fn check_aggregate(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Plan
                             ),
                         );
                     }
-                    // `avg` always yields f64 rather than truncating.
-                    let base = if agg == Agg::Avg { TypeDesc::F64 } else { out.non_null().clone() };
-                    // A projection that can be null can leave a group with no
-                    // contributing rows, and then there is no sum to report.
-                    if optional_in { optional(base) } else { base }
+                    // A mean of no contributing rows is undefined, so `avg` is
+                    // always optional and always yields f64 rather than
+                    // truncating. `sum` needs the same escape only when the
+                    // projection itself can be `NONE`: otherwise the weighted
+                    // sum is the answer even for a group whose weights cancel.
+                    if agg == Agg::Avg {
+                        optional(TypeDesc::F64)
+                    } else if optional_in {
+                        optional(out.non_null().clone())
+                    } else {
+                        out.non_null().clone()
+                    }
                 }
             };
             Ok((

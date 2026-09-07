@@ -43,9 +43,9 @@
     l :: zset(record(k: i64, a: i64))
     r := input("r")
     r :: zset(record(k: i64, b: i64))
-    li := map_index(l, fun((x) -> (x.k, record(a: x.a))))
-    ri := map_index(r, fun((x) -> (x.k, record(b: x.b))))
-    j  := join(li, ri, fun((k, x, y) -> record(a: x.a, b: y.b)))
+    li := map_index(l, function((x) -> record(key: x.k, value: record(a: x.a))))
+    ri := map_index(r, function((x) -> record(key: x.k, value: record(b: x.b))))
+    j  := join(li, ri, function((k, x, y) -> record(a: x.a, b: y.b)))
 
   input:
     - l:
@@ -67,8 +67,8 @@
     pos :: zset(record(k: i64, a: i64))
     excluded := input("excluded")
     excluded :: zset(record(k: i64))
-    pi := map_index(pos, fun((x) -> (x.k, record(a: x.a))))
-    ni := map_index(excluded, fun((x) -> (x.k, record(k: x.k))))
+    pi := map_index(pos, function((x) -> record(key: x.k, value: record(a: x.a))))
+    ni := map_index(excluded, function((x) -> record(key: x.k, value: record(k: x.k))))
     out := antijoin(pi, ni)
 
   input:

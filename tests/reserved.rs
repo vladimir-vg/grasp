@@ -59,11 +59,80 @@ fn every_builtin_name_resolves() {
 /// are not — the list should not have grown to swallow everything.
 #[test]
 fn the_reserved_set_has_the_right_shape() {
-    for name in ["zset", "indexed_zset", "optional", "record", "sql", "NONE", "null", "fun", "if"]
-    {
+    for name in [
+        "zset", "indexed_zset", "optional", "record", "array", "sql", "NONE", "null", "function",
+        "return", "if",
+    ] {
         assert!(is_reserved(name), "`{name}` should be reserved");
     }
     for name in ["emp", "dept", "by_dept", "row", "r", "k", "v", "total", "pos"] {
         assert!(!is_reserved(name), "`{name}` should not be reserved");
+    }
+}
+
+/// Every operator, aggregator and builtin is exercised by at least one fixture.
+///
+/// The design documents are the specification — they are what a compiler
+/// frontend or an emitting agent is given — so a rule stated there and not
+/// pinned by a case is a rule free to drift out of agreement with the code.
+/// This is the coverage half of that: it does not check that a fixture asserts
+/// the *right* thing, but it does stop a construct from being documented and
+/// then never run.
+#[test]
+fn every_construct_appears_in_a_fixture() {
+    let mut corpus = String::new();
+    for entry in std::fs::read_dir("tests/cases").expect("tests/cases") {
+        let path = entry.expect("entry").path();
+        if path.extension().is_some_and(|e| e == "yaml") {
+            corpus.push_str(&std::fs::read_to_string(&path).expect("read"));
+        }
+    }
+    assert!(!corpus.is_empty(), "no fixtures found");
+
+    let mut missing: Vec<String> = Vec::new();
+    for op in OPERATORS {
+        // Operators are called, so look for the name followed by `(`.
+        if !corpus.contains(&format!("{op}(")) {
+            missing.push(format!("operator `{op}`"));
+        }
+    }
+    for agg in AGGREGATORS {
+        // Aggregators appear as a bare second argument to `aggregate`.
+        if !corpus.contains(&format!(", {agg},")) {
+            missing.push(format!("aggregator `{agg}`"));
+        }
+    }
+    for b in Builtin::ALL {
+        if !corpus.contains(&format!("{b}(")) {
+            missing.push(format!("builtin `{b}`"));
+        }
+    }
+    assert!(missing.is_empty(), "not exercised by any fixture: {}", missing.join(", "));
+}
+
+/// The worked example in `language.md` compiles.
+///
+/// The documents are the specification an emitter is given, so an example that
+/// does not compile teaches a program that does not compile. This extracts the
+/// one whole program in `language.md` rather than duplicating it, so the two
+/// cannot drift.
+#[test]
+fn the_language_example_compiles() {
+    let doc = std::fs::read_to_string("docs/design/language.md").expect("language.md");
+    // Splitting on the fence gives prose at even indices and code at odd ones;
+    // the prose around the example mentions the same names, so parity is what
+    // distinguishes them.
+    let block = doc
+        .split("```")
+        .enumerate()
+        .filter(|(i, _)| i % 2 == 1)
+        .map(|(_, b)| b)
+        .find(|b| b.contains("input(\"emp\")") && b.contains("aggregate("))
+        .expect("the worked example");
+    if let Err(diags) = dbsp_runner::compile(block.trim_start_matches('\n')) {
+        panic!(
+            "the example in language.md does not compile: {}",
+            diags.iter().map(|d| d.message.as_str()).collect::<Vec<_>>().join("; ")
+        );
     }
 }

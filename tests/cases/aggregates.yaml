@@ -5,8 +5,8 @@
   source: |
     emp := input("emp")
     emp :: zset(record(id: i64, dept_id: i64, salary: i64))
-    idx := map_index(emp, fun((r) -> (r.dept_id, r)))
-    by_dept := aggregate(idx, max, fun((v) -> v.salary))
+    idx := map_index(emp, function((r) -> record(key: r.dept_id, value: r)))
+    by_dept := aggregate(idx, max, function((v) -> v.salary))
 
   input:
     - emp:
@@ -23,8 +23,8 @@
   source: |
     emp := input("emp")
     emp :: zset(record(dept_id: i64, salary: i64))
-    idx := map_index(emp, fun((r) -> (r.dept_id, r)))
-    lowest := aggregate(idx, min, fun((v) -> v.salary))
+    idx := map_index(emp, function((r) -> record(key: r.dept_id, value: r)))
+    lowest := aggregate(idx, min, function((v) -> v.salary))
 
   input:
     - emp:
@@ -39,8 +39,8 @@
   source: |
     emp := input("emp")
     emp :: zset(record(id: i64, dept_id: i64, salary: i64))
-    idx := map_index(emp, fun((r) -> (r.dept_id, r)))
-    by_dept := aggregate(idx, max, fun((v) -> v.salary))
+    idx := map_index(emp, function((r) -> record(key: r.dept_id, value: r)))
+    by_dept := aggregate(idx, max, function((v) -> v.salary))
 
   input:
     - emp:
@@ -60,8 +60,8 @@
   source: |
     emp := input("emp")
     emp :: zset(record(dept_id: i64, salary: i64))
-    idx := map_index(emp, fun((r) -> (r.dept_id, r)))
-    by_dept := aggregate(idx, max, fun((v) -> v.salary))
+    idx := map_index(emp, function((r) -> record(key: r.dept_id, value: r)))
+    by_dept := aggregate(idx, max, function((v) -> v.salary))
 
   input:
     - emp:
@@ -79,8 +79,8 @@
   source: |
     emp := input("emp")
     emp :: zset(record(id: i64, dept_id: i64, salary: i64))
-    idx := map_index(emp, fun((r) -> (r.dept_id, r)))
-    total := aggregate(idx, sum, fun((v) -> v.salary))
+    idx := map_index(emp, function((r) -> record(key: r.dept_id, value: r)))
+    total := aggregate(idx, sum, function((v) -> v.salary))
 
   input:
     - emp:
@@ -97,8 +97,8 @@
   source: |
     emp := input("emp")
     emp :: zset(record(id: i64, dept_id: i64, salary: i64))
-    idx := map_index(emp, fun((r) -> (r.dept_id, r)))
-    total := aggregate(idx, sum, fun((v) -> v.salary))
+    idx := map_index(emp, function((r) -> record(key: r.dept_id, value: r)))
+    total := aggregate(idx, sum, function((v) -> v.salary))
 
   input:
     - emp:
@@ -118,8 +118,8 @@
   source: |
     emp := input("emp")
     emp :: zset(record(dept_id: i64, salary: i64))
-    idx := map_index(emp, fun((r) -> (r.dept_id, r)))
-    total := aggregate(idx, sum, fun((v) -> v.salary))
+    idx := map_index(emp, function((r) -> record(key: r.dept_id, value: r)))
+    total := aggregate(idx, sum, function((v) -> v.salary))
 
   input:
     - emp:
@@ -133,8 +133,8 @@
   source: |
     emp := input("emp")
     emp :: zset(record(id: i64, dept_id: i64, salary: i64))
-    idx := map_index(emp, fun((r) -> (r.dept_id, r)))
-    mean := aggregate(idx, avg, fun((v) -> v.salary))
+    idx := map_index(emp, function((r) -> record(key: r.dept_id, value: r)))
+    mean := aggregate(idx, avg, function((v) -> v.salary))
 
   input:
     - emp:
@@ -150,9 +150,9 @@
   source: |
     emp := input("emp")
     emp :: zset(record(id: i64, dept_id: i64, bonus: optional(i64)))
-    idx := map_index(emp, fun((r) -> (r.dept_id, r)))
-    with_bonus := aggregate(idx, count, fun((v) -> v.bonus))
-    depts := map(emp, fun((r) -> r.dept_id))
+    idx := map_index(emp, function((r) -> record(key: r.dept_id, value: r)))
+    with_bonus := aggregate(idx, count, function((v) -> v.bonus))
+    depts := map(emp, function((r) -> r.dept_id))
     everyone := weighted_count(depts)
 
   input:
@@ -172,8 +172,8 @@
   source: |
     emp := input("emp")
     emp :: zset(record(id: i64, dept_id: i64, bonus: optional(i64)))
-    idx := map_index(emp, fun((r) -> (r.dept_id, r)))
-    total := aggregate(idx, sum, fun((v) -> v.bonus))
+    idx := map_index(emp, function((r) -> record(key: r.dept_id, value: r)))
+    total := aggregate(idx, sum, function((v) -> v.bonus))
 
   input:
     - emp:
@@ -189,9 +189,9 @@
   source: |
     a := input("a")
     a :: zset(record(k: i64, x: f64))
-    idx := map_index(a, fun((r) -> (r.k, r)))
-    lo := aggregate(idx, min, fun((v) -> v.x))
-    hi := aggregate(idx, max, fun((v) -> v.x))
+    idx := map_index(a, function((r) -> record(key: r.k, value: r)))
+    lo := aggregate(idx, min, function((v) -> v.x))
+    hi := aggregate(idx, max, function((v) -> v.x))
 
   # The exclusion is scoped to the linear path; min and max compare rather than
   # accumulate, so associativity does not arise.
@@ -205,3 +205,23 @@
         - [1, 1, -1.5]
       hi:
         - [1, 1, 2.5]
+
+- name: sum over a definite projection never reports absence
+  source: |
+    a := input("a")
+    a :: zset(record(k: i64, v: i64))
+    idx := map_index(a, function((r) -> record(key: r.k, value: r)))
+    out := aggregate(idx, sum, function((r) -> r.v))
+
+  # The two rows cancel in the row counter but not in the sum, so the group is
+  # reported with `rows == 0`. With a projection that cannot be NONE the
+  # weighted sum is still the answer — returning NONE here would contradict the
+  # node's type, which is `indexed_zset(i64, i64)`.
+  input:
+    - a:
+        - [1, {k: 1, v: 5}]
+        - [-1, {k: 1, v: 3}]
+
+  expected_exact_output:
+    - out:
+        - [1, 1, 2]

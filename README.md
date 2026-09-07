@@ -9,9 +9,10 @@ through it, emitting output changes as they are produced.
 
 Design documents live in [`docs/design/`](docs/design/):
 
-- [`overview.md`](docs/design/overview.md) — goals, scope, future work, architecture
+- [`overview.md`](docs/design/overview.md) — goals, design principles, scope, future work, architecture
 - [`language.md`](docs/design/language.md) — the source language
 - [`mapping.md`](docs/design/mapping.md) — how the language maps onto `dbsp`
+- [`json.md`](docs/design/json.md) — a designed but unbuilt `json` type, and the `match` it needs
 
 ## Building
 
@@ -40,6 +41,9 @@ edit alongside this crate. Git dependencies were considered and rejected: cargo
 cannot resolve a git dependency offline even when `[patch]` redirects it to a
 local path, which would break the ordinary edit-and-rebuild loop.
 
-`dbsp` and `feldera-sqllib` are published to crates.io, so these can become
-version requirements once a release carries the APIs this crate needs — the
-design documents cite `dbsp` at revision `4a6744aa` (workspace version 0.343.0).
+`dbsp` is published to crates.io, so this can become a version requirement once
+a release carries the APIs this crate needs — the design documents cite `dbsp`
+at revision `4a6744aa` (workspace version 0.343.0). `feldera-sqllib` was a
+dependency until the `sql.*` value types were withdrawn; it comes back with
+them, and with the `FlatVariant` that [`json.md`](docs/design/json.md) is built
+on.

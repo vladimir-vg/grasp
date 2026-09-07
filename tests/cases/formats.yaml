@@ -4,7 +4,7 @@
   source: |
     a := input("a")
     a :: zset(record(v: i64))
-    out := map(a, fun((r) -> r))
+    out := map(a, function((r) -> r))
 
   input:
     - a:
@@ -19,7 +19,7 @@
   source: |
     a := input("a")
     a :: zset(record(v: i64))
-    out := map(a, fun((r) -> r))
+    out := map(a, function((r) -> r))
 
   input:
     - a:
@@ -38,7 +38,7 @@
   source: |
     a := input("a")
     a :: zset(record(v: i64))
-    out := map(a, fun((r) -> r))
+    out := map(a, function((r) -> r))
 
   input:
     - a:
@@ -57,7 +57,7 @@
   source: |
     a := input("a")
     a :: zset(record(v: i64))
-    out := map(a, fun((r) -> r))
+    out := map(a, function((r) -> r))
 
   input_format: insert_delete
   input:
@@ -78,7 +78,7 @@
   source: |
     a := input("a")
     a :: zset(record(v: i64))
-    out := map(a, fun((r) -> r))
+    out := map(a, function((r) -> r))
 
   # insert_delete has no magnitude, so repetition is how it says "weight 2" --
   # and the weighted output shows it arriving as exactly that.
@@ -96,7 +96,7 @@
   source: |
     a := input("a")
     a :: zset(record(id: i64, bonus: optional(i64)))
-    out := map(a, fun((r) -> record(id: r.id, missing: r.bonus == NONE)))
+    out := map(a, function((r) -> record(id: r.id, missing: r.bonus == NONE)))
 
   # Feldera allows a null to be written as JSON null or by leaving the column
   # out entirely; both must mean the same thing.

@@ -6,8 +6,25 @@
 > [`language.md`](language.md)'s type system and [`mapping.md`](mapping.md), and
 > this file goes away.
 >
-> It depends on the expression-language rewrite in
-> [`expressions.md`](expressions.md), which it motivated.
+> **It now owns `match` as well.** An expression-language rewrite was designed
+> alongside this type and has since been split. The parts that stand on their
+> own have landed and are described in [`language.md`](language.md): `function`
+> replacing `fun`, `record(key:, value:)` instead of `(key, value)` pairs, and
+> arrays instead of list syntax. What is left here is what only `json` needs —
+> `match`, type patterns, structural patterns, open records, `dict`, and
+> exhaustiveness. Converting a document *is* pattern matching, which is why
+> there is no `cast` in the plan.
+>
+> Two things below need revisiting before this is built, both raised by the
+> review that produced the split. `dict(K, V)` is described as a refinement of
+> `json` — the same bytes, a narrower static type — but a `dict(i64, json)`
+> cannot come from parsed JSON, whose object keys are always strings; if `dict`
+> is to be a constructible map value it is a second type with its own
+> representation, ordering and encoding, not a refinement. And the numeric-tag
+> question under [Numbers](#numbers) is a matter of **key identity**, not only
+> of sort order: two documents the language shows identically can be different
+> Z-set keys, which bears on whether `json` may be a join key or an `==` operand
+> at all. See invariant 4 in [`mapping.md`](mapping.md).
 
 ## `json` is its own type, not a wrapper
 
@@ -112,7 +129,7 @@ one boundary where it was at risk.
 **The language exposes json numbers only as `f64`.** So `i64`,
 `dict(string, i64)` and `array(i64)` patterns are unsatisfiable against a `json`
 scrutinee, and produce the note described in
-[`expressions.md`](expressions.md#exhaustiveness-and-dead-arms).
+[Exhaustiveness and dead arms](#exhaustiveness-and-dead-arms).
 
 That is the whole rule, and it removes the tag split from the language: there is
 one number type to match, and a program never has to handle `5` and `5.0`
@@ -276,7 +293,224 @@ it follows from the type rather than being a separate choice.
 - `decode_value` and `encode_value` gain `Json` arms, and `decode_value`'s null
   interception has to consult the type.
 - Pattern matching against documents is new machinery in the type checker and
-  the evaluator, described in [`expressions.md`](expressions.md).
+  the evaluator, new machinery, designed in the pattern sections below.
+
+## `match`, and the pattern language
+
+Converting a document is a *parse*, not a test, so conversion had to become
+pattern matching rather than a `cast` function. That is the part of the
+expression rewrite that did not stand on its own, and it is kept here.
+
+### `match`
+
+Sequential, first match wins, and every `match` must be exhaustive.
+
+```
+match_expr := "match" "(" scrutinee "," arm ("," arm)* ")"
+scrutinee  := expr | "(" expr ("," expr)+ ")"
+arm        := pattern "->" expr
+```
+
+The scrutinee may be a **list** of expressions, matched against a
+correspondingly wide pattern:
+
+```
+match((a, b),
+    record(key: NONE, value: NONE)   -> 0,
+    record(key: x::f64, value: NONE)   -> x,
+    record(key: NONE, value: y::f64) -> y,
+    record(key: x::f64, value: y::f64) -> x + y)
+```
+
+That list is *not* a tuple value — there is no tuple type and nothing is
+constructed. `match((a), …)` is illegal; a single scrutinee is written
+`match(a, …)`.
+
+`return` is a statement and arms are expressions, so `return` cannot appear
+inside an arm:
+
+```
+match(x, 0 -> return 1, _ -> return 2)      # error
+return match(x, 0 -> 1, _ -> 2)            # the form that works
+```
+
+#### Patterns
+
+| form | binds | notes |
+|---|---|---|
+| `NONE`, `null`, `0`, `""`, `true` | — | value patterns |
+| `x::f64`, `x::string`, `x::bool` | the value | type patterns |
+| `record(id: i64, name: string, **)` | a constructed record | `**` means "and other fields" |
+| `dict(string, json)`, `array(json)` | the value | shape tests |
+| `{key: pattern, **}` | nested bindings | structural, `json` only |
+| `[first, *]` and friends | elements | structural, `json` only |
+| `_` | — | wildcard |
+
+**Type patterns are the only conversion mechanism in the language.** There is no
+`cast`. `x::f64` against an `optional(f64)` unwraps it, and against a `json`
+converts it — so the same body handles both, with the `NONE` arm simply dead in
+the first case:
+
+```
+match(v, NONE -> 0, x::f64 -> x)
+```
+
+There is no conversion between two *known* types. `floor`/`ceil`/`round` are
+type-preserving, and nothing turns an `f64` into an `i64`. See
+[`json.md`](json.md) for what that means for numbers coming out of documents.
+
+##### Open records
+
+`record(id: i64, name: string, **)` matches a record or document that has *at
+least* those fields, and binds a **closed** record of exactly the named ones —
+the extras are tested against nothing and discarded, which is visible in the
+bound variable's type.
+
+**`**` is pattern-only. It is never a type.** An open record type would break
+the invariant that makes the value model work: [`mapping.md`](mapping.md) states
+that field names live only in `TypeDesc` and never in the value, so a value
+carrying fields the schema does not name would either need names back in every
+row or would silently lose them.
+
+Because `record` patterns extract and convert rather than merely test, they are
+**parses**: each field is a lookup, a conversion and an allocation, failure is
+all-or-nothing, and a pattern that fails on its last field has already paid for
+the earlier ones. **Arm order is a performance decision as well as a semantic
+one.**
+
+##### Structural patterns
+
+`{…}` and `[…]` patterns are for `json` scrutinees only, and their nested
+positions hold further structural patterns — **not** type ascriptions:
+
+```
+{user: {id: x, **}, **}          # legal — x : json
+{user: {id: x::f64, **}, **}     # illegal — no type ascriptions inside
+```
+
+Navigation and conversion never happen in one pattern. They compose through a
+nested `match`, which is more verbose and keeps each construct doing one thing:
+
+```
+match(doc,
+    {user: {id: x, **}, **} -> match(x, n::f64 -> n, _ -> 0),
+    _ -> 0)
+```
+
+Array patterns allow **at most one `*`**, in any position:
+
+```
+[first, *]           # at least one
+[*, last]            # at least one
+[first, *, last]     # at least two — element 0 and element n−1
+[a, b]               # exactly two
+[a, b, *]            # at least two
+```
+
+There is no `*name` or `**name`. A binding for the *rest* of a container is the
+only pattern form that would force a copy — a middle run of elements has no byte
+range that is itself a container, so binding one means building a new document,
+O(n) per row per arm tried. Dropping it keeps every pattern's cost proportional
+to what was written. The cost is that object-spread in a source language has no
+lowering.
+
+##### Binding copies, and matching is two-phase
+
+A binding **copies**. Views into the source document would be cheaper — an `Arc`
+clone and a range — but a small field extracted from a large payload would then
+retain the whole payload for as long as the derived Z-set lives, invisibly.
+Lazy materialization with escape analysis is future work.
+
+Because bindings cost something, matching runs in two phases: **test the whole
+pattern, then materialize bindings only on success.** Otherwise a pattern that
+binds a large sub-document and then fails on a later position pays for a copy it
+throws away, once per row per arm.
+
+#### Arm unification
+
+The type of a `match` is its arms' types unified. This is the existing `unify`
+(`typecheck/infer.rs`) folded across the arms — the machinery is already there,
+including the part that matters most: `Ty::None` is the polymorphic `NONE`, and
+`unify(Known(t), Ty::None)` already yields `optional(t)`.
+
+```
+match(x, n::f64 -> n, _ -> NONE)        # optional(f64)
+```
+
+Where the fold lands on `Ty::None` — every arm is `NONE` — the type is genuinely
+ambiguous and needs a typespec. Since `return match(…)` has nowhere to put one,
+that means binding it to a name:
+
+```
+r :: optional(f64)
+r := match(x, _ -> NONE)
+return r
+```
+
+**Arm unification does not promote numerics** — and neither does anything else
+any more, so there is nothing to reconcile. When this was written, arithmetic
+promoted `i64 + f64` to `f64` while arm unification would not, and the plan was
+to split `unify` in two. Implicit promotion has since been deleted from the
+language, so the single `unify` in `typecheck/infer.rs` already has the
+behaviour arms need and `match` can use it unchanged.
+
+#### Exhaustiveness and dead arms
+
+A trailing `_` establishes exhaustiveness. (Whether full enumeration of a finite
+shape set also counts is [open](#open-questions).)
+
+**Dead arms are allowed.** They are the point of templates — the same body is
+exhaustive at one call site and not at another, and an arm that cannot match at
+one instantiation is live at the next:
+
+```
+function norm(v) {
+    return match(v,
+        NONE      -> 0,
+        x::f64    -> x,
+        s::string -> length(s),
+        _         -> 0)
+}
+```
+
+At `v : f64` the `string` and `NONE` arms are dead; at `v : json` they are live.
+Making that an error would make the template useless, so unreachable arms are
+not diagnosed — with one exception.
+
+**Notes are emitted for patterns unsatisfiable against a `json` scrutinee**, and
+only there. That is the case where the author's mental model is most likely
+wrong, because what a `json` can yield is deliberately narrower than the type
+vocabulary:
+
+```
+match(doc, n::i64 -> n, _ -> 0)               # note: json numbers are f64
+match(doc, r::record(id: i64, **) -> …, …)    # note: on the `id` field
+```
+
+The note recurses into record patterns and points at the *field*, since writing
+`id: i64` out of habit is the likeliest mistake in the whole feature and a
+head-only note would miss it. Notes are deduplicated by pattern span, so a
+helper used at six call sites reports once.
+
+Notes need plumbing that does not exist: `compile()` returns
+`Result<Plan, Vec<Diagnostic>>`, so a diagnostic on a *successful* compile has
+nowhere to go, and nothing in `src/` produces a `Severity::Note` today.
+
+### What the pattern language costs
+
+- `TypedExpr` gains a `Match` node with binding slots, and the evaluator gains
+  the two-phase test-then-materialize rule above.
+- Notes need plumbing that does not exist: `compile()` returns
+  `Result<Plan, Vec<Diagnostic>>`, so a diagnostic on a *successful* compile has
+  nowhere to go, and nothing in `src/` produces a `Severity::Note` today.
+- The YAML harness enforces **exactly one** of `expected_output` /
+  `expected_exact_output` / `expected_diagnostics` (`tests/yaml.rs`), so a case
+  that compiles *and* emits a note cannot assert both. That rule has to relax,
+  and `tests/cases/README.md` documents it.
+- Body bindings in a `function` become load-bearing rather than optional: a
+  `match` arm that needs a computed value has nowhere else to put it. They are
+  listed under future work in [`overview.md`](overview.md) and bring a flat slot
+  table with them.
 
 ## Open questions
 
@@ -290,4 +524,19 @@ it follows from the type rather than being a separate choice.
    as a pattern against a document because converting every value is O(document)
    rather than O(pattern). But `array(T)` for typed `T` *is* allowed, and does
    the same amount of work — so the two are currently asymmetric for the same
-   cost.
+   cost. This has grown a second half since `array(T)` landed as a real value:
+   if `dict` is to be constructible at all it is a container of our own, with
+   ordering, hashing and JSON encoding to define, and not the zero-cost
+   refinement of `json` this document describes.
+4. **Do statically-dead arms contribute their type to arm unification?**
+   Excluding them is what makes templates work — otherwise the `norm` example
+   above fails at every instantiation rather than none. But then an expression's
+   type depends on which arms are statically reachable, so adding a field to a
+   record can bring a dead arm to life and change a function's return type at
+   that call site. Note that the example does not typecheck under the
+   no-promotion rule either way: its arms are `f64` and `i64`, and arm
+   unification does not promote.
+5. **Exhaustiveness beyond the trailing wildcard.** A trailing `_` is
+   sufficient. Whether full enumeration of a finite shape set also counts is
+   undecided — without it, `match(v, NONE -> 0, x::f64 -> x)` needs an
+   unreachable `_` even though it is total.

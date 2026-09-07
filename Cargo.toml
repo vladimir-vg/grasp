@@ -13,7 +13,6 @@ edition = "2024"
 # crate unbuildable for anyone else.
 [dependencies]
 dbsp = { path = "vendor/feldera/crates/dbsp" }
-feldera-sqllib = { path = "vendor/feldera/crates/sqllib" }
 # Provides the `IsNone` derive, which also supplies `SupportsRoaring` — both are
 # required for `DynValue` to satisfy `DBData`.
 feldera-macros = { path = "vendor/feldera/crates/feldera-macros" }
@@ -27,6 +26,11 @@ feldera-macros = { path = "vendor/feldera/crates/feldera-macros" }
 # This matches how the Feldera workspace declares it.
 rkyv = { version = "0.7.45", default-features = false }
 size-of = { version = "0.1.7", features = ["time-std", "ordered-float"], package = "feldera-size-of" }
+# The hash behind a node's content id, which is a `persistent_id` and so must
+# be stable across builds and processes — the same requirement, and the same
+# algorithm, as `dbsp`'s own `default_hash` (`dbsp/src/hash.rs`). Rust's
+# `DefaultHasher` is explicitly not guaranteed stable across releases.
+xxhash-rust = { version = "0.8.6", features = ["xxh3"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # `Runtime::init_circuit`'s constructor closure returns `anyhow::Result`.

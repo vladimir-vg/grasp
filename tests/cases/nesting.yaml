@@ -6,7 +6,7 @@
   source: |
     emp := input("emp")
     emp :: zset(record(id: i64, dept_id: i64))
-    per_dept := weighted_count(map(emp, fun((r) -> r.dept_id)))
+    per_dept := weighted_count(map(emp, function((r) -> r.dept_id)))
 
   input:
     - emp:
@@ -22,14 +22,14 @@
 - name: both sides of a join nested
   source: |
     emp := input("emp")
-    emp :: zset(record(id: i64, name: sql.SqlString, dept_id: i64))
+    emp :: zset(record(id: i64, name: String, dept_id: i64))
     dept := input("dept")
-    dept :: zset(record(id: i64, dname: sql.SqlString))
+    dept :: zset(record(id: i64, dname: String))
 
     joined := join(
-        map_index(emp,  fun((r) -> (r.dept_id, record(name: r.name)))),
-        map_index(dept, fun((r) -> (r.id, record(dname: r.dname)))),
-        fun((k, e, d) -> record(name: e.name, dname: d.dname)))
+        map_index(emp,  function((r) -> record(key: r.dept_id, value: record(name: r.name)))),
+        map_index(dept, function((r) -> record(key: r.id, value: record(dname: r.dname)))),
+        function((k, e, d) -> record(name: e.name, dname: d.dname)))
 
   input:
     - emp:
@@ -45,7 +45,7 @@
   source: |
     a := input("a")
     a :: zset(record(v: i64))
-    out := distinct(map(filter(a, fun((r) -> r.v > 1)), fun((r) -> record(w: r.v * 10))))
+    out := distinct(map(filter(a, function((r) -> r.v > 1)), function((r) -> record(w: r.v * 10))))
 
   input:
     - a:
@@ -64,8 +64,8 @@
     a :: zset(record(v: i64))
     b := input("b")
     b :: zset(record(v: i64))
-    small := filter(a, fun((r) -> r.v < 10))
-    both := plus(small, filter(b, fun((r) -> r.v < 10)))
+    small := filter(a, function((r) -> r.v < 10))
+    both := plus(small, filter(b, function((r) -> r.v < 10)))
 
   input:
     - a:
@@ -83,7 +83,7 @@
   source: |
     a := input("a")
     a :: zset(record(v: i64))
-    doubled := plus(filter(a, fun((r) -> r.v > 0)), filter(a, fun((r) -> r.v > 0)))
+    doubled := plus(filter(a, function((r) -> r.v > 0)), filter(a, function((r) -> r.v > 0)))
 
   input:
     - a:
@@ -100,7 +100,7 @@
   source: |
     a := input("a")
     a :: zset(record(k: i64, x: i64))
-    hi := aggregate(map_index(a, fun((r) -> (r.k, r))), max, fun((v) -> v.x))
+    hi := aggregate(map_index(a, function((r) -> record(key: r.k, value: r))), max, function((v) -> v.x))
 
   input:
     - a:

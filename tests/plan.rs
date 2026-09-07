@@ -7,7 +7,7 @@ use dbsp_runner::typecheck::PlanOp;
 const NESTED: &str = "\
 a := input(\"a\")
 a :: zset(record(v: i64))
-out := distinct(filter(a, fun((r) -> r.v > 0)))
+out := distinct(filter(a, function((r) -> r.v > 0)))
 ";
 
 /// Nested calls become real nodes, but anonymous ones.
@@ -37,7 +37,7 @@ fn operands_always_precede_their_consumer() {
     let plan = compile(
         "a := input(\"a\")\n\
          a :: zset(record(v: i64))\n\
-         out := plus(filter(a, fun((r) -> r.v > 0)), map(a, fun((r) -> r)))\n",
+         out := plus(filter(a, function((r) -> r.v > 0)), map(a, function((r) -> r)))\n",
     )
     .expect("compiles");
 
@@ -79,7 +79,7 @@ fn identical_work_becomes_one_node() {
     let plan = compile(
         "a := input(\"a\")\n\
          a :: zset(record(v: i64))\n\
-         out := plus(filter(a, fun((r) -> r.v > 0)), filter(a, fun((r) -> r.v > 0)))\n",
+         out := plus(filter(a, function((r) -> r.v > 0)), filter(a, function((r) -> r.v > 0)))\n",
     )
     .expect("compiles");
 
@@ -127,8 +127,8 @@ fn different_work_stays_separate() {
     let plan = compile(
         "a := input(\"a\")\n\
          a :: zset(record(v: i64))\n\
-         p := filter(a, fun((r) -> r.v > 0))\n\
-         q := filter(a, fun((r) -> r.v > 1))\n",
+         p := filter(a, function((r) -> r.v > 0))\n\
+         q := filter(a, function((r) -> r.v > 1))\n",
     )
     .expect("compiles");
 
@@ -164,4 +164,120 @@ fn operands(op: &PlanOp) -> Vec<usize> {
         // Body-only, and never reached at the top level.
         PlanOp::Import { .. } | PlanOp::RecVar { .. } => vec![],
     }
+}
+
+/// A numeric literal takes its type from the operand beside it, so one function
+/// body serves every numeric type. The literal must be *pinned* into the plan,
+/// not merely accepted by the checker: the evaluator promotes mixed operands, so
+/// a body left holding an `i64` two would still compute the right answer at
+/// `f64` and only diverge once the vocabulary grows past these two types.
+#[test]
+fn a_numeric_literal_is_pinned_to_its_context() {
+    use dbsp_runner::expr::TypedExpr;
+    use dbsp_runner::value::DynValue;
+
+    let consts = |src: &str| -> Vec<DynValue> {
+        let plan = compile(src).expect("compiles");
+        let mut found = Vec::new();
+        fn walk(e: &TypedExpr, out: &mut Vec<DynValue>) {
+            match e {
+                TypedExpr::Const(v) => out.push(v.clone()),
+                TypedExpr::IntLit(_) | TypedExpr::FloatLit(_) => {
+                    panic!("a literal reached the plan without taking a type")
+                }
+                TypedExpr::Unary(_, i) => walk(i, out),
+                TypedExpr::Binary(_, l, r) => {
+                    walk(l, out);
+                    walk(r, out);
+                }
+                TypedExpr::Call(_, args)
+                | TypedExpr::Record(args)
+                | TypedExpr::Array(args) => args.iter().for_each(|a| walk(a, out)),
+                TypedExpr::Field(b, _) => walk(b, out),
+                TypedExpr::Var(_) => {}
+            }
+        }
+        for node in &plan.nodes {
+            if let PlanOp::Map { f, .. } = &node.op {
+                walk(f, &mut found);
+            }
+        }
+        found
+    };
+
+    let body = |ty: &str| {
+        format!(
+            "a := input(\"a\")\n\
+             a :: zset(record(v: {ty}))\n\
+             out := map(a, function((r) -> r.v * 2))\n"
+        )
+    };
+
+    assert_eq!(consts(&body("i64")), vec![DynValue::I64(2)], "`2` beside an i64");
+    assert_eq!(
+        consts(&body("f64")),
+        vec![DynValue::F64(dbsp::algebra::F64::new(2.0))],
+        "the same `2` beside an f64"
+    );
+}
+
+/// Two programs describing the same dataflow must produce the same content ids,
+/// however they were written.
+///
+/// This is what makes the id usable as a `persistent_id`. An emitting agent
+/// regenerates whole programs rather than editing them, so whitespace,
+/// declaration order and the names of intermediates are all unstable across
+/// emissions while the computation is not. `dbsp` says as much about the ids it
+/// wants: derive them "from the program … rather than from anything positional".
+#[test]
+fn content_ids_survive_regeneration() {
+    use dbsp_runner::typecheck::content_ids;
+    use std::collections::BTreeSet;
+
+    let a = "\
+a := input(\"emp\")
+a :: zset(record(id: i64, dept: i64))
+big := filter(a, function((r) -> r.dept > 3))
+idx := map_index(big, function((r) -> record(key: r.dept, value: r)))
+out := aggregate(idx, count, function((v) -> v.id))
+";
+
+    // Same dataflow: declarations reordered, intermediates renamed, the filter
+    // written inline instead of bound, and the whitespace changed throughout.
+    let b = "\
+out   := aggregate(grouped, count, function((v) -> v.id))\n\
+\n\
+grouped := map_index(\n\
+    filter(src, function((r) -> r.dept > 3)),\n\
+    function((r) -> record(key: r.dept, value: r)))\n\
+\n\
+src :: zset(record(id: i64, dept: i64))\n\
+src := input(\"emp\")\n\
+";
+
+    let ids = |src: &str| -> BTreeSet<String> {
+        content_ids(&compile(src).expect("compiles")).into_iter().collect()
+    };
+    assert_eq!(ids(a), ids(b), "the same dataflow, written two ways");
+
+    // And a genuinely different computation must not collide.
+    let c = a.replace("r.dept > 3", "r.dept > 4");
+    assert_ne!(ids(a), ids(&c), "a different filter is a different node");
+}
+
+/// A node with no name can still be observed, because its content id is a name.
+///
+/// Outputs are chosen when the runner starts and anything may be chosen, so a
+/// nested node being unaddressable was a hole in that. Its only label is
+/// `filter@3:12` — a source position, which is exactly what must not be used.
+#[test]
+fn a_nested_node_is_observable_by_content_id() {
+    use dbsp_runner::typecheck::content_ids;
+
+    let plan = compile(NESTED).expect("compiles");
+    let ids = content_ids(&plan);
+    let nested = plan.nodes.iter().position(|n| n.name.starts_with("filter@")).unwrap();
+
+    let runner = Runner::build(&plan, &[ids[nested].clone()]).expect("builds");
+    runner.kill();
 }

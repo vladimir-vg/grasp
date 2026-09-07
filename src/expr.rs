@@ -13,7 +13,6 @@ use crate::value::DynValue;
 // Aliased because `use DynValue::*` inside several functions below would
 // otherwise shadow this type with the `F64` *variant*.
 use dbsp::algebra::F64 as Flt;
-use feldera_sqllib::SqlString;
 
 /// A builtin function. `cast` is not implemented in this cut.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,12 +64,21 @@ impl Builtin {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypedExpr {
     Const(DynValue),
+    /// An integer literal that has not yet taken a type from its context. The
+    /// type checker rewrites every one of these into a `Const` before lowering
+    /// — see `typecheck::infer::commit` — so reaching the evaluator means the
+    /// literal settled to its default.
+    IntLit(i64),
+    /// A float literal awaiting its context, as `IntLit`.
+    FloatLit(f64),
     /// A bound parameter, by position in the function's parameter list.
     Var(usize),
     /// Positional field access.
     Field(Box<TypedExpr>, usize),
     /// A record literal. Field names live in the node's `TypeDesc`.
     Record(Vec<TypedExpr>),
+    /// An array literal. Every element has the array's one element type.
+    Array(Vec<TypedExpr>),
     Unary(UnOp, Box<TypedExpr>),
     Binary(BinOp, Box<TypedExpr>, Box<TypedExpr>),
     Call(Builtin, Vec<TypedExpr>),
@@ -86,6 +94,10 @@ pub enum TypedExpr {
 pub fn eval(e: &TypedExpr, args: &[&DynValue]) -> DynValue {
     match e {
         TypedExpr::Const(v) => v.clone(),
+        // Unreachable in a checked plan: `commit` pins every literal. Rendering
+        // the default keeps the evaluator total rather than trusting that.
+        TypedExpr::IntLit(v) => DynValue::I64(*v),
+        TypedExpr::FloatLit(v) => DynValue::F64(Flt::new(*v)),
         TypedExpr::Var(i) => args[*i].clone(),
         TypedExpr::Field(base, index) => match eval(base, args) {
             DynValue::Record(fields) => fields.get(*index).cloned().unwrap_or(DynValue::None),
@@ -93,6 +105,9 @@ pub fn eval(e: &TypedExpr, args: &[&DynValue]) -> DynValue {
         },
         TypedExpr::Record(fields) => {
             DynValue::Record(fields.iter().map(|f| eval(f, args)).collect())
+        }
+        TypedExpr::Array(items) => {
+            DynValue::Array(items.iter().map(|i| eval(i, args)).collect())
         }
         TypedExpr::Unary(op, inner) => eval_unary(*op, eval(inner, args)),
         TypedExpr::Binary(op, l, r) => eval_binary(*op, l, r, args),
@@ -110,7 +125,7 @@ fn eval_unary(op: UnOp, v: DynValue) -> DynValue {
         return DynValue::None;
     }
     match (op, v) {
-        (UnOp::Neg, DynValue::I64(n)) => DynValue::I64(-n),
+        (UnOp::Neg, DynValue::I64(n)) => DynValue::I64(n.wrapping_neg()),
         (UnOp::Neg, DynValue::F64(f)) => DynValue::F64(Flt::new(-f.into_inner())),
         (UnOp::Not, DynValue::Bool(b)) => DynValue::Bool(!b),
         _ => DynValue::None,
@@ -196,9 +211,6 @@ fn compare(l: &DynValue, r: &DynValue) -> Option<std::cmp::Ordering> {
         (F64(a), I64(b)) => a.partial_cmp(&Flt::new(*b as f64)),
         (Bool(a), Bool(b)) => Some(a.cmp(b)),
         (String(a), String(b)) => Some(a.cmp(b)),
-        (SqlString(a), SqlString(b)) => Some(a.cmp(b)),
-        (String(a), SqlString(b)) => Some(a.as_str().cmp(b.str())),
-        (SqlString(a), String(b)) => Some(a.str().cmp(b.as_str())),
         (Record(a), Record(b)) => Some(a.cmp(b)),
         _ => Option::None,
     }
@@ -206,20 +218,21 @@ fn compare(l: &DynValue, r: &DynValue) -> Option<std::cmp::Ordering> {
 
 fn arith(op: BinOp, l: &DynValue, r: &DynValue) -> DynValue {
     use DynValue::*;
-    // Strings only support `+` as concatenation.
-    if let (BinOp::Add, Some(a), Some(b)) = (op, as_str(l), as_str(r)) {
-        return DynValue::str(&format!("{a}{b}"));
-    }
     match (l, r) {
+        // Overflow wraps; only a zero divisor yields absence, which is why `/`
+        // and `%` are the one arithmetic whose result type is `optional`.
         (I64(a), I64(b)) => match op {
-            BinOp::Add => a.checked_add(*b).map(I64).unwrap_or(None),
-            BinOp::Sub => a.checked_sub(*b).map(I64).unwrap_or(None),
-            BinOp::Mul => a.checked_mul(*b).map(I64).unwrap_or(None),
-            BinOp::Div => a.checked_div(*b).map(I64).unwrap_or(None),
-            BinOp::Rem => a.checked_rem(*b).map(I64).unwrap_or(None),
+            BinOp::Add => I64(a.wrapping_add(*b)),
+            BinOp::Sub => I64(a.wrapping_sub(*b)),
+            BinOp::Mul => I64(a.wrapping_mul(*b)),
+            BinOp::Div if *b == 0 => None,
+            BinOp::Rem if *b == 0 => None,
+            BinOp::Div => I64(a.wrapping_div(*b)),
+            BinOp::Rem => I64(a.wrapping_rem(*b)),
             _ => None,
         },
         _ => match (as_f64(l), as_f64(r)) {
+            (Some(_), Some(b)) if matches!(op, BinOp::Div | BinOp::Rem) && b == 0.0 => None,
             (Some(a), Some(b)) => {
                 let v = match op {
                     BinOp::Add => a + b,
@@ -247,7 +260,6 @@ fn as_f64(v: &DynValue) -> Option<f64> {
 fn as_str(v: &DynValue) -> Option<&str> {
     match v {
         DynValue::String(s) => Some(s.as_str()),
-        DynValue::SqlString(s) => Some(s.str()),
         _ => Option::None,
     }
 }
@@ -267,7 +279,7 @@ fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValu
 
     match f {
         Builtin::Abs => match &vals[0] {
-            DynValue::I64(n) => n.checked_abs().map(DynValue::I64).unwrap_or(DynValue::None),
+            DynValue::I64(n) => DynValue::I64(n.wrapping_abs()),
             DynValue::F64(v) => DynValue::F64(Flt::new(v.into_inner().abs())),
             _ => DynValue::None,
         },
@@ -285,8 +297,7 @@ fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValu
         },
         Builtin::Length => match &vals[0] {
             DynValue::String(s) => DynValue::I64(s.chars().count() as i64),
-            DynValue::SqlString(s) => DynValue::I64(s.str().chars().count() as i64),
-            DynValue::Record(fields) => DynValue::I64(fields.len() as i64),
+            DynValue::Array(items) => DynValue::I64(items.len() as i64),
             _ => DynValue::None,
         },
         Builtin::Concat => match (as_str(&vals[0]), as_str(&vals[1])) {
@@ -300,7 +311,7 @@ fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValu
                     Builtin::Upper => s.to_uppercase(),
                     _ => s.trim().to_string(),
                 };
-                DynValue::SqlString(SqlString::from_ref(&out))
+                DynValue::String(out)
             }
             None => DynValue::None,
         },

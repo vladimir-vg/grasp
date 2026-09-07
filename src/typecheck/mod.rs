@@ -8,17 +8,19 @@
 //! path compares field-name strings.
 
 pub mod circuits;
+pub mod content;
 pub mod infer;
 pub mod ops;
 pub mod plan;
 
-pub use plan::{AGGREGATORS, Agg, OPERATORS, Plan, PlanNode, PlanOp};
+pub use content::{body_content_ids, content_ids};
+pub use plan::{AGGREGATORS, Agg, KeyValue, OPERATORS, Plan, PlanNode, PlanOp};
 
 use circuits::{check_fixpoint, expand};
 use ops::check_op;
 
 use crate::diag::{Diagnostic, Pass, Span};
-use crate::lang::{Arg, CircuitDef, Decl, NodeRef, OpCall, Program, Rhs};
+use crate::lang::{Arg, CircuitDef, Decl, Expr, ExprKind, FunctionDef, NodeRef, OpCall, Program, Rhs};
 use crate::value::BatchType;
 use std::collections::HashMap;
 
@@ -55,6 +57,9 @@ pub(super) fn collect<'a>(decls: &'a [Decl]) -> TResult<Group<'a>> {
             Decl::Circuit(c) => {
                 return err(c.span, "a circuit definition belongs at the top level");
             }
+            // Collected separately: functions are visible from every scope, so
+            // they are not part of any one group's declarations.
+            Decl::Function(_) => {}
         }
     }
     for (name, (_, span)) in &g.specs {
@@ -82,7 +87,16 @@ pub(super) struct Env<'a> {
     /// The instance a body is being expanded under, or empty at the top level.
     /// Body nodes are registered as `<prefix>.<node>`.
     pub(super) prefix: &'a str,
+    /// Whether this declaration sits inside a `fixpoint` body. One level is
+    /// supported and a second is rejected here rather than at lowering, which
+    /// has no span to point at and no way to say what to do instead.
+    pub(super) in_fixpoint: bool,
+    /// Named functions. Visible from every scope, since a function is a
+    /// template with no access to anything but its own parameters.
+    pub(super) funcs: &'a Functions<'a>,
 }
+
+pub(super) type Functions<'a> = HashMap<&'a str, &'a FunctionDef>;
 
 pub fn check(program: &Program) -> TResult<Plan> {
     let mut circuits: HashMap<&str, &CircuitDef> = HashMap::new();
@@ -96,10 +110,20 @@ pub fn check(program: &Program) -> TResult<Plan> {
 
     check_circuit_cycles(&circuits)?;
 
+    let mut funcs: Functions = HashMap::new();
+    for decl in &program.decls {
+        if let Decl::Function(f) = decl
+            && funcs.insert(&f.name, f).is_some()
+        {
+            return err(f.span, format!("function `{}` is defined more than once", f.name));
+        }
+    }
+    check_function_cycles(&funcs)?;
+
     let top: Vec<&Decl> = program
         .decls
         .iter()
-        .filter(|d| !matches!(d, Decl::Circuit(_)))
+        .filter(|d| !matches!(d, Decl::Circuit(_) | Decl::Function(_)))
         .collect();
     let owned: Vec<Decl> = top.into_iter().cloned().collect();
     let group = collect(&owned)?;
@@ -108,11 +132,103 @@ pub fn check(program: &Program) -> TResult<Plan> {
     let scope = Scope::new();
     for i in topo_order(&group.nodes)? {
         let (name, rhs, span) = group.nodes[i];
-        let env = Env { specs: &group.specs, circuits: &circuits, scope: &scope, prefix: "" };
+        let env = Env {
+            specs: &group.specs,
+            circuits: &circuits,
+            scope: &scope,
+            prefix: "",
+            in_fixpoint: false,
+            funcs: &funcs,
+        };
         check_decl(name, rhs, span, &mut plan, env)?;
     }
     check_one_type_per_table(&plan)?;
+    check_no_name_collides_with_a_function(&plan, &funcs)?;
     Ok(plan)
+}
+
+/// Rejects a function that calls itself, directly or through others.
+///
+/// A function is fully inlined at check time, so a cycle would not terminate at
+/// *compile* time, never mind at runtime. `fixpoint` is what recursion is for.
+fn check_function_cycles(funcs: &Functions<'_>) -> TResult<()> {
+    fn calls<'a>(e: &'a Expr, out: &mut Vec<(&'a str, Span)>) {
+        match &e.kind {
+            ExprKind::Call(name, args) => {
+                out.push((name.as_str(), e.span));
+                args.iter().for_each(|a| calls(a, out));
+            }
+            ExprKind::Field(b, _) => calls(b, out),
+            ExprKind::Unary(_, i) => calls(i, out),
+            ExprKind::Binary(_, l, r) => {
+                calls(l, out);
+                calls(r, out);
+            }
+            ExprKind::Record(fields) => fields.iter().for_each(|(_, v)| calls(v, out)),
+            ExprKind::List(items) => items.iter().for_each(|i| calls(i, out)),
+            _ => {}
+        }
+    }
+
+    fn walk<'a>(
+        name: &'a str,
+        funcs: &Functions<'a>,
+        path: &mut Vec<&'a str>,
+        done: &mut std::collections::HashSet<&'a str>,
+    ) -> TResult<()> {
+        let Some(def) = funcs.get(name) else {
+            return Ok(()); // a builtin, or reported when the call is checked
+        };
+        if let Some(at) = path.iter().position(|p| *p == name) {
+            let mut cycle: Vec<&str> = path[at..].to_vec();
+            cycle.push(name);
+            return err(
+                def.span,
+                format!(
+                    "function `{name}` calls itself through {}; a function is inlined, \
+                     so this would not terminate. Use `fixpoint` for recursion.",
+                    cycle.join(" -> ")
+                ),
+            );
+        }
+        if !done.insert(name) {
+            return Ok(());
+        }
+        path.push(name);
+        let mut called = Vec::new();
+        calls(&def.body, &mut called);
+        for (callee, _) in called {
+            walk(callee, funcs, path, done)?;
+        }
+        path.pop();
+        Ok(())
+    }
+
+    let mut names: Vec<&str> = funcs.keys().copied().collect();
+    names.sort();
+    let mut done = std::collections::HashSet::new();
+    for name in names {
+        walk(name, funcs, &mut Vec::new(), &mut done)?;
+    }
+    Ok(())
+}
+
+/// A name means one thing. A node and a function sharing one would make a bare
+/// name mean a stream in one argument position and a function in another.
+fn check_no_name_collides_with_a_function(plan: &Plan, funcs: &Functions<'_>) -> TResult<()> {
+    for (name, idx) in &plan.by_name {
+        if let Some(def) = funcs.get(name.as_str()) {
+            return err(
+                def.span,
+                format!(
+                    "`{name}` is both a function and a node (declared at {}); \
+                     a name means one thing",
+                    plan.nodes[*idx].span
+                ),
+            );
+        }
+    }
+    Ok(())
 }
 
 /// A table has one schema. Identical `input("t")` declarations dedup into one
@@ -248,7 +364,23 @@ pub(super) fn check_decl(
 
         Rhs::Instantiate(inst) => expand(name, inst, plan, env),
 
-        Rhs::Fixpoint(inst) => check_fixpoint(name, inst, plan, env),
+        Rhs::Fixpoint(inst) => {
+            // `dbsp` allows circuits at arbitrary depth, but each level is a
+            // distinct Rust circuit type needing its own instantiation of the
+            // lowering. The lowering therefore cannot build this, and its
+            // `Import` indices would refer to the wrong node list if it tried.
+            if env.in_fixpoint {
+                return err(
+                    span,
+                    format!(
+                        "`fixpoint` cannot be nested: `{name}` is already inside one. \
+                         Lift it out, or make both recursions parameters of a single \
+                         `fixpoint` — one fixpoint may have several recursive streams."
+                    ),
+                );
+            }
+            check_fixpoint(name, inst, plan, env)
+        }
     }
 }
 

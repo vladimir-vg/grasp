@@ -8,9 +8,8 @@ the circuit and output changes are emitted as they are produced.
 
 ## What it is
 
-- A **single Rust crate** (`dbsp-runner`) linking against `dbsp`,
-  `feldera-sqllib` for the `sql.*` value types, and `feldera-macros` for the
-  `IsNone` derive `dbsp`'s `DBData` bound requires.
+- A **single Rust crate** (`dbsp-runner`) linking against `dbsp` and
+  `feldera-macros`, for the `IsNone` derive `dbsp`'s `DBData` bound requires.
 - A **runtime interpreter**: the program is parsed at startup and the circuit
   is assembled at startup, through `dbsp`'s ordinary operator API instantiated
   at a single universal value type. There is **no code generation and no Rust
@@ -21,52 +20,86 @@ the circuit and output changes are emitted as they are produced.
   language, the value model, and how the language maps onto `dbsp`. It does
   not reimplement or re-describe DBSP's model.
 
-## Scope (v1)
+## Design principles
+
+The language is a **compilation target**: it is emitted by a compiler frontend
+or by an agent, not written by hand. That audience decides most of the
+trade-offs below, so it is worth stating what it wants.
+
+- **Explicit is free.** An emitter always knows the type it intends, so it can
+  always write it down. Inference is never load-bearing: wherever it falls
+  short, an ascription resolves it, and inference is not made cleverer to avoid
+  one.
+- **Regeneration is the norm.** An agent re-emits whole programs — different
+  whitespace, ordering and intermediate names, same computation. Nothing may be
+  keyed to source position; identity is content. See
+  [`mapping.md`](mapping.md).
+- **Diagnostics are the interface.** Programs get written by emit → check →
+  repair, so no reachable path may produce an internal error, and every
+  rejection says what to write instead.
+- **The docs are the spec.** They are what an emitting agent is given, so a doc
+  that disagrees with the implementation produces wrong programs
+  deterministically. Every documented rule is pinned by a fixture in
+  `tests/cases/`.
+- **Exactly one way to write each thing**, and no implicit conversion. A
+  redundancy is a decision an emitter must make with no information.
+- **Every construct is a value in every position.** A construct legal only in
+  certain syntactic slots cannot be composed.
+- **A declared type is a promise the runtime cannot break.**
+
+Two of these were bought rather than assumed. `sql.SqlString` was withdrawn and
+implicit numeric promotion deleted, both to satisfy the third and fifth.
+
+## Scope
 
 - The source language described in [`language.md`](language.md).
 - `circuit` definitions, instantiated either by expansion at the call site —
   including a circuit instantiated inside another — or by `fixpoint`.
+- Named `function` definitions, which are **templates**: parameters carry no
+  types, the body is checked per call site, and the whole thing is inlined. One
+  arithmetic helper therefore serves every numeric type it works at.
 - Content-addressed nodes: identical operator, inputs and parameters means one
-  node, however many times it is written.
+  node, however many times it is written — and that same address is the node's
+  `persistent_id` and the name it can be observed by.
 - The operator set listed there: inputs; the mapping family (`map`, `filter`,
   `flat_map`, `map_index`, `flat_map_index`); the join family (`join`,
   `join_index`, `antijoin`); `distinct`; `aggregate` over
   `min`/`max`/`sum`/`avg`/`count`; `weighted_count`; the algebraic operators
   (`neg`, `plus`, `minus`, `sum`); and `integrate`, `differentiate`, `delay`.
 - Expressions in function bodies: literals, parameters, record field access,
-  `record(...)` construction, arithmetic, comparison and logic, and a small
-  builtin library. `(k, v)` pairs and `[…]` lists are syntax rather than
-  values; see [`language.md`](language.md).
+  `record(...)` and `[…]` construction, arithmetic, comparison and logic, and a
+  small builtin library.
 - The type system described in [`language.md`](language.md) (batch types and
-  value types). The value vocabulary implemented so far is `bool`, `i64`,
-  `f64`, `String`, `sql.SqlString`, `optional(T)` and `record(...)`.
+  value types). The value vocabulary is `bool`, `i64`, `f64`, `String`,
+  `optional(T)`, `record(...)` and `array(T)`.
 - The value model described in [`mapping.md`](mapping.md).
 - Feldera-native JSON input and output, emitting deltas — `weighted` by default
   here because it represents a Z-set delta exactly, `insert_delete` for
-  compatibility with Feldera's own default. Both work in both directions.
+  compatibility with Feldera's own default.
 
 One level of `fixpoint` is supported, and that is deliberate rather than
-pending: a `fixpoint` inside a `fixpoint` is rejected. `dbsp` allows circuits at
-arbitrary depth, but each level is a distinct Rust circuit type needing its own
-instantiation of the lowering, and one level covers the recursive queries this
-language is for.
+pending: a `fixpoint` inside a `fixpoint` is rejected by the type checker, with
+a diagnostic. `dbsp` allows circuits at arbitrary depth, but each level is a
+distinct Rust circuit type needing its own instantiation of the lowering, and
+one level covers the recursive queries this language is for.
 
 Outputs are **not** part of the source language. A program declares streams; the
-set of nodes to observe is supplied when the runner starts, by node name.
+set of nodes to observe is supplied when the runner starts, so anything can
+become an output — by declared name, or by content id for a node that has none.
 
-Two designs are settled but not implemented, and live in their own documents
-until they land: [`expressions.md`](expressions.md) rewrites the expression
-language around multi-statement `function` and `match`, and
-[`json.md`](json.md) adds a `json` type. Neither is reflected in the scope or
-future-work lists below, which describe the language as it exists.
+One design is settled but not implemented, and lives in its own document until
+it lands: [`json.md`](json.md) adds a `json` type, and with it the `match` and
+pattern language that converting a document needs. It is not reflected in the
+lists here.
 
 ## Future work
 
-- **Checkpoint and restore.** Every stateful `dbsp` operator takes a
-  `persistent_id`; wiring node names through as stable ids is what makes
-  checkpoints restorable. See [`mapping.md`](mapping.md).
-- **Multi-worker execution.** `Runtime::init_circuit` shards by key hash, so
-  this depends on the hashing invariants in [`mapping.md`](mapping.md).
+- **Checkpoint and restore.** The ids are in place — every operator carries its
+  node's content id as a `persistent_id` — but nothing takes or restores a
+  checkpoint yet. See [`mapping.md`](mapping.md).
+- **Multi-worker execution.** `Runtime::init_circuit` is called with one worker.
+  Sharding is by key hash, so this depends on the hashing invariants in
+  [`mapping.md`](mapping.md).
 - **`left_join`.** `dbsp` has one, but its right-hand input must be
   `Option`-valued, so exposing it needs either a language-level constraint or a
   wrapping step in the lowering. See [`mapping.md`](mapping.md).
@@ -75,39 +108,42 @@ future-work lists below, which describe the language as it exists.
   stream carrying a trace rather than a batch. See [`mapping.md`](mapping.md).
 - **Windowing and ranking operators** — `window`, `waterline`, `topk`, `rank`,
   `row_number`, `lag`, `asof_join`, `star_join`. All exist in `dbsp`; none are
-  in v1.
-- **The rest of the value vocabulary.** The other integer widths and `f32`;
-  and every `sql.*` type but `SqlString` — `ByteArray`, `SqlDecimal`, `Date`,
-  `Time`, `Timestamp`, `TimestampTz`, `LongInterval`, `ShortInterval`, `Uuid`,
-  `Variant`, `Array`, `Map`. Shallow but wide: each needs a `DynValue` variant,
-  a `TypeDesc` variant, a parser name, JSON coding and an ordering that upholds
-  the invariants in [`mapping.md`](mapping.md), and the temporal and decimal
-  types additionally need `SqlSerdeConfig` for their JSON formats.
+  implemented.
+- **The rest of the value vocabulary.** The other integer widths and `f32`; and
+  the Feldera `sql.*` types — `ByteArray`, `SqlDecimal`, `Date`, `Time`,
+  `Timestamp`, `TimestampTz`, `LongInterval`, `ShortInterval`, `Uuid`. Shallow
+  but wide: each needs a `DynValue` variant, a `TypeDesc` variant, a parser
+  name, JSON coding and an ordering that upholds the invariants in
+  [`mapping.md`](mapping.md), and the temporal and decimal types additionally
+  need `SqlSerdeConfig` for their JSON formats.
 
   Adding a variant shifts `DynValue`'s archived discriminant, which is a
   persisted storage format. Nothing is persisted yet, so the variant order is
   still free to settle — which stops being true after the first stored batch.
+  That freedom is what let `SqlString` be removed rather than deprecated.
 
-- **A runtime list value**, and with it `Vec(T)`, `Tup0..Tup10`, element access
-  (`e[0]`), and data-dependent fan-out. Today `[…]` and `(key, value)` are
-  syntax rather than values, which is why `flat_map`'s fan-out is fixed by the
-  source; see [`language.md`](language.md).
+- **Element access** — `e[0]` on an `array(T)`. Arrays are values and
+  `flat_map` turns one into rows, but nothing reads an element by index.
+
+- **Body bindings in a `function`** — `x := …` statements alongside `return`,
+  with a flat slot table so an argument used twice is evaluated once. Inlining
+  is substitution today, so a diamond in the call graph duplicates work.
 
 - **The `raw` JSON format** (a bare object meaning insert) and the `update`
   operation for keyed partial updates, which needs primary keys the language
   does not have. Both are Feldera-native; neither is implemented.
 
-- **Conditionals** — `if`/`then`/`else`, which shipped ahead of their design and
-  were withdrawn. They are also what a propagating form of arithmetic would need:
-  `optional(T)` operands are rejected today, so an expression that should be
-  none when its input is cannot yet be written.
+- **A conditional.** There is none: `coalesce` is the only branching in the
+  language, so a SQL `CASE` has nowhere to lower. The assumption is that
+  [`json.md`](json.md)'s `match` covers it when that lands; if a frontend needs
+  one sooner, an `if(cond, a, b)` builtin is the smaller answer.
 
-- **`cast`**, which needs a type argument in expression position and a
-  conversion matrix over the value vocabulary — so it is worth doing once that
-  vocabulary has settled.
+- **Conversion between two known types.** Nothing turns an `f64` into an `i64`;
+  `floor`/`ceil`/`round` are type-preserving. [`json.md`](json.md) makes type
+  patterns the conversion mechanism, so a separate `cast` is *not* planned —
+  the two designs disagreed about this and `match` won.
 
-- **A richer expression library** — user-defined functions, and a fuller
-  arithmetic/string/temporal builtin set.
+- **A richer builtin set** — a fuller arithmetic/string/temporal library.
 - **The CLI / HTTP surface** — the current `validate` / `run` / `serve`
   commands are placeholders and subject to change.
 
@@ -115,7 +151,7 @@ future-work lists below, which describe the language as it exists.
 
 - **grasp-dbsp** — an Erlang DBSP runtime with its own language. DBSP Runner
   borrows only the *grammar* (declaration forms, `name := op(...)`,
-  `name :: type`, `fun((params) -> ...)`, and `record(...)` where grasp-dbsp
+  `name :: type`, `function((params) -> ...)`, and `record(...)` where grasp-dbsp
   writes `struct(...)`). Operators, types, and semantics come from `dbsp`, not
   from grasp-dbsp.
 - **dbsp** — the computational engine. DBSP Runner relies on `dbsp` for all
@@ -132,7 +168,7 @@ A single crate with these logical layers:
 | module | responsibility |
 |---|---|
 | `lang` | lexing and parsing the source language |
-| `typecheck` | type inference/checking; produces the schema (`TypeDesc`) |
+| `typecheck` | type inference/checking; produces the schema (`TypeDesc`) and each node's content id |
 | `value` | the runtime value model (`DynValue`, `TypeDesc`) |
 | `diag` | one `Diagnostic` type for every pass, with severity, pass and span |
 | `expr` | type-checked expressions and their tree-walking evaluator |

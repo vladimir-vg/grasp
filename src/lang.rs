@@ -24,6 +24,25 @@ pub enum Decl {
     TypeSpec { name: String, ty: BatchType, span: Span },
     /// `circuit name(label: internal, ...) { ... }`
     Circuit(CircuitDef),
+    /// `function name(a, b) { return expr }`
+    Function(FunctionDef),
+}
+
+/// A named function.
+///
+/// It is a **template**, not a value: the parameters carry no types, and the
+/// body is checked once per call site against the types there. That is what
+/// lets one arithmetic helper serve every numeric type — the literals in it
+/// take the type of whatever they are used with.
+///
+/// Fully inlined at check time, so a function has no runtime form. Recursion is
+/// therefore rejected: it would not terminate at *compile* time either.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionDef {
+    pub name: String,
+    pub params: Vec<String>,
+    pub body: Expr,
+    pub span: Span,
 }
 
 /// What a node declaration is defined as.
@@ -128,16 +147,9 @@ pub enum ExprKind {
     Field(Box<Expr>, String),
     /// `record(a: x, b: y)`
     Record(Vec<(String, Expr)>),
-    /// `(a, b)`. Only legal as the body of a `map_index` or `join_index`
-    /// function, or as an element of a `flat_map_index` list.
-    ///
-    /// This is *syntax, not a value*: the type checker destructures it into
-    /// independent expressions, and no pair is ever streamed. There is no
-    /// corresponding `DynValue` variant.
-    Tuple(Vec<Expr>),
-    /// `[a, b]`. Only legal as the body of a `flat_map` or `flat_map_index`
-    /// function, and syntax rather than a value for the same reason: it says
-    /// how many rows the operator emits per input row.
+    /// `[a, b, ...]` — an array. Every element has the array's one element
+    /// type, and the array is an ordinary value: `flat_map` emits one row per
+    /// element, so fan-out follows the data rather than the source.
     List(Vec<Expr>),
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
@@ -183,14 +195,14 @@ fn parse_error<T>(span: Span, message: impl Into<String>) -> PResult<T> {
 
 /// Type constructors and namespaces.
 const TYPE_NAMES: &[&str] = &[
-    "bool", "i64", "f64", "String", "optional", "record", "sql", "zset", "indexed_zset",
+    "bool", "i64", "f64", "String", "optional", "record", "array", "sql", "zset", "indexed_zset",
 ];
 
 /// Literals and keywords. `if`/`then`/`else` are reserved although the language
 /// has no conditionals yet, so adding them later is not a breaking change.
 const KEYWORDS: &[&str] = &[
-    "true", "false", "NONE", "null", "fun", "and", "or", "not", "if", "then", "else", "circuit",
-    "fixpoint",
+    "true", "false", "NONE", "null", "function", "return", "and", "or", "not", "if", "then",
+    "else", "circuit", "fixpoint",
 ];
 
 /// Whether `name` is reserved, and so may not name a node or a parameter.
@@ -551,6 +563,9 @@ impl Parser {
         if matches!(self.peek(), Tok::Ident(w) if w == "circuit") {
             return self.circuit_def().map(Decl::Circuit);
         }
+        if matches!(self.peek(), Tok::Ident(w) if w == "function") {
+            return self.function_def().map(Decl::Function);
+        }
         let name = self.ident()?;
         if is_reserved(&name) {
             return parse_error(
@@ -615,6 +630,12 @@ impl Parser {
                 d @ (Decl::Node { .. } | Decl::TypeSpec { .. }) => body.push(d),
                 Decl::Circuit(c) => {
                     return parse_error(c.span, "a circuit cannot be defined inside another");
+                }
+                Decl::Function(f) => {
+                    return parse_error(
+                        f.span,
+                        "a function belongs at the top level; it is visible everywhere",
+                    );
                 }
             }
         }
@@ -703,7 +724,7 @@ impl Parser {
                 self.bump();
                 Ok(Arg::Str(s))
             }
-            Tok::Ident(name) if name == "fun" => {
+            Tok::Ident(name) if name == "function" => {
                 self.bump();
                 Ok(Arg::Fun(self.fun_literal()?))
             }
@@ -724,8 +745,35 @@ impl Parser {
     }
 
     /// `fun((a, b) -> expr)`, with the leading `fun` already consumed.
-    fn fun_literal(&mut self) -> PResult<FunLit> {
-        self.expect(&Tok::LParen, "`(` after `fun`")?;
+    /// `function name(a, b) { return expr }`
+    ///
+    /// The block-and-`return` shape is deliberate even though only one
+    /// statement is allowed today: adding body bindings later then does not
+    /// change any function that already exists.
+    fn function_def(&mut self) -> PResult<FunctionDef> {
+        let span = self.span();
+        self.bump(); // `function`
+        let name_span = self.span();
+        let name = self.ident()?;
+        if is_reserved(&name) {
+            return parse_error(
+                name_span,
+                format!("`{name}` is a reserved word and cannot name a function"),
+            );
+        }
+        let params = self.param_list()?;
+        self.expect(&Tok::LBrace, "`{` before a function body")?;
+        if !matches!(self.peek(), Tok::Ident(w) if w == "return") {
+            return self.err("a function body is `return <expression>`");
+        }
+        self.bump();
+        let body = self.expr()?;
+        self.expect(&Tok::RBrace, "`}` closing a function body")?;
+        Ok(FunctionDef { name, params, body, span })
+    }
+
+    /// `(a, b, c)` — the parameter names, which carry no types.
+    fn param_list(&mut self) -> PResult<Vec<String>> {
         self.expect(&Tok::LParen, "`(` before the parameter list")?;
         let mut params = Vec::new();
         if !self.eat(&Tok::RParen) {
@@ -738,6 +786,9 @@ impl Parser {
                         format!("`{name}` is a reserved word and cannot name a parameter"),
                     );
                 }
+                if params.contains(&name) {
+                    return parse_error(span, format!("parameter `{name}` is bound twice"));
+                }
                 params.push(name);
                 if self.eat(&Tok::Comma) {
                     continue;
@@ -746,6 +797,12 @@ impl Parser {
                 break;
             }
         }
+        Ok(params)
+    }
+
+    fn fun_literal(&mut self) -> PResult<FunLit> {
+        self.expect(&Tok::LParen, "`(` after `function`")?;
+        let params = self.param_list()?;
         self.expect(&Tok::Arrow, "`->` after the parameter list")?;
         let body = self.expr()?;
         self.expect(&Tok::RParen, "`)` closing `fun`")?;
@@ -779,16 +836,14 @@ impl Parser {
     fn value_type(&mut self) -> PResult<TypeDesc> {
         let name = self.ident()?;
 
-        // `sql.Foo`
+        // The `sql.*` namespace is reserved but empty. It existed for
+        // `sql.SqlString`, which was withdrawn: two string types meant two ways
+        // to write one thing, with silent coercion between them.
         if name == "sql" {
-            self.expect(&Tok::Dot, "`.` after `sql`")?;
-            let sql_name = self.ident()?;
-            return match sql_name.as_str() {
-                "SqlString" => Ok(TypeDesc::SqlString),
-                other => self.err(format!(
-                    "`sql.{other}` is not supported yet; this build has sql.SqlString only"
-                )),
-            };
+            return self.err(
+                "the `sql.*` namespace is reserved but has no types in this build; \
+                 write `String` for text",
+            );
         }
 
         match name.as_str() {
@@ -796,6 +851,12 @@ impl Parser {
             "i64" => Ok(TypeDesc::I64),
             "f64" => Ok(TypeDesc::F64),
             "String" => Ok(TypeDesc::String),
+            "array" => {
+                self.expect(&Tok::LParen, "`(` after array")?;
+                let elem = self.value_type()?;
+                self.expect(&Tok::RParen, "`)` closing array")?;
+                Ok(TypeDesc::Array(Box::new(elem)))
+            }
             "optional" => {
                 self.expect(&Tok::LParen, "`(` after optional")?;
                 let inner = self.value_type()?;
@@ -929,21 +990,19 @@ impl Parser {
                 }
                 Ok(self.mk(start, ExprKind::List(items)))
             }
+            // `(...)` is grouping and nothing else. There is no pair value:
+            // the three indexing operators take an ordinary record instead.
             Tok::LParen => {
                 self.bump();
-                let first = self.expr()?;
+                let inner = self.expr()?;
                 if self.eat(&Tok::RParen) {
-                    return Ok(first); // parenthesized, not a tuple
+                    return Ok(inner);
                 }
-                let mut items = vec![first];
-                loop {
-                    self.expect(&Tok::Comma, "`,` or `)` in a tuple")?;
-                    items.push(self.expr()?);
-                    if self.eat(&Tok::RParen) {
-                        break;
-                    }
-                }
-                Ok(self.mk(start, ExprKind::Tuple(items)))
+                self.err(
+                    "`(...)` groups an expression; it does not build a pair. \
+                     `map_index`, `join_index` and `flat_map_index` take \
+                     `record(key: ..., value: ...)`",
+                )
             }
             Tok::Ident(word) => self.ident_expr(word, start),
             other => self.err(format!("expected an expression, found {}", describe(&other))),
