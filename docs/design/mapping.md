@@ -6,9 +6,7 @@ incrementalization principle, and input/output handling. It assumes the DBSP
 computational model (Z-sets, weights, deltas, epochs, stateful operators) and
 describes only how we use it.
 
-It describes the mapping as implemented. [`json.md`](json.md) designs a
-`FlatVariant`-backed `json` type against the invariants recorded below, together
-with the `match` and pattern language that converting one needs.
+It describes the mapping as implemented.
 
 ## Value model
 
@@ -33,6 +31,7 @@ implemented:
   no information.
 - `Record(Vec<DynValue>)` — the language's `record(...)`. **Positional.**
 - `Array(Vec<DynValue>)` — the language's `array(T)`.
+- `Json(FlatVariant)` — the language's `json`, a byte-encoded document.
 
 The rest of the vocabulary — the other integer widths, `f32`, and the `sql.*`
 types — is future work, listed in [`overview.md`](overview.md). **Append new
@@ -43,6 +42,36 @@ now and could not once anything is stored.
 `Record` and `Array` are the two containers whose `Ord`, `Hash` and archived
 ordering are ours rather than borrowed, so both are covered by the proptests in
 `tests/invariants.rs`.
+
+### Why `json` is a `FlatVariant`
+
+`feldera_sqllib::FlatVariant` is `{ buf: Arc<[u8]>, start: u32, len: u32 }` — a
+byte-encoded document. It is chosen for its invariants rather than its
+convenience, because it earns three of the four **by construction**:
+
+- **Archived ordering equals in-memory ordering** — the archived form *is* the
+  byte encoding, so there are not two orderings that could disagree.
+- **`Eq` and `Hash` agree** — both route through functions over the same bytes
+  (`eq_values`, `cmp_values`, `hash_value`).
+- **The hash is stable**, being a walk over those bytes.
+
+And a fourth property not on that list but worth as much: **map entries are
+stored sorted and deduplicated**, so `{"a":1,"b":2}` and `{"b":2,"a":1}` produce
+identical bytes — one value, one hash, one Z-set key. Key order in the source
+JSON is canonicalised away rather than becoming a silent non-annihilation bug.
+
+`json` is still in the proptests, for the opposite reason to `Array`: it is
+supposed to satisfy them without our help, so a failure would mean the
+representation is not doing what it claims.
+
+Two consequences for the code that reads one. `From<&FlatVariant> for Variant`
+decodes the **whole** document recursively, so extraction navigates with
+`FlatVariant::index_string` — which shares the buffer rather than cloning, and
+yields the absent sentinel for a missing key or a non-object — and decodes only
+the leaf it lands on. Decoding at the root would be O(document) per row. And the
+derived `IsNone` answers "never", since the struct is not an `Option`: absence
+lives in the encoding's tag, so it is tested by comparing against the one-byte
+`sql_null` sentinel.
 
 There is no tuple variant. `map_index`, `join_index` and `flat_map_index` take
 an ordinary `record(key: …, value: …)` and the lowering splits it, so nothing
@@ -156,16 +185,19 @@ numeric variants never meet inside one batch: a join requires equal key types,
 `plus` requires identical batch types, and arithmetic requires identical operand
 types. The invariant is therefore about values whose type is *dynamic*.
 
-That has two consequences for what comes next. Adding `i32` and `f32` is safe —
-they are separate language types that never compare against `i64` — even though
-appending them puts `I32(5)` after `String("a")` in the derived order, which
-looks alarming and is unobservable. But [`json.md`](json.md)'s `json` is exactly
-the dynamic case: `FlatVariant` compares tag-first, so a document holding `5` and
-one holding `5.0` are **different Z-set keys** while the language deliberately
-shows both as `f64` and gives a program no way to tell them apart. That is a
-matter of key identity — grouping, join matching, weight annihilation — not only
-of sort order, and it is the open question `json` has to answer before it lands
-as a key or an `==` operand.
+That has two consequences. Adding `i32` and `f32` is safe — they are separate
+language types that never compare against `i64` — even though appending them
+puts `I32(5)` after `String("a")` in the derived order, which looks alarming and
+is unobservable.
+
+And `json` is the dynamic case, which is why it is restricted. `FlatVariant`
+compares tag-first, so a document holding `5` and one holding `5.0` are
+**different Z-set keys**. That is sound — they are genuinely different documents,
+and the language says so rather than pretending otherwise — but an *ordering*
+over documents would be well defined and meaningless, putting every number before
+every string. So `==` and `!=` are allowed, while `<`, `<=`, `>`, `>=` and a
+`min`/`max` projection are rejected: this ordering is load-bearing for query
+results, not merely for batch layout, and it must not be allowed to decide one.
 
 One thing the design gets for free: dbsp's `Comparable`/`Clonable` vtables assume
 both operands behind a `DynData` are the same concrete Rust type, and check it

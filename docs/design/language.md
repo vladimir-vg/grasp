@@ -5,9 +5,7 @@ that name streams and describe how they are derived from inputs. The grammar is
 borrowed from grasp-dbsp; the operators and types it refers to come from
 `dbsp`.
 
-This describes the language as implemented. [`json.md`](json.md) holds a
-designed but unbuilt `json` type, and with it `match` and the pattern language
-that conversion needs.
+This describes the language as implemented.
 
 The language is a **compilation target**. It is written by a compiler frontend
 or by an agent, not by hand, so it does not have to be convenient — but it does
@@ -81,7 +79,7 @@ language's. [`mapping.md`](mapping.md) records which Rust types these become.
 ### Value types
 
 ```
-value_type := scalar | record_type | array_type
+value_type := scalar | record_type | array_type | "json"
 
 scalar      := bool | i64 | f64 | string | optional "(" value_type ")"
 
@@ -118,6 +116,10 @@ map(s, function((row) -> record(id: row.id, name: row.name)))   # a value
 
 `array(T)` is a sequence of one element type, and an ordinary value: it can sit
 in a record, in a column and in a stream, and `flat_map` turns one into rows.
+
+`json` is a whole document of any shape. It has no structure the type system
+describes — that is the point of it — so reaching inside one is `get` and
+converting one is `cast`. See [Documents](#documents).
 
 ### Typing rules
 
@@ -385,6 +387,9 @@ above and with each other.
 | `length` | `string → i64`, `array(T) → i64` | element or character count |
 | `concat` | `string × string → string` | concatenation |
 | `lower` / `upper` / `trim` | `string → string` | |
+| `get` | `json × string → json`, `json × i64 → json` | a member, by key or 0-based index |
+| `has_key` | `json × string → bool` | the key is present |
+| `keys` | `json → optional(array(string))` | an object's keys, `NONE` otherwise |
 
 Every builtin but `coalesce` rejects an `optional` argument, for the reason
 under [Absence](#absence). `coalesce` is the one that inspects absence rather
@@ -418,12 +423,19 @@ cast(r.x, optional(i64))   # optional(i64)
 
 That keeps a declared type a promise, and follows the rule division already set.
 
-| from → to | `bool` | `i64` | `f64` | `string` |
-|---|---|---|---|---|
-| `bool`   | — | — | — | total |
-| `i64`    | — | — | total | total |
-| `f64`    | — | fallible | — | total |
-| `string` | fallible | fallible | fallible | — |
+| from → to | `bool` | `i64` | `f64` | `string` | `json` |
+|---|---|---|---|---|---|
+| `bool`   | — | — | — | total | total |
+| `i64`    | — | — | total | total | total |
+| `f64`    | — | fallible | — | total | total |
+| `string` | fallible | fallible | fallible | — | total |
+| `record(…)` / `array(T)` | — | — | — | — | total |
+| `json`   | fallible | fallible | fallible | fallible | — |
+
+A document also converts to a `record(…)` or an `array(T)`, and both are
+fallible. Those two rows are not a matrix: a document is converted by what is
+*wanted* rather than by what it happens to hold, so every extraction is one rule
+and every construction is another.
 
 A conversion to the same type is the identity. `NONE → optional(T)` is total for
 any `T`: that is how a definite value's absent counterpart is written, and a
@@ -439,6 +451,64 @@ Records and arrays have no conversions.
 `cast` exists because there is no implicit conversion: without it there would be
 no path at all from `i64` to `f64`, and a query as ordinary as `a * 1.5` on an
 integer column could not be written.
+
+### Documents
+
+A `json` is a whole document. The type system says nothing about its shape, so
+there are two operations and no third:
+
+- **`get`** reaches inside one. It is total — a missing key, an index past the
+  end, or a document that is not an object at all yields *absence* — so a chain
+  needs no guard at any level:
+
+  ```
+  cast(get(get(r.payload, "user"), "id"), optional(i64))
+  ```
+
+- **`cast`** converts one out. Every extraction is fallible, because a document
+  need not hold the shape asked of it, so the target is `optional`. A `record`
+  target extracts the fields it names, converts each and ignores the rest;
+  it fails as a whole if a named field is missing or holds the wrong shape:
+
+  ```
+  cast(r.payload, optional(record(id: i64, name: string)))
+  ```
+
+There is deliberately no pattern language. An earlier design had `match`, type
+patterns, structural patterns and open records; `cast` and `get` cover every
+case those did, and cost no new grammar.
+
+**Numbers keep their tags, and both extractions exist.** `cast(d, optional(i64))`
+takes an integer document exactly — a 64-bit key survives — while
+`cast(d, optional(f64))` takes any number, so `5` and `5.0` both convert.
+
+**Three kinds of nothing.** A `json` column is never `optional` — `optional(json)`
+is rejected — because a document carries its own null:
+
+| | means |
+|---|---|
+| an **absent** member | the key was not there, or the document is not an object |
+| **JSON null** | the key was there, holding `null` |
+| `NONE` | absence in the surrounding language, which a `json` never has |
+
+`get` cannot tell the first two apart, since both extract as absence.
+**`has_key` is what does.**
+
+On the wire the codec follows Feldera exactly. A `json` column is `VARIANT NOT
+NULL`, so an **omitted** column is a decode error while an explicit `null` is
+JSON null. For every other type, omitted and `null` both read as `NONE` where
+the column is optional and are an error where it is not.
+
+**Documents compare, but do not order.** `==` and `!=` are allowed: the encoding
+is canonical — map keys are stored sorted and deduplicated, so `{"a":1,"b":2}`
+and `{"b":2,"a":1}` are one value — which makes a document sound as an index or
+join key. `<`, `<=`, `>`, `>=` and a `min`/`max` projection are **rejected**,
+because the encoding sorts by type tag: every number would precede every string,
+an order that is well defined and meaningless. Extract a value and compare that.
+
+Equality does distinguish `5` from `5.0`, since documents keep their tags. Those
+are two different documents, so this is a true statement about them rather than
+a lie about one — but it is worth knowing before using a document as a key.
 
 ### SQL null semantics
 
@@ -535,8 +605,8 @@ into a column that is not optional, which is exactly what it would refuse to
 read back.
 
 **`null` is not the absence literal.** It is reserved for the JSON null *value*
-inside a `json` document — a distinct thing, once [`json.md`](json.md) lands —
-so that JSON pasted into source keeps its meaning. On the wire it is unchanged:
+inside a `json` document — see [Documents](#documents) — so that JSON pasted
+into source keeps its meaning. On the wire it is unchanged:
 a JSON `null` in a data position still decodes to absence for an `optional(T)`
 column, and absence still encodes as JSON `null`.
 
@@ -632,7 +702,7 @@ Anywhere else it is an error saying so, rather than guessing.
 
 These may not name a node, a function or a parameter: the 20 operator names,
 the 5 aggregator names, the builtin names, the type constructors (`bool`,
-`i64`, `f64`, `string`, `optional`, `record`, `array`, `sql`, `zset`,
+`i64`, `f64`, `string`, `json`, `optional`, `record`, `array`, `sql`, `zset`,
 `indexed_zset`), `cast`, and `true`, `false`, `NONE`, `null`, `function`,
 `return`, `and`, `or`, `not`, `circuit`, `fixpoint`.
 

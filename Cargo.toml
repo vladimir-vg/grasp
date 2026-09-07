@@ -13,6 +13,9 @@ edition = "2024"
 # crate unbuildable for anyone else.
 [dependencies]
 dbsp = { path = "vendor/feldera/crates/dbsp" }
+# `FlatVariant`, the byte-encoded document behind the `json` type. Chosen for
+# its invariants rather than convenience: see docs/design/mapping.md.
+feldera-sqllib = { path = "vendor/feldera/crates/sqllib" }
 # Provides the `IsNone` derive, which also supplies `SupportsRoaring` — both are
 # required for `DynValue` to satisfy `DBData`.
 feldera-macros = { path = "vendor/feldera/crates/feldera-macros" }

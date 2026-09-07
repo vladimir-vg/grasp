@@ -822,3 +822,69 @@
   expected_diagnostics:
     - pass: typecheck
       message: "`if`'s two arms must agree"
+
+# --- Documents ---------------------------------------------------------------
+
+- name: optional(json) is not a type
+  source: |
+    a := input("a")
+    a :: zset(record(payload: optional(json)))
+
+  # A document carries its own null, so absence around one adds nothing — and on
+  # the wire the two would be indistinguishable, since both write as `null`.
+  expected_diagnostics:
+    - pass: parse
+      message: "a document is never absent"
+
+- name: documents have no order
+  source: |
+    a := input("a")
+    a :: zset(record(x: json, y: json))
+    out := filter(a, function((r) -> r.x < r.y))
+
+  # `cmp_values` compares the type tag first, so the order is well defined and
+  # arbitrary — every number would precede every string.
+  expected_diagnostics:
+    - pass: typecheck
+      message: "documents have no meaningful order"
+
+- name: documents may still be compared for equality
+  source: |
+    a := input("a")
+    a :: zset(record(x: json, y: json))
+    out := filter(a, function((r) -> r.x == r.y))
+
+  # Not an error: the encoding is canonical, so equality and hashing are sound
+  # and a document works as a Z-set key. Pinned here beside the rejection so the
+  # two rules stay visibly distinct.
+  input:
+    - a:
+        - [1, {x: 1, y: 1}]
+        - [1, {x: 1, y: 2}]
+
+  expected_exact_output:
+    - out:
+        - [1, {x: 1, y: 1}]
+
+- name: min over documents is rejected
+  source: |
+    a := input("a")
+    a :: zset(record(k: i64, payload: json))
+    idx := map_index(a, function((r) -> record(key: r.k, value: r)))
+    out := aggregate(idx, min, function((v) -> v.payload))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "has no meaning over documents"
+
+- name: extracting from a document needs an optional target
+  source: |
+    a := input("a")
+    a :: zset(record(payload: json))
+    out := map(a, function((r) -> cast(r.payload, i64)))
+
+  # A document need not hold the shape asked of it, so every extraction is
+  # fallible — the same rule `/` and string parsing already follow.
+  expected_diagnostics:
+    - pass: typecheck
+      message: "write `cast(..., optional(i64))`"

@@ -343,3 +343,20 @@
     - out:
         - [1, {widened: 6.0, narrowed: 2, text: "4", parsed: 17, shown: "true"}]
         - [1, {widened: 6.0, narrowed: 2, text: "4", parsed: null, shown: "true"}]
+
+- name: arrays compare by their elements
+  source: |
+    a := input("a")
+    a :: zset(record(x: array(i64), y: array(i64)))
+    out := filter(a, function((r) -> r.x == r.y))
+
+  # Pinned because it was wrong: `compare` had a `Record` arm and no `Array`
+  # one, so two equal arrays quietly compared unequal.
+  input:
+    - a:
+        - [1, {x: [1, 2], y: [1, 2]}]
+        - [1, {x: [1, 2], y: [2, 1]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {x: [1, 2], y: [1, 2]}]

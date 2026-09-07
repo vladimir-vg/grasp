@@ -11,6 +11,8 @@
 
 use crate::lower::Delta;
 use crate::value::{BatchType, DynValue, TypeDesc};
+use feldera_sqllib::FlatVariant;
+use serde::Deserialize;
 use dbsp::ZWeight;
 use serde_json::{Map, Value as J};
 use std::fmt;
@@ -75,16 +77,27 @@ pub fn encode_value(v: &DynValue, ty: &TypeDesc) -> JResult<J> {
         (DynValue::Array(items), TypeDesc::Array(elem)) => J::Array(
             items.iter().map(|v| encode_value(v, elem)).collect::<JResult<Vec<_>>>()?,
         ),
+        // `TAG_SQL_NULL` and `TAG_VARIANT_NULL` both write as `null`, so absence
+        // and JSON null are indistinguishable on the wire. Round-trip is still
+        // stable: a `json` column reads `null` back as JSON null.
+        (DynValue::Json(fv), TypeDesc::Json) => match serde_json::to_value(fv) {
+            Ok(v) => v,
+            Err(e) => return bad(format!("encoding a json document: {e}")),
+        },
         (v, t) => return bad(format!("cannot encode a {} as `{t}`", v.type_name())),
     })
 }
 
 pub fn decode_value(j: &J, ty: &TypeDesc) -> JResult<DynValue> {
+    // The type decides what a bare `null` means, so it is consulted first. For
+    // every type but one, `null` is absence and is refused where absence is not
+    // allowed; a `json` column holds JSON null as a *value*, which is the same
+    // split Feldera makes between a nullable `VARIANT` and a `VARIANT NOT NULL`.
     if j.is_null() {
-        return if ty.is_optional() {
-            Ok(DynValue::None)
-        } else {
-            bad(format!("null where `{ty}` was expected; the column is not optional"))
+        return match ty {
+            _ if ty.is_optional() => Ok(DynValue::None),
+            TypeDesc::Json => Ok(DynValue::Json(FlatVariant::variant_null())),
+            _ => bad(format!("null where `{ty}` was expected; the column is not optional")),
         };
     }
     let ty = ty.non_null();
@@ -111,14 +124,22 @@ pub fn decode_value(j: &J, ty: &TypeDesc) -> JResult<DynValue> {
             };
             let mut fields = Vec::with_capacity(schema.len());
             for (name, fty) in schema {
-                // A missing field is null, which only typechecks if the field is
-                // nullable — so this reports the real problem rather than
-                // silently defaulting.
-                let raw = obj.get(name).unwrap_or(&J::Null);
-                fields.push(
-                    decode_value(raw, fty)
+                // Absent and present-but-`null` are different things, and
+                // collapsing them — as reading a missing key as `null` did —
+                // makes the second case unreachable for a `json` field. An
+                // omitted column is absence, which only an optional type
+                // accepts; an explicit `null` is whatever the type says.
+                let value = match obj.get(name) {
+                    Some(raw) => decode_value(raw, fty)
                         .map_err(|e| JsonError(format!("field `{name}`: {e}")))?,
-                );
+                    None if fty.is_optional() => DynValue::None,
+                    None => {
+                        return bad(format!(
+                            "field `{name}` is missing, and `{fty}` is not optional"
+                        ));
+                    }
+                };
+                fields.push(value);
             }
             if let Some(extra) = obj.keys().find(|k| !schema.iter().any(|(n, _)| n == *k)) {
                 return bad(format!("unknown field `{extra}`"));
@@ -139,6 +160,12 @@ pub fn decode_value(j: &J, ty: &TypeDesc) -> JResult<DynValue> {
                     .collect::<JResult<Vec<_>>>()?,
             )
         }
+        // `FlatVariant`'s own deserializer builds the byte encoding directly,
+        // canonicalising map key order on the way in.
+        TypeDesc::Json => match FlatVariant::deserialize(j) {
+            Ok(fv) => DynValue::Json(fv),
+            Err(e) => return bad(format!("expected a JSON document, found `{j}`: {e}")),
+        },
         TypeDesc::Optional(_) => unreachable!("stripped by non_null"),
     })
 }

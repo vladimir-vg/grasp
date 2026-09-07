@@ -12,7 +12,6 @@ Design documents live in [`docs/design/`](docs/design/):
 - [`overview.md`](docs/design/overview.md) — goals, design principles, scope, future work, architecture
 - [`language.md`](docs/design/language.md) — the source language
 - [`mapping.md`](docs/design/mapping.md) — how the language maps onto `dbsp`
-- [`json.md`](docs/design/json.md) — a designed but unbuilt `json` type, and the `match` it needs
 
 ## Building
 
@@ -43,7 +42,6 @@ local path, which would break the ordinary edit-and-rebuild loop.
 
 `dbsp` is published to crates.io, so this can become a version requirement once
 a release carries the APIs this crate needs — the design documents cite `dbsp`
-at revision `4a6744aa` (workspace version 0.343.0). `feldera-sqllib` was a
-dependency until the `sql.*` value types were withdrawn; it comes back with
-them, and with the `FlatVariant` that [`json.md`](docs/design/json.md) is built
-on.
+at revision `4a6744aa` (workspace version 0.343.0). `feldera-sqllib` supplies the
+`FlatVariant` behind the `json` type, and is where the `sql.*` value types will
+come from when they land.

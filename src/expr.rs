@@ -9,7 +9,9 @@
 //! optimization; the shape of this module does not constrain that.
 
 use crate::lang::{BinOp, UnOp};
-use crate::value::DynValue;
+use crate::value::{DynValue, TypeDesc};
+use feldera_sqllib::{FlatVariant, SqlString, Variant};
+use std::sync::Arc;
 // Aliased because `use DynValue::*` inside several functions below would
 // otherwise shadow this type with the `F64` *variant*.
 use dbsp::algebra::F64 as Flt;
@@ -30,6 +32,14 @@ pub enum Builtin {
     Lower,
     Upper,
     Trim,
+    /// `get(doc, key)` — a document's member, by string key or 0-based array
+    /// index. Total: anything that does not resolve is the absent sentinel.
+    Get,
+    /// `has_key(doc, key)` — what separates an absent key from one holding an
+    /// explicit JSON null, which `get` alone cannot.
+    HasKey,
+    /// `keys(doc)` — an object's keys, or `NONE` for anything else.
+    Keys,
 }
 
 impl Builtin {
@@ -46,6 +56,9 @@ impl Builtin {
             "lower" => Builtin::Lower,
             "upper" => Builtin::Upper,
             "trim" => Builtin::Trim,
+            "get" => Builtin::Get,
+            "has_key" => Builtin::HasKey,
+            "keys" => Builtin::Keys,
             _ => return None,
         })
     }
@@ -53,15 +66,14 @@ impl Builtin {
     /// Every builtin name, so the reserved-word list cannot drift from it.
     pub const ALL: &'static [&'static str] = &[
         "coalesce", "if", "abs", "floor", "ceil", "round", "length", "concat", "lower", "upper",
-        "trim",
+        "trim", "get", "has_key", "keys",
     ];
 
     /// Number of arguments, or `None` if variadic.
     pub fn arity(self) -> Option<usize> {
         Some(match self {
             Builtin::If => 3,
-            Builtin::Coalesce => 2,
-            Builtin::Concat => 2,
+            Builtin::Coalesce | Builtin::Concat | Builtin::Get | Builtin::HasKey => 2,
             _ => 1,
         })
     }
@@ -77,7 +89,7 @@ impl Builtin {
 /// value. Those are exactly the ones the checker requires an `optional` target
 /// for, which is what keeps a declared type a promise: nothing here returns
 /// absence into a column that forbids it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Conv {
     /// The value already has the target type; only its optionality changed.
     Identity,
@@ -93,13 +105,30 @@ pub enum Conv {
     StringToInt,
     /// Fallible: parsing, and a parsed infinity or NaN has no JSON form.
     StringToFloat,
+
+    /// Extract a document into the target type, which the variant carries
+    /// because extraction is driven by what is wanted rather than by what the
+    /// document happens to be. Always fallible: a document need not hold the
+    /// shape asked of it.
+    FromJson(Arc<TypeDesc>),
+    /// Build a document from a value of the carried source type. Total — a
+    /// record's field names live in the type and not in the value, which is why
+    /// the type has to travel with the conversion.
+    ToJson(Arc<TypeDesc>),
 }
 
 impl Conv {
     /// Whether the target type must be `optional`, because the conversion has
     /// inputs it cannot represent.
-    pub fn is_fallible(self) -> bool {
-        matches!(self, Conv::FloatToInt | Conv::StringToBool | Conv::StringToInt | Conv::StringToFloat)
+    pub fn is_fallible(&self) -> bool {
+        matches!(
+            self,
+            Conv::FloatToInt
+                | Conv::StringToBool
+                | Conv::StringToInt
+                | Conv::StringToFloat
+                | Conv::FromJson(_)
+        )
     }
 }
 
@@ -157,7 +186,7 @@ pub fn eval(e: &TypedExpr, args: &[&DynValue]) -> DynValue {
         // where the target type is optional, so this cannot contradict a type.
         TypedExpr::Cast(inner, conv) => match eval(inner, args) {
             DynValue::None => DynValue::None,
-            v => convert(*conv, v),
+            v => convert(conv, v),
         },
         TypedExpr::Unary(op, inner) => eval_unary(*op, eval(inner, args)),
         TypedExpr::Binary(op, l, r) => eval_binary(*op, l, r, args),
@@ -262,6 +291,13 @@ fn compare(l: &DynValue, r: &DynValue) -> Option<std::cmp::Ordering> {
         (Bool(a), Bool(b)) => Some(a.cmp(b)),
         (String(a), String(b)) => Some(a.cmp(b)),
         (Record(a), Record(b)) => Some(a.cmp(b)),
+        (Array(a), Array(b)) => Some(a.cmp(b)),
+        // Byte comparison over the canonical encoding, so two documents written
+        // with their keys in different orders are equal. It distinguishes `5`
+        // from `5.0`, which are genuinely different documents. Only `==` and
+        // `!=` reach here: the type checker rejects ordering over documents,
+        // because the encoding sorts by type tag.
+        (Json(a), Json(b)) => Some(a.cmp(b)),
         _ => Option::None,
     }
 }
@@ -303,13 +339,15 @@ fn arith(op: BinOp, l: &DynValue, r: &DynValue) -> DynValue {
 ///
 /// A fallible conversion yields `NONE`, which is legal because the checker
 /// required an `optional` target for exactly these.
-fn convert(conv: Conv, v: DynValue) -> DynValue {
+fn convert(conv: &Conv, v: DynValue) -> DynValue {
     use DynValue::*;
     // `i64` has values `f64` cannot name and vice versa, so the bound is
     // written as 2^63 rather than `i64::MAX as f64`, which rounds *up* to it.
     const TWO_63: f64 = 9223372036854775808.0;
     match (conv, v) {
         (Conv::Identity, v) => v,
+        (Conv::FromJson(ty), Json(fv)) => from_json(&fv, ty).unwrap_or(None),
+        (Conv::ToJson(ty), v) => Json(to_json(&v, ty)),
         (Conv::IntToFloat, I64(n)) => F64(Flt::new(n as f64)),
         (Conv::FloatToInt, F64(f)) => {
             let x = f.into_inner();
@@ -335,6 +373,135 @@ fn convert(conv: Conv, v: DynValue) -> DynValue {
         // The checker chose the conversion from the operand's type, so a
         // mismatch means the two passes disagree.
         _ => None,
+    }
+}
+
+/// Whether a document is the **absent** sentinel — a missing key, or a non-object
+/// navigated into — as distinct from holding JSON null, which is a value.
+///
+/// `FlatVariant`'s derived `IsNone` answers "never": the struct is not an
+/// `Option`, and absence lives in the encoding's tag instead. Comparing against
+/// the one-byte sentinel disagrees on the tag immediately, so this stays cheap
+/// even for a large document.
+fn is_absent(fv: &FlatVariant) -> bool {
+    *fv == FlatVariant::sql_null()
+}
+
+/// Extracts a document into `ty`, or `None` if it does not hold that shape.
+///
+/// A record target navigates with `FlatVariant::index_string`, which shares the
+/// buffer rather than cloning and yields the absent sentinel for a missing key
+/// or a non-object. That is what keeps pulling two fields out of a large
+/// document proportional to the fields rather than to the document — decoding at
+/// the root would be O(document) per row.
+///
+/// One imprecision worth naming: a non-object behaves like an object missing
+/// every key, because `FlatVariant` exposes no way to read a value's tag without
+/// decoding it. So a record whose fields are *all* optional extracts from a
+/// non-object as an all-absent record rather than failing.
+fn from_json(fv: &FlatVariant, ty: &TypeDesc) -> Option<DynValue> {
+    let target = ty.non_null();
+
+    // The absent sentinel is only a value where the type allows absence.
+    if is_absent(fv) {
+        return ty.is_optional().then_some(DynValue::None);
+    }
+
+    if let TypeDesc::Record(fields) = target {
+        let mut out = Vec::with_capacity(fields.len());
+        for (name, fty) in fields {
+            out.push(from_json(&fv.index_string(name), fty)?);
+        }
+        return Some(DynValue::Record(out));
+    }
+
+    // Everything else needs the value itself, so decode it. For a leaf — which
+    // is what navigation lands on — that is cheap.
+    let decoded = Variant::from(fv);
+    let value = match (&decoded, target) {
+        // JSON null is a value, and it converts to nothing but itself.
+        (Variant::VariantNull, TypeDesc::Json) => DynValue::Json(fv.clone()),
+        (Variant::VariantNull, _) => return ty.is_optional().then_some(DynValue::None),
+
+        (_, TypeDesc::Json) => DynValue::Json(fv.clone()),
+        (Variant::Boolean(b), TypeDesc::Bool) => DynValue::Bool(*b),
+        (Variant::String(s), TypeDesc::String) => DynValue::String(s.str().to_string()),
+        (v, TypeDesc::I64) => DynValue::I64(json_i64(v)?),
+        (v, TypeDesc::F64) => DynValue::F64(Flt::new(json_f64(v)?)),
+        (Variant::Array(items), TypeDesc::Array(elem)) => DynValue::Array(
+            items
+                .iter()
+                .map(|i| from_json(&FlatVariant::from(i), elem))
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        _ => return Option::None,
+    };
+    Some(value)
+}
+
+/// A document's integer value, exactly. Unlike `f64` extraction this does not
+/// widen a float, so a 64-bit key survives a round trip through a document.
+fn json_i64(v: &Variant) -> Option<i64> {
+    Some(match v {
+        Variant::TinyInt(n) => *n as i64,
+        Variant::SmallInt(n) => *n as i64,
+        Variant::Int(n) => *n as i64,
+        Variant::BigInt(n) => *n,
+        Variant::UTinyInt(n) => *n as i64,
+        Variant::USmallInt(n) => *n as i64,
+        Variant::UInt(n) => *n as i64,
+        Variant::UBigInt(n) => i64::try_from(*n).ok()?,
+        _ => return Option::None,
+    })
+}
+
+/// A document's numeric value as `f64`. Accepts every numeric tag, so `5` and
+/// `5.0` both convert — which is the point of having both extractions.
+fn json_f64(v: &Variant) -> Option<f64> {
+    if let Variant::Double(d) = v {
+        return Some(d.into_inner());
+    }
+    if let Variant::Real(r) = v {
+        return Some(r.into_inner() as f64);
+    }
+    json_i64(v).map(|n| n as f64)
+}
+
+/// Builds a document from a value of `ty`.
+///
+/// Total, which needs one thing said: JSON cannot represent NaN or an infinity,
+/// so those become JSON null. That does not contradict the result type the way
+/// writing `null` into an `f64` column would — the column here *is* `json`, and
+/// JSON null is one of its values.
+fn to_json(v: &DynValue, ty: &TypeDesc) -> FlatVariant {
+    FlatVariant::from(to_variant(v, ty))
+}
+
+fn to_variant(v: &DynValue, ty: &TypeDesc) -> Variant {
+    match (v, ty.non_null()) {
+        (DynValue::None, _) => Variant::VariantNull,
+        (DynValue::Json(fv), _) => Variant::from(fv),
+        (DynValue::Bool(b), _) => Variant::Boolean(*b),
+        (DynValue::I64(n), _) => Variant::BigInt(*n),
+        (DynValue::F64(f), _) if !f.into_inner().is_finite() => Variant::VariantNull,
+        (DynValue::F64(f), _) => Variant::Double(*f),
+        (DynValue::String(s), _) => Variant::String(SqlString::from_ref(s)),
+        (DynValue::Record(values), TypeDesc::Record(fields)) => Variant::Map(
+            fields
+                .iter()
+                .zip(values)
+                .map(|((name, fty), value)| {
+                    (Variant::String(SqlString::from_ref(name)), to_variant(value, fty))
+                })
+                .collect::<std::collections::BTreeMap<_, _>>()
+                .into(),
+        ),
+        (DynValue::Array(items), TypeDesc::Array(elem)) => Variant::Array(
+            items.iter().map(|i| to_variant(i, elem)).collect::<Vec<_>>().into(),
+        ),
+        // The checker pairs the value with its own type, so a mismatch means the
+        // two passes disagree.
+        _ => Variant::VariantNull,
     }
 }
 
@@ -411,6 +578,42 @@ fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValu
                 DynValue::String(out)
             }
             None => DynValue::None,
+        },
+        // Navigation is total, so a document that is not an object, or an index
+        // that does not land, is the absent sentinel rather than a failure.
+        Builtin::Get => match (&vals[0], &vals[1]) {
+            (DynValue::Json(fv), DynValue::String(k)) => DynValue::Json(fv.index_string(k)),
+            (DynValue::Json(fv), DynValue::I64(i)) => {
+                // 0-based here; `index_from_one` is SQL's convention, and the
+                // language has no other 1-based indexing.
+                let one_based = i.checked_add(1).map(Variant::BigInt).map(FlatVariant::from);
+                let found = one_based.and_then(|k| fv.index_from_one(&k));
+                DynValue::Json(found.unwrap_or_else(FlatVariant::sql_null))
+            }
+            _ => DynValue::None,
+        },
+        // A key holding an explicit JSON null is present, and `index_string`
+        // returns that null rather than the absent sentinel — which is exactly
+        // the difference this reports.
+        Builtin::HasKey => match (&vals[0], &vals[1]) {
+            (DynValue::Json(fv), DynValue::String(k)) => {
+                DynValue::Bool(!is_absent(&fv.index_string(k)))
+            }
+            _ => DynValue::None,
+        },
+        Builtin::Keys => match &vals[0] {
+            DynValue::Json(fv) => match Variant::from(fv) {
+                Variant::Map(m) => DynValue::Array(
+                    m.keys()
+                        .map(|k| match k {
+                            Variant::String(s) => DynValue::String(s.str().to_string()),
+                            other => DynValue::String(format!("{other:?}")),
+                        })
+                        .collect(),
+                ),
+                _ => DynValue::None,
+            },
+            _ => DynValue::None,
         },
         Builtin::Coalesce | Builtin::If => unreachable!("handled above"),
     }

@@ -163,6 +163,35 @@ fn finish(h: &mut Xxh3Default, tag: u8, inputs: &[usize], ids: &[String]) {
     }
 }
 
+/// Hashes a conversion. Two of them carry a type, which is part of what the
+/// conversion *is* — extracting a document into one record type is not the same
+/// computation as extracting it into another.
+fn hash_conv(h: &mut Xxh3Default, conv: &crate::expr::Conv) {
+    use crate::expr::Conv::*;
+    let tag: u8 = match conv {
+        Identity => 0,
+        IntToFloat => 1,
+        FloatToInt => 2,
+        BoolToString => 3,
+        IntToString => 4,
+        FloatToString => 5,
+        StringToBool => 6,
+        StringToInt => 7,
+        StringToFloat => 8,
+        FromJson(ty) => {
+            9u8.hash(h);
+            ty.hash(h);
+            return;
+        }
+        ToJson(ty) => {
+            10u8.hash(h);
+            ty.hash(h);
+            return;
+        }
+    };
+    tag.hash(h);
+}
+
 /// Hashes a compiled expression structurally, matching the `PartialEq` that
 /// `push_node` compares them with.
 fn hash_expr(h: &mut Xxh3Default, e: &TypedExpr) {
@@ -213,7 +242,7 @@ fn hash_expr(h: &mut Xxh3Default, e: &TypedExpr) {
         }
         TypedExpr::Cast(inner, conv) => {
             10u8.hash(h);
-            (*conv as u8).hash(h);
+            hash_conv(h, conv);
             hash_expr(h, inner);
         }
         TypedExpr::Call(f, args) => {

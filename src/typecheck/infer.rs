@@ -212,7 +212,7 @@ fn substitute(e: &TypedExpr, args: &[TypedExpr]) -> TypedExpr {
         TypedExpr::Call(f, a) => {
             TypedExpr::Call(*f, a.iter().map(|x| substitute(x, args)).collect())
         }
-        TypedExpr::Cast(i, c) => TypedExpr::Cast(Box::new(substitute(i, args)), *c),
+        TypedExpr::Cast(i, c) => TypedExpr::Cast(Box::new(substitute(i, args)), c.clone()),
         leaf @ (TypedExpr::Const(_) | TypedExpr::IntLit(_) | TypedExpr::FloatLit(_)) => leaf.clone(),
     }
 }
@@ -380,6 +380,20 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)], funcs: &Functions<'_>) -> TResult<
     })
 }
 
+/// Whether a document can be extracted as this type.
+///
+/// Everything in the vocabulary except a nested `optional`, which the type
+/// grammar already forbids — the list is written out so that adding a type
+/// forces a decision here rather than silently inheriting one.
+fn extractable(t: &TypeDesc) -> bool {
+    match t {
+        TypeDesc::Bool | TypeDesc::I64 | TypeDesc::F64 | TypeDesc::String | TypeDesc::Json => true,
+        TypeDesc::Record(fields) => fields.iter().all(|(_, f)| extractable(f.non_null())),
+        TypeDesc::Array(elem) => extractable(elem.non_null()),
+        TypeDesc::Optional(_) => false,
+    }
+}
+
 /// The conversion `cast(x, to)` means, or why there is none.
 ///
 /// **`cast(x, T)` yields exactly `T`.** Where the conversion has inputs the
@@ -420,6 +434,33 @@ fn conversion(from: &Ty, to: &TypeDesc, span: Span) -> TResult<Conv> {
     }
 
     let source = from.non_null();
+
+    // A document is converted by what is *wanted*, not by what it happens to
+    // hold, so these are two rows rather than a matrix. Extraction is always
+    // fallible — a document need not have the shape asked of it — and building
+    // one always succeeds.
+    if source == &TypeDesc::Json && target != &TypeDesc::Json {
+        if !extractable(target) {
+            return err(
+                span,
+                format!("a document cannot be extracted as `{target}`"),
+            );
+        }
+        if !optional_target {
+            return err(
+                span,
+                format!(
+                    "extracting `{target}` from a document can fail — it need not hold \
+                     that shape; write `cast(..., optional({target}))`"
+                ),
+            );
+        }
+        return Ok(Conv::FromJson(std::sync::Arc::new(target.clone())));
+    }
+    if target == &TypeDesc::Json && source != &TypeDesc::Json {
+        return Ok(Conv::ToJson(std::sync::Arc::new(from.clone())));
+    }
+
     let conv = match (source, target) {
         (a, b) if a == b => Conv::Identity,
         (I64, F64) => Conv::IntToFloat,
@@ -561,6 +602,19 @@ fn infer_binop(
             // Operands settle here rather than outward, because the result is
             // `bool` and carries no numeric type to the enclosing expression.
             if let Some(t) = shared.settle() {
+                // Documents may be compared for equality — the encoding is
+                // canonical, so that is sound — but not ordered. `cmp_values`
+                // compares the type tag first, making the order well defined and
+                // arbitrary, and this language's ordering decides query results
+                // rather than only batch layout.
+                if t.non_null() == &TypeDesc::Json && !matches!(op, Eq | Ne) {
+                    return err(
+                        span,
+                        "documents have no meaningful order: comparison sorts by type tag, \
+                         so every number would precede every string. Only `==` and `!=` are \
+                         allowed; extract a value with `cast` and compare that.",
+                    );
+                }
                 pin(le, t.non_null());
                 pin(re, t.non_null());
             }
@@ -635,6 +689,44 @@ fn infer_builtin(
                 }
             }
             out
+        }
+
+        // Navigation into a document. `get` is the one builtin that takes two
+        // different key types, the way `length` takes a string or an array: a
+        // string names an object member, an `i64` a 0-based array element.
+        Builtin::Get | Builtin::HasKey => {
+            for arg in args.iter() {
+                definite(arg, name, span)?;
+            }
+            let doc = args[0].settle().expect("definite() rejected the none case");
+            if doc.non_null() != &TypeDesc::Json {
+                return err(span, format!("`{name}` needs a document, found `{doc}`"));
+            }
+            let key = args[1].settle().expect("definite() rejected the none case");
+            let key_ok = match (b, key.non_null()) {
+                (Builtin::Get, TypeDesc::String | TypeDesc::I64) => true,
+                (Builtin::HasKey, TypeDesc::String) => true,
+                _ => false,
+            };
+            if !key_ok {
+                let want = if b == Builtin::Get { "a string key or an i64 index" } else { "a string key" };
+                return err(span, format!("`{name}` needs {want}, found `{key}`"));
+            }
+            // An `i64` key settles here, so a bare literal index is an index and
+            // not something waiting on further context.
+            pin(&mut exprs[1], key.non_null());
+            if b == Builtin::Get { Ty::Known(TypeDesc::Json) } else { Ty::Known(TypeDesc::Bool) }
+        }
+
+        // `NONE` for anything that is not an object, so "not an object" is not
+        // silently the same as "an object with no keys".
+        Builtin::Keys => {
+            definite(&args[0], name, span)?;
+            let doc = args[0].settle().expect("definite() rejected the none case");
+            if doc.non_null() != &TypeDesc::Json {
+                return err(span, format!("`keys` needs a document, found `{doc}`"));
+            }
+            Ty::Known(optional(TypeDesc::Array(Box::new(TypeDesc::String))))
         }
 
         Builtin::Coalesce => {

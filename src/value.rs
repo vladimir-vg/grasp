@@ -9,6 +9,7 @@
 use dbsp::ZWeight;
 use dbsp::algebra::{AddAssignByRef, AddByRef, F64, HasZero, MulByRef};
 use feldera_macros::IsNone;
+use feldera_sqllib::FlatVariant;
 use size_of::SizeOf;
 
 /// The universal runtime value.
@@ -75,6 +76,18 @@ pub enum DynValue {
     /// payloads, so reported sizes under-count. A hand-written `SizeOf` impl
     /// would fix it and is the obvious follow-up.
     Record(#[omit_bounds] #[size_of(skip, skip_bounds)] Vec<DynValue>),
+    /// `json` — a whole document, byte-encoded.
+    ///
+    /// **Appended, and new variants must be too**: the variant order is the
+    /// archived discriminant, which is a storage format.
+    ///
+    /// `FlatVariant` is chosen for its invariants rather than its convenience:
+    /// its archived form *is* the byte encoding, so archived and in-memory
+    /// ordering cannot disagree, and `Eq`/`Hash` route through functions over
+    /// the same bytes. Map entries are stored sorted and deduplicated, so two
+    /// documents written with their keys in different orders are one value,
+    /// one hash and one Z-set key.
+    Json(#[omit_bounds] #[size_of(skip, skip_bounds)] FlatVariant),
     /// `array(T)` — a sequence of one element type.
     ///
     /// **Appended, and new variants must be too**: the variant order is the
@@ -123,6 +136,7 @@ impl DynValue {
             DynValue::String(_) => "string",
             DynValue::Record(_) => "record",
             DynValue::Array(_) => "array",
+            DynValue::Json(_) => "json",
         }
     }
 }
@@ -243,6 +257,9 @@ pub enum TypeDesc {
     Record(Vec<(String, TypeDesc)>),
     /// `array(T)`. Every element has type `T`.
     Array(Box<TypeDesc>),
+    /// `json`. A document of any shape — never `optional`, because a document
+    /// carries its own null.
+    Json,
 }
 
 impl TypeDesc {
@@ -290,6 +307,7 @@ impl std::fmt::Display for TypeDesc {
             TypeDesc::String => write!(f, "string"),
             TypeDesc::Optional(inner) => write!(f, "optional({inner})"),
             TypeDesc::Array(elem) => write!(f, "array({elem})"),
+            TypeDesc::Json => write!(f, "json"),
             TypeDesc::Record(fields) => {
                 write!(f, "record(")?;
                 for (i, (name, ty)) in fields.iter().enumerate() {

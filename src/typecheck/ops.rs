@@ -500,6 +500,18 @@ fn check_aggregate(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Plan
             // `min`/`max` return the projected value; the linear aggregators
             // impose their own result types.
             let result = match agg {
+                // Same reason `<` is rejected: the ordering is tag-first, so a
+                // `min` over documents returns the smallest by tag, which is a
+                // result nobody asked for.
+                Agg::Min | Agg::Max if out.non_null() == &TypeDesc::Json => {
+                    return err(
+                        span,
+                        format!(
+                            "`{agg_name}` has no meaning over documents: they sort by type \
+                             tag. Project a value out with `cast` and aggregate that."
+                        ),
+                    );
+                }
                 Agg::Min | Agg::Max => out.clone(),
                 Agg::Count => TypeDesc::I64,
                 Agg::Sum | Agg::Avg => {

@@ -72,9 +72,12 @@ implicit numeric promotion deleted, both to satisfy the third and fifth.
 - Expressions in function bodies: literals, parameters, record field access,
   `record(...)` and `[…]` construction, arithmetic, comparison and logic,
   `if(cond, a, b)`, `cast(x, T)`, and a small builtin library.
+- Documents, as the `json` type. There is deliberately no pattern language:
+  `cast` converts one out and `get` reaches inside one, so the type costs no new
+  grammar at all.
 - The type system described in [`language.md`](language.md) (batch types and
   value types). The value vocabulary is `bool`, `i64`, `f64`, `string`,
-  `optional(T)`, `record(...)` and `array(T)`.
+  `optional(T)`, `record(...)`, `array(T)` and `json`.
 - The value model described in [`mapping.md`](mapping.md).
 - Feldera-native JSON input and output, emitting deltas — `weighted` by default
   here because it represents a Z-set delta exactly, `insert_delete` for
@@ -89,11 +92,6 @@ one level covers the recursive queries this language is for.
 Outputs are **not** part of the source language. A program declares streams; the
 set of nodes to observe is supplied when the runner starts, so anything can
 become an output — by declared name, or by content id for a node that has none.
-
-One design is settled but not implemented, and lives in its own document until
-it lands: [`json.md`](json.md) adds a `json` type, and with it the `match` and
-pattern language that converting a document needs. It is not reflected in the
-lists here.
 
 ## Future work
 
@@ -128,7 +126,16 @@ lists here.
   That freedom is what let `SqlString` be removed rather than deprecated.
 
 - **Element access** — `e[0]` on an `array(T)`. Arrays are values and
-  `flat_map` turns one into rows, but nothing reads an element by index.
+  `flat_map` turns one into rows, but nothing reads an element by index. `get`
+  does this for a document; a typed array has no equivalent.
+
+- **Document odds and ends.** A `shape(doc)` builtin — a program that must
+  branch on what a document holds attempts casts in order today, which works and
+  reads poorly. A serialisation builtin: `cast(d, optional(string))` *extracts* a
+  string document, so writing one out as JSON text needs its own name
+  (`FlatVariant::to_json_string` exists). And `dynamic` — `json` plus the
+  temporal and decimal tags `FlatVariant` already carries — which is a one-line
+  addition once there is something in the language that can produce one.
 
 - **Body bindings in a `function`** — `x := …` statements alongside `return`,
   with a flat slot table so an argument used twice is evaluated once. Inlining

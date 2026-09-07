@@ -200,7 +200,8 @@ fn parse_error<T>(span: Span, message: impl Into<String>) -> PResult<T> {
 
 /// Type constructors and namespaces.
 const TYPE_NAMES: &[&str] = &[
-    "bool", "i64", "f64", "string", "optional", "record", "array", "sql", "zset", "indexed_zset",
+    "bool", "i64", "f64", "string", "json", "optional", "record", "array", "sql", "zset",
+    "indexed_zset",
 ];
 
 /// Literals and keywords. `if` is not here: it is a builtin, so it is reserved
@@ -857,6 +858,7 @@ impl Parser {
             "i64" => Ok(TypeDesc::I64),
             "f64" => Ok(TypeDesc::F64),
             "string" => Ok(TypeDesc::String),
+            "json" => Ok(TypeDesc::Json),
             "array" => {
                 self.expect(&Tok::LParen, "`(` after array")?;
                 let elem = self.value_type()?;
@@ -872,6 +874,15 @@ impl Parser {
                     // values the singly-nullable one lacks. Rejecting it beats
                     // silently flattening it.
                     return self.err("`optional(optional(T))` is not a distinct type; use `optional(T)`");
+                }
+                if inner == TypeDesc::Json {
+                    // A document carries its own null, so absence around one
+                    // adds nothing — and on the wire the two would be
+                    // indistinguishable, since both write as `null`.
+                    return self.err(
+                        "`optional(json)` is not a type: a document is never absent, \
+                         and `null` is a value it holds. Write `json`.",
+                    );
                 }
                 Ok(TypeDesc::Optional(Box::new(inner)))
             }

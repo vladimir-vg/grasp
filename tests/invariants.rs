@@ -30,6 +30,8 @@ fn hash_of(v: &DynValue) -> u64 {
 /// Leaf values, plus nesting. Recursion is what makes the archived
 /// representation interesting, so the two containers whose `Ord`, `Hash` and
 /// archived ordering we own — `Record` and `Array` — must both be in the mix.
+/// `Json` is here for the opposite reason: `FlatVariant` is supposed to satisfy
+/// these by construction, so a failure would mean it does not.
 fn any_value() -> impl Strategy<Value = DynValue> {
     let leaf = prop_oneof![
         Just(DynValue::None),
@@ -39,7 +41,7 @@ fn any_value() -> impl Strategy<Value = DynValue> {
             .prop_filter("NaN has no total order", |f| !f.is_nan())
             .prop_map(|f| DynValue::F64(dbsp::algebra::F64::new(f))),
         ".{0,8}".prop_map(DynValue::String),
-        ".{0,8}".prop_map(|s| DynValue::str(&s)),
+        any_json().prop_map(json_value),
     ];
     leaf.prop_recursive(3, 16, 4, |inner| {
         prop_oneof![
@@ -130,6 +132,34 @@ fn archived_round_trip_preserves_values() {
 // two ever disagree, output stops being re-ingestible — which is what happens
 // when an operator produces a value its own `TypeDesc` forbids.
 
+/// An arbitrary JSON document, as `serde_json` sees it.
+fn any_json() -> impl Strategy<Value = serde_json::Value> {
+    use serde_json::Value as J;
+    let leaf = prop_oneof![
+        Just(J::Null),
+        any::<bool>().prop_map(J::Bool),
+        any::<i64>().prop_map(|n| serde_json::json!(n)),
+        any::<f64>()
+            .prop_filter("JSON has no NaN or infinity", |f| f.is_finite())
+            .prop_map(|f| serde_json::json!(f)),
+        ".{0,6}".prop_map(J::String),
+    ];
+    leaf.prop_recursive(3, 12, 3, |inner| {
+        prop_oneof![
+            prop::collection::vec(inner.clone(), 0..3).prop_map(J::Array),
+            prop::collection::vec(("[a-z]{1,3}", inner), 0..3)
+                .prop_map(|kv| J::Object(kv.into_iter().collect())),
+        ]
+    })
+}
+
+/// The canonical `FlatVariant` for a document — map keys sorted and
+/// deduplicated, which is what makes two spellings of one object a single
+/// Z-set key.
+fn json_value(v: serde_json::Value) -> DynValue {
+    DynValue::Json(serde_json::from_value(v).expect("a document is always encodable"))
+}
+
 /// A type, respecting `TypeDesc::Optional`'s invariant that `T` is never itself
 /// optional. Field names are positional so a generated record cannot collide
 /// with itself.
@@ -145,6 +175,9 @@ fn any_type() -> impl Strategy<Value = TypeDesc> {
         let field = prop_oneof![
             inner.clone(),
             inner.prop_map(|t| TypeDesc::Optional(Box::new(t))),
+            // `optional(json)` is disallowed, so `json` only ever appears
+            // unwrapped — a document carries its own null.
+            Just(TypeDesc::Json),
         ];
         prop_oneof![
             prop::collection::vec(field, 1..4).prop_map(|ts| {
@@ -153,9 +186,12 @@ fn any_type() -> impl Strategy<Value = TypeDesc> {
             inner2.prop_map(|t| TypeDesc::Array(Box::new(t))),
         ]
     });
-    core.prop_flat_map(|t| {
-        prop_oneof![Just(t.clone()), Just(TypeDesc::Optional(Box::new(t)))]
-    })
+    prop_oneof![
+        core.prop_flat_map(|t| {
+            prop_oneof![Just(t.clone()), Just(TypeDesc::Optional(Box::new(t)))]
+        }),
+        Just(TypeDesc::Json),
+    ]
 }
 
 /// A value inhabiting `ty`. Non-finite floats are excluded deliberately: JSON
@@ -182,6 +218,7 @@ fn value_of(ty: TypeDesc) -> BoxedStrategy<DynValue> {
         TypeDesc::Array(elem) => prop::collection::vec(value_of(*elem), 0..4)
             .prop_map(DynValue::Array)
             .boxed(),
+        TypeDesc::Json => any_json().prop_map(json_value).boxed(),
     }
 }
 
@@ -223,4 +260,53 @@ fn non_finite_floats_are_rejected() {
         let v = DynValue::F64(dbsp::algebra::F64::new(f));
         assert!(encode_value(&v, &TypeDesc::F64).is_err(), "{f} has no JSON form");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Absence, JSON null, and a missing key
+// ---------------------------------------------------------------------------
+//
+// Three different things, and the codec has to keep them apart. These follow
+// Feldera: a column's nullability decides what an omitted column and a bare
+// `null` mean, and a `VARIANT NOT NULL` — which is what every `json` column is,
+// since `optional(json)` is disallowed — takes `null` as a *value*.
+
+fn record_type(fields: &[(&str, TypeDesc)]) -> TypeDesc {
+    TypeDesc::record(fields.iter().map(|(n, t)| (n.to_string(), t.clone())))
+}
+
+#[test]
+fn an_omitted_column_is_absence_not_a_json_value() {
+    let ty = record_type(&[("payload", TypeDesc::Json)]);
+    let err = decode_value(&serde_json::json!({}), &ty).expect_err("a json column is not optional");
+    assert!(
+        err.0.contains("is missing"),
+        "an omitted `json` column is absence, which `json` does not admit: {}",
+        err.0
+    );
+}
+
+#[test]
+fn an_explicit_null_in_a_json_column_is_a_value() {
+    let ty = record_type(&[("payload", TypeDesc::Json)]);
+    let decoded = decode_value(&serde_json::json!({ "payload": null }), &ty).expect("json null");
+    let json = serde_json::to_string(&encode_value(&decoded, &ty).expect("encodes")).unwrap();
+    assert_eq!(json, r#"{"payload":null}"#, "JSON null survives a round trip");
+}
+
+#[test]
+fn an_omitted_optional_column_is_still_none() {
+    // The guard on the change that made the two cases above distinguishable:
+    // reading a missing key as `null` used to collapse them, and every other
+    // type must keep behaving exactly as it did.
+    let ty = record_type(&[("v", TypeDesc::Optional(Box::new(TypeDesc::I64)))]);
+    for j in [serde_json::json!({}), serde_json::json!({ "v": null })] {
+        assert_eq!(
+            decode_value(&j, &ty).expect("optional accepts both"),
+            DynValue::Record(vec![DynValue::None]),
+            "omitted and explicit null both read as absence for an optional column"
+        );
+    }
+    let definite = record_type(&[("v", TypeDesc::I64)]);
+    assert!(decode_value(&serde_json::json!({}), &definite).is_err(), "and neither for a definite one");
 }

@@ -1,0 +1,163 @@
+# Documents.
+#
+# There is no pattern language: extracting from a document is `cast`, and
+# navigating one is `get`. Both already existed for other reasons, which is why
+# a `json` type costs no new grammar.
+
+- name: navigate a document and extract at both numeric types
+  source: |
+    events := input("events")
+    events :: zset(record(id: i64, payload: json))
+
+    out := map(events, function((r) -> record(
+        name:  cast(get(get(r.payload, "user"), "name"), optional(string)),
+        exact: cast(get(get(r.payload, "user"), "id"), optional(i64)),
+        ratio: cast(get(r.payload, "ratio"), optional(f64)))))
+
+  # `get` is `FlatVariant::index_string`: it shares the buffer rather than
+  # cloning, and a missing key or a non-object yields the absent sentinel — so
+  # a chain needs no guard at any level.
+  #
+  # The `id` here is above 2^53. Extracting it as `i64` keeps it exact; the
+  # earlier design exposed every document number as `f64` and had no repair for
+  # this, which is the case it named — Snowflake IDs and 64-bit keys.
+  input:
+    - events:
+        - [1, {id: 1, payload: {user: {id: 9007199254740993, name: "ana"}, ratio: 0.25}}]
+        - [1, {id: 2, payload: {ratio: 7}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {name: "ana", exact: 9007199254740993, ratio: 0.25}]
+        # No `user` key: the chain yields absence rather than failing. `ratio`
+        # is an integer in the document and still extracts as f64.
+        - [1, {name: null, exact: null, ratio: 7.0}]
+
+- name: parse a document into a record, ignoring extra fields
+  source: |
+    events := input("events")
+    events :: zset(record(payload: json))
+    out := map(events, function((r) ->
+        record(parsed: cast(r.payload, optional(record(id: i64, name: string))))))
+
+  # This is the operation the old design wanted open records for: a `record`
+  # target extracts the fields it names, converts each, and ignores the rest.
+  # It fails as a whole if a named field is missing or holds the wrong shape.
+  input:
+    - events:
+        - [1, {payload: {id: 1, name: "ana", extra: true, more: [1, 2]}}]
+        - [1, {payload: {id: 2}}]
+        - [1, {payload: {id: 3, name: 7}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {parsed: {id: 1, name: "ana"}}]
+        - [2, {parsed: null}]
+
+- name: explode a document array into rows
+  source: |
+    events := input("events")
+    events :: zset(record(tags: json))
+    listed := map(events, function((r) -> coalesce(cast(r.tags, optional(array(string))), [""])))
+    out    := flat_map(listed, function((a) -> a))
+
+  input:
+    - events:
+        - [1, {tags: ["a", "b", "c"]}]
+
+  expected_exact_output:
+    - out:
+        - [1, "a"]
+        - [1, "b"]
+        - [1, "c"]
+
+- name: has_key tells an absent key from an explicit null
+  source: |
+    events := input("events")
+    events :: zset(record(id: i64, payload: json))
+    out := map(events, function((r) -> record(
+        id:      r.id,
+        present: has_key(r.payload, "x"),
+        # `get` cannot tell them apart: both extract as absent.
+        value:   cast(get(r.payload, "x"), optional(i64)))))
+
+  input:
+    - events:
+        - [1, {id: 1, payload: {x: 5}}]
+        - [1, {id: 2, payload: {x: null}}]
+        - [1, {id: 3, payload: {}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {id: 1, present: true, value: 5}]
+        - [1, {id: 2, present: true, value: null}]
+        - [1, {id: 3, present: false, value: null}]
+
+- name: key order is canonicalised away
+  source: |
+    events := input("events")
+    events :: zset(record(payload: json))
+    out := map(events, function((r) -> r.payload))
+
+  # `FlatVariant` stores map entries sorted and deduplicated, so two documents
+  # written with their keys in different orders are one value, one hash and one
+  # Z-set key — they consolidate rather than accumulating as two rows.
+  input:
+    - events:
+        - [1, {payload: {a: 1, b: 2}}]
+        - [1, {payload: {b: 2, a: 1}}]
+
+  expected_exact_output:
+    - out:
+        - [2, {a: 1, b: 2}]
+
+- name: keys enumerates an object, and nothing else
+  source: |
+    events := input("events")
+    events :: zset(record(id: i64, payload: json))
+    out := map(events, function((r) -> record(id: r.id, k: keys(r.payload))))
+
+  input:
+    - events:
+        - [1, {id: 1, payload: {b: 1, a: 2}}]
+        - [1, {id: 2, payload: [1, 2]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {id: 1, k: ["a", "b"]}]
+        - [1, {id: 2, k: null}]
+
+- name: an array element by 0-based index
+  source: |
+    events := input("events")
+    events :: zset(record(payload: json))
+    out := map(events, function((r) -> record(
+        first: cast(get(r.payload, 0), optional(i64)),
+        third: cast(get(r.payload, 2), optional(i64)))))
+
+  # 0-based, wrapping FlatVariant's 1-based SQL convention: the language has no
+  # other 1-based indexing.
+  input:
+    - events:
+        - [1, {payload: [10, 20]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {first: 10, third: null}]
+
+- name: build a document from a record
+  source: |
+    a := input("a")
+    a :: zset(record(id: i64, name: string))
+    out := map(a, function((r) -> cast(r, json)))
+
+  # Building a document is total, and a record's field names come from its
+  # type — which is why the conversion carries the type rather than reading it
+  # off the value.
+  input:
+    - a:
+        - [1, {id: 1, name: "ana"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {id: 1, name: "ana"}]
