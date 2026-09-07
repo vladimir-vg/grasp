@@ -85,8 +85,9 @@ fn hash_op(h: &mut Xxh3Default, op: &PlanOp, ids: &[String]) {
         }
         PlanOp::Antijoin { left, right } => return finish(h, 9, &[*left, *right], ids),
         PlanOp::Distinct { input } => (10, std::slice::from_ref(input)),
-        PlanOp::Aggregate { input, agg, f } => {
+        PlanOp::Aggregate { input, agg, f, projection } => {
             (*agg as u8).hash(h);
+            projection.hash(h);
             hash_expr(h, f);
             (11, std::slice::from_ref(input))
         }

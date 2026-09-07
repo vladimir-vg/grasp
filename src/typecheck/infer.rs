@@ -264,14 +264,20 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)], funcs: &Functions<'_>) -> TResult<
         }
 
         ExprKind::Record(fields) => {
-            let mut exprs = Vec::with_capacity(fields.len());
-            let mut types = Vec::with_capacity(fields.len());
+            let mut built = Vec::with_capacity(fields.len());
             for (name, value) in fields {
                 let (mut te, ty) = infer(value, env, funcs)?;
                 let ty = commit(&mut te, ty, span, format!("field `{name}`"))?;
-                exprs.push(te);
-                types.push((name.clone(), ty));
+                built.push((name.clone(), ty, te));
             }
+            // Field order is not part of a record's identity, so the literal is
+            // canonicalised here — expressions sorted with their types, since
+            // the runtime record is positional and the two stay aligned by
+            // position. Writing the fields in a different order builds the same
+            // record.
+            built.sort_by(|(a, _, _), (b, _, _)| a.cmp(b));
+            let (types, exprs): (Vec<_>, Vec<_>) =
+                built.into_iter().map(|(name, ty, te)| ((name, ty), te)).unzip();
             (TypedExpr::Record(exprs), Ty::Known(TypeDesc::Record(types)))
         }
 

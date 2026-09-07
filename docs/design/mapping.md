@@ -87,7 +87,10 @@ pair-shaped is ever streamed.
 ### Records are positional
 
 A record value is a bare `Vec<DynValue>`. Field *names* live only in
-`TypeDesc::Record`, never in the value. The alternative — storing `(name, value)`
+`TypeDesc::Record`, never in the value — and that vector is in **canonical
+order**, sorted by field name, because field order is not part of a record's
+identity. `TypeDesc::record` sorts the type and the checker sorts the literal's
+expressions with it, so the two stay aligned by position. The alternative — storing `(name, value)`
 pairs — would put a copy of every column name in every row of every batch, and
 carry those copies through serialization and into spilled storage.
 
@@ -386,7 +389,8 @@ It is only valid when `f(a+b) = f(a) + f(b)`, and produces wrong answers
 otherwise — floating-point sums are excluded for that reason. This is the path
 Feldera's SQL compiler uses for every aggregate it can.
 
-`sum`, `avg` and `count` lower here. Two consequences:
+`sum` and `avg` over an *integer* projection lower here, and `count` always
+does. **Floating-point `sum` and `avg` do not** — see below. Two consequences:
 
 - The accumulator must satisfy `DBWeight = DBData + MonoidValue`
   (`dbsp/src/trace.rs:177`) — additive, with a zero. `DynValue` cannot be that,
@@ -421,15 +425,39 @@ Feldera's SQL compiler uses for every aggregate it can.
   - `avg` is *always* optional, whatever the projection: a mean of no
     contributing rows is undefined, and that can happen at any projection type.
 
-- Floating point is **rejected** for `sum` and `avg`, at type-check time. fp
-  addition is not associative, so an incrementally maintained sum would depend
-  on the order additions and retractions arrive in. `min`/`max` over `f64` are
-  fine: they are the non-linear path and compare rather than accumulate.
+**Non-linear**, via `aggregate(aggregator)`. `min`, `max`, and a
+floating-point `sum` or `avg` lower here. It replays the group rather than
+maintaining an accumulator, which costs more per change and buys two things the
+linear path cannot give.
 
-**Non-linear**, via `aggregate(aggregator)`. `min` and `max` lower here, to
-`dbsp`'s ready-made `Min` and `Max` (`dbsp/src/operator/dynamic/aggregate/min.rs:31`,
-`max.rs:27`). Note that these are the *only* ready-made aggregators: `Fold` is a
-builder, not an aggregator, and there is no `Sum`, `Count` or `Avg`.
+**Floating point.** fp addition is not associative, so a linear sum would depend
+on the order additions and retractions arrived in. Replaying the group in cursor
+order does not. That rules out the linear path, not the operation — which is the
+conclusion Feldera draws too: `AggregateCompiler.java` takes the linear path only
+`if (this.linearAllowed && !this.fp())`. `dbsp`'s `Fold` is itself an
+`Aggregator` (`aggregate/fold.rs`), and returns `None` for a group whose weights
+all cancel, so the fold needs no third counter to keep an empty group from being
+confused with an absent one.
+
+**The two paths must agree**, because which one runs is invisible from the
+source. `PlanOp::Aggregate` therefore carries the projection's `TypeDesc`:
+`avg`'s *result* cannot say whether it was given floats, being `f64` either way.
+
+**`min` skips absence, and needs help to.** `NONE` is `DynValue` variant 0, so it
+sorts before every value. `dbsp`'s `Min` walks the cursor forward and returns the
+first key with non-zero weight, so it would report absence for a group that
+merely *contains* an absent row — where SQL's `MIN` skips nulls. `Max` calls
+`fast_forward_keys()` and walks backward, so it is unaffected.
+
+Feldera hit this and hand-wrote `MinSome1` for it, described in
+`sql-to-dbsp-compiler/.../ir/aggregate/DBSPMinMax.java` as a "Special
+hand-crafted DBSP aggregator for Min(Option<T>). None values are ignored" — and
+has no `MaxSome`, for the reason above. `MinSkippingNone` in `lower.rs` mirrors
+its semantics at `DynValue` rather than adopting its `Tup1<Option<V>>` shape,
+which would put a second batch value type into a design whose leverage is that
+there is exactly one. All three cases matter: the smallest present value; `NONE`
+when the group has rows but none present; and no row at all when the group is
+empty.
 
 `Min`/`Max` have `Output = V`, so `aggregate(s, min|max, f)` produces
 `OrdIndexedZSet(K, A)` where `A` is the type `f` projects. They compare using
@@ -534,13 +562,19 @@ shape only — an input is always an `input` node, which is always
 `zset(record(...))`, so there is no indexed decoder and nothing that would use
 one.
 
-**Encoding refuses what decoding would refuse.** `encode_value` will not write a
-`null` into a column that is not optional, and rejects NaN and the infinities,
-which JSON cannot represent. Both used to be emitted silently as `null`,
-producing output this codec would then decline to read back. The rule is the one
-in [`language.md`](language.md): a declared type is a promise, and the codec is
-where a broken one surfaces. `tests/invariants.rs` pins it as a property —
-generated values of a generated type encode and decode to themselves.
+**Encoding refuses what decoding would refuse — with one exception.**
+`encode_value` will not write a `null` into a column that is not optional: a
+declared type is a promise, and the codec is where a broken one surfaces.
+`tests/invariants.rs` pins it as a property — generated values of a generated
+type encode and decode to themselves.
+
+The exception is non-finite floats. NaN and the infinities *are* `f64` values;
+JSON simply has no syntax for them, and `serde_json`'s `serialize_f64` writes
+`null`, as Feldera therefore does. So they are written as `null` too, and such a
+row does not decode back into the same schema. That is a different thing from
+the refusal above it — `NONE` is not an `f64` at all — and the round-trip
+property test excludes them for exactly this reason, with
+`non_finite_floats_encode_as_null` pinning why.
 
 **Conventions Feldera fixes, which this codec follows.** A null may be written
 as JSON `null` *or by omitting the column entirely*; both decode to `NONE`.

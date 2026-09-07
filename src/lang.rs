@@ -893,7 +893,7 @@ impl Parser {
                         break;
                     }
                 }
-                Ok(TypeDesc::Record(fields))
+                Ok(TypeDesc::record(fields))
             }
             other => self.err(format!("unknown type `{other}`")),
         }

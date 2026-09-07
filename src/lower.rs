@@ -9,9 +9,11 @@
 use crate::diag::{Diagnostic, Pass};
 use crate::expr::{eval, is_true};
 use crate::typecheck::{Agg, Plan, PlanOp};
-use crate::value::{Acc, BatchType, DynValue};
+use crate::value::{Acc, BatchType, DynValue, FpAcc, FpAccSemigroup};
 use dbsp::algebra::F64;
-use dbsp::operator::{Generator, Max, Min};
+use dbsp::algebra::{AddAssignByRef, HasZero, Semigroup};
+use dbsp::dynamic::{DataTrait, DynUnit, Erase, WeightTrait};
+use dbsp::operator::{Aggregator, Fold, Generator, Max};
 use dbsp::Circuit;
 use dbsp::{
     DBSPHandle, NestedCircuit, IndexedZSetReader, OrdIndexedZSet, OrdZSet, OutputHandle, RootCircuit, Runtime,
@@ -19,6 +21,81 @@ use dbsp::{
 };
 use std::collections::HashMap;
 use std::fmt;
+
+/// `min` over a projection that may be absent.
+///
+/// `dbsp`'s `Min` returns the smallest value outright, and `DynValue::None`
+/// sorts before every other — so it reports absence for a group that merely
+/// *contains* an absent row, where SQL's `MIN` skips nulls. Feldera hit the same
+/// thing and hand-wrote `MinSome1` for it, described in
+/// `sql-to-dbsp-compiler/.../ir/aggregate/DBSPMinMax.java` as a "Special
+/// hand-crafted DBSP aggregator for Min(Option<T>). None values are ignored".
+/// This mirrors its semantics at our one value type, rather than adopting its
+/// `Tup1<Option<V>>` shape, which would put a second batch type in a design
+/// whose leverage is that there is exactly one.
+///
+/// **`max` needs no equivalent, and Feldera has none.** Absence sorting first is
+/// exactly what `Max` wants: it walks the cursor backward, so it reaches a real
+/// value first and only reports absence when there is nothing else.
+#[derive(Clone)]
+struct MinSkippingNone;
+
+#[derive(Clone)]
+struct MinSkippingNoneSemigroup;
+
+impl Semigroup<DynValue> for MinSkippingNoneSemigroup {
+    fn combine(left: &DynValue, right: &DynValue) -> DynValue {
+        match (left.is_none(), right.is_none()) {
+            (true, true) => DynValue::None,
+            (true, false) => right.clone(),
+            (false, true) => left.clone(),
+            (false, false) => left.min(right).clone(),
+        }
+    }
+}
+
+impl<T: dbsp::Timestamp> Aggregator<DynValue, T, ZWeight> for MinSkippingNone {
+    type Accumulator = DynValue;
+    type Output = DynValue;
+    type Semigroup = MinSkippingNoneSemigroup;
+
+    fn aggregate<VTrait, RTrait>(
+        &self,
+        cursor: &mut dyn dbsp::trace::Cursor<VTrait, DynUnit, T, RTrait>,
+    ) -> Option<DynValue>
+    where
+        VTrait: DataTrait + ?Sized,
+        RTrait: WeightTrait + ?Sized,
+        DynValue: Erase<VTrait>,
+        ZWeight: Erase<RTrait>,
+    {
+        // Absence sorts first, so the first present value reached is the
+        // smallest. Seeing only absent values means the group exists and has no
+        // value — `NONE`, not "no row". Seeing nothing at all means the group is
+        // empty, and `None` here is what drops it.
+        let mut seen_absent = false;
+        while cursor.key_valid() {
+            let mut weight: ZWeight = HasZero::zero();
+            cursor.map_times(&mut |_, w| {
+                weight.add_assign_by_ref(unsafe { w.downcast() });
+            });
+            if !weight.is_zero() {
+                let key = unsafe { cursor.key().downcast::<DynValue>() };
+                if key.is_none() {
+                    seen_absent = true;
+                } else {
+                    return Some(key.clone());
+                }
+            }
+            cursor.step_key();
+        }
+        seen_absent.then_some(DynValue::None)
+    }
+
+    fn finalize(&self, accumulator: DynValue) -> DynValue {
+        accumulator
+    }
+}
 
 /// A failure while *running* a built circuit, as distinct from a failure to
 /// build one. Compilation problems are [`Diagnostic`]s; these are not, because
@@ -348,7 +425,7 @@ macro_rules! operator_arms {
                 Node::Group(_) => return Err(shape_error($node, "a stream").into()),
             },
 
-            PlanOp::Aggregate { input, agg, f } => match agg {
+            PlanOp::Aggregate { input, agg, f, projection } => match agg {
                 // `Stream::aggregate` has no projection argument: it aggregates over
                 // the value directly. So re-project the value first, then aggregate.
                 Agg::Min | Agg::Max => {
@@ -357,14 +434,55 @@ macro_rules! operator_arms {
                         .indexed($node)?
                         .map_index(move |(k, v): (&DynValue, &DynValue)| (k.clone(), eval(&f, &[v])));
                     Node::Indexed(match agg {
-                        Agg::Min => projected.aggregate(Min),
+                        Agg::Min => projected.aggregate(MinSkippingNone),
                         _ => projected.aggregate(Max),
                     })
                 }
 
-                // `sum`, `avg` and `count` are linear: each row contributes
-                // independently, scaled by its weight, which is what lets `dbsp`
-                // maintain them without replaying the group.
+                // Floating-point `sum` and `avg` take the *non-linear* path: fp
+                // addition is not associative, so an incrementally maintained
+                // sum would depend on the order changes arrived in. A fold
+                // replays the group in cursor order instead, which is
+                // deterministic. Feldera splits them the same way, choosing the
+                // linear path only `if (this.linearAllowed && !this.fp())`.
+                //
+                // The two paths must agree, because which one runs is invisible
+                // from the source: `sum` is absent only when the projection is
+                // optional and no row contributed, and `avg` whenever no row
+                // contributed. `count` is never floating point — it counts.
+                Agg::Sum | Agg::Avg if projection.non_null() == &crate::value::TypeDesc::F64 => {
+                    let proj = f.clone();
+                    let agg = *agg;
+                    let may_be_none =
+                        matches!(&$node.ty, BatchType::IndexedZSet(_, v) if v.is_optional());
+                    Node::Indexed($dep(*input).indexed($node)?.aggregate(Fold::<
+                        DynValue,
+                        FpAcc,
+                        FpAccSemigroup,
+                        _,
+                        _,
+                    >::with_output(
+                        FpAcc::default(),
+                        move |acc: &mut FpAcc, v: &DynValue, w: ZWeight| {
+                            if let DynValue::F64(x) = eval(&proj, &[v]) {
+                                acc.sum = acc.sum + F64::new(x.into_inner() * w as f64);
+                                acc.rows += w;
+                            }
+                        },
+                        move |acc: FpAcc| match agg {
+                            Agg::Avg if acc.rows == 0 => DynValue::None,
+                            Agg::Avg => {
+                                DynValue::F64(F64::new(acc.sum.into_inner() / acc.rows as f64))
+                            }
+                            _ if acc.rows == 0 && may_be_none => DynValue::None,
+                            _ => DynValue::F64(acc.sum),
+                        },
+                    )))
+                }
+
+                // `sum`, `avg` and `count` over anything else are linear: each
+                // row contributes independently, scaled by its weight, which is
+                // what lets `dbsp` maintain them without replaying the group.
                 Agg::Sum | Agg::Avg | Agg::Count => {
                     let proj = f.clone();
                     let agg = *agg;

@@ -329,28 +329,6 @@
     - pass: parse
       message: "reserved"
 
-- name: sum over a float projection is rejected
-  source: |
-    a := input("a")
-    a :: zset(record(k: i64, x: f64))
-    idx := map_index(a, function((r) -> record(key: r.k, value: r)))
-    b := aggregate(idx, sum, function((v) -> v.x))
-
-  expected_diagnostics:
-    - pass: typecheck
-      message: "floating-point addition is not associative"
-
-- name: avg over a float projection is rejected too
-  source: |
-    a := input("a")
-    a :: zset(record(k: i64, x: f64))
-    idx := map_index(a, function((r) -> record(key: r.k, value: r)))
-    b := aggregate(idx, avg, function((v) -> v.x))
-
-  expected_diagnostics:
-    - pass: typecheck
-      message: "cannot be applied to `f64`"
-
 - name: input cannot be nested
   source: |
     out := map(input("emp"), function((r) -> r))

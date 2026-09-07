@@ -265,11 +265,23 @@ fn a_value_that_contradicts_its_type_is_refused() {
     );
 }
 
+/// NaN and the infinities write as `null`, as `serde_json` and therefore Feldera
+/// do — and do not survive a round trip, which is why the property test above
+/// filters them out.
+///
+/// This is not the refusal beside it. `NONE` is not an `f64`, so writing it into
+/// a definite column would contradict the type; NaN *is* one that JSON cannot
+/// spell.
 #[test]
-fn non_finite_floats_are_rejected() {
+fn non_finite_floats_encode_as_null() {
     for f in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         let v = DynValue::F64(dbsp::algebra::F64::new(f));
-        assert!(encode_value(&v, &TypeDesc::F64).is_err(), "{f} has no JSON form");
+        let j = encode_value(&v, &TypeDesc::F64).expect("encodes");
+        assert_eq!(j, serde_json::Value::Null, "{f} writes as null");
+        assert!(
+            decode_value(&j, &TypeDesc::F64).is_err(),
+            "and does not read back into a definite f64 column"
+        );
     }
 }
 

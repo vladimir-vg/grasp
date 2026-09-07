@@ -70,6 +70,10 @@ pub enum PlanOp {
         input: usize,
         agg: Agg,
         f: Arc<TypedExpr>,
+        /// What `f` projects. The lowering needs it to choose between the
+        /// linear path and the fold, and `avg`'s *result* cannot say — it is
+        /// `f64` whatever it was given.
+        projection: crate::value::TypeDesc,
     },
     WeightedCount { input: usize },
     Neg { input: usize },

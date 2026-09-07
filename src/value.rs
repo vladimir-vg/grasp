@@ -239,6 +239,50 @@ impl MulByRef<ZWeight> for Acc {
     }
 }
 
+/// The accumulator for a *floating-point* `sum` or `avg`.
+///
+/// Floats do not take the linear path: fp addition is not associative, so an
+/// incrementally maintained sum would depend on the order changes arrived in.
+/// Feldera splits them the same way — `AggregateCompiler.java` chooses the
+/// linear path only `if (this.linearAllowed && !this.fp())` — and routes floats
+/// through a fold that replays the group in cursor order, which is
+/// deterministic.
+///
+/// Only two counters here, unlike [`Acc`]: the fold is told whether the group
+/// is empty, so it needs no third to keep an all-absent group from vanishing.
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Hash,
+    SizeOf,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+    IsNone,
+)]
+#[archive_attr(derive(Eq, Ord, PartialEq, PartialOrd))]
+pub struct FpAcc {
+    pub sum: F64,
+    /// Rows contributing a projection that is not `NONE`.
+    pub rows: i64,
+}
+
+/// Combines partial folds, which `dbsp` may compute over subsets.
+#[derive(Clone)]
+pub struct FpAccSemigroup;
+
+impl dbsp::algebra::Semigroup<FpAcc> for FpAccSemigroup {
+    fn combine(left: &FpAcc, right: &FpAcc) -> FpAcc {
+        FpAcc { sum: left.sum + right.sum, rows: left.rows + right.rows }
+    }
+}
+
 /// The static type of a value: the language's `value_type`.
 ///
 /// This is the schema half of the value model. Record field names live here and
@@ -263,8 +307,22 @@ pub enum TypeDesc {
 }
 
 impl TypeDesc {
+    /// A record type, with its fields in canonical order.
+    ///
+    /// **Field order is not part of a record's identity.** It is still
+    /// load-bearing at runtime — the value is positional, and the order is the
+    /// column order the JSON codec writes — but two records naming the same
+    /// fields are one type however they were written, which is what lets a
+    /// frontend build the same record on two code paths without canonicalising
+    /// its own output first.
+    ///
+    /// Sorting is by field name. Duplicates are a parse error, so the order is
+    /// unambiguous. Anything building a record *value* must sort its fields the
+    /// same way, since the two stay aligned by position.
     pub fn record(fields: impl IntoIterator<Item = (String, TypeDesc)>) -> Self {
-        TypeDesc::Record(fields.into_iter().collect())
+        let mut fields: Vec<(String, TypeDesc)> = fields.into_iter().collect();
+        fields.sort_by(|(a, _), (b, _)| a.cmp(b));
+        TypeDesc::Record(fields)
     }
 
     /// The index of a named field, for resolving `row.name` at type-check time.

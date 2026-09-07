@@ -225,3 +225,105 @@
   expected_exact_output:
     - out:
         - [1, 1, 2]
+
+# --- min and max over a projection that may be absent ------------------------
+#
+# `NONE` is `DynValue` variant 0, so it sorts before every value. dbsp's `Min`
+# walks the cursor forward and `Max` walks it backward, which makes them
+# disagree about absence unless `min` is given help. Feldera hand-wrote
+# `MinSome1` for exactly this and needed no `MaxSome`.
+
+- name: min and max ignore absent projections
+  source: |
+    a := input("a")
+    a :: zset(record(k: i64, v: optional(i64)))
+    idx  := map_index(a, function((r) -> record(key: r.k, value: r)))
+    lo   := aggregate(idx, min, function((r) -> r.v))
+    hi   := aggregate(idx, max, function((r) -> r.v))
+
+  input:
+    - a:
+        - [1, {k: 1, v: 5}]
+        - [1, {k: 1, v: null}]
+        - [1, {k: 1, v: 3}]
+
+  expected_exact_output:
+    - lo:
+        - [1, 1, 3]
+      hi:
+        - [1, 1, 5]
+
+- name: a group whose projections are all absent still reports
+  source: |
+    a := input("a")
+    a :: zset(record(k: i64, v: optional(i64)))
+    idx  := map_index(a, function((r) -> record(key: r.k, value: r)))
+    lo   := aggregate(idx, min, function((r) -> r.v))
+    hi   := aggregate(idx, max, function((r) -> r.v))
+
+  # The group exists and has no value, so it is emitted with `NONE` rather than
+  # disappearing — the same rule the linear aggregates needed a second counter
+  # for, and what `MinSome1` returns for this case.
+  input:
+    - a:
+        - [1, {k: 1, v: null}]
+        - [1, {k: 1, v: null}]
+
+  expected_exact_output:
+    - lo:
+        - [1, 1, null]
+      hi:
+        - [1, 1, null]
+
+# --- floating-point sum and avg ----------------------------------------------
+#
+# Floats do not take the linear path — fp addition is not associative, so an
+# incrementally maintained sum would depend on the order changes arrived in.
+# They take a fold that replays the group in cursor order, which is
+# deterministic. Feldera splits them the same way. Which path runs is invisible
+# from the source, so the two must agree about absence and about weights.
+
+- name: sum and avg over floats
+  source: |
+    a := input("a")
+    a :: zset(record(k: i64, x: f64))
+    idx := map_index(a, function((r) -> record(key: r.k, value: r)))
+    total := aggregate(idx, sum, function((r) -> r.x))
+    mean  := aggregate(idx, avg, function((r) -> r.x))
+
+  input:
+    - a:
+        - [1, {k: 1, x: 1.5}]
+        - [1, {k: 1, x: 2.5}]
+        - [2, {k: 1, x: 3.0}]
+
+  # The weight-two row contributes twice, as it does on the linear path.
+  expected_exact_output:
+    - total:
+        - [1, 1, 10.0]
+      mean:
+        - [1, 1, 2.5]
+
+- name: a float sum agrees with the integer one about absence
+  source: |
+    a := input("a")
+    a :: zset(record(k: i64, f: optional(f64), n: optional(i64)))
+    idx    := map_index(a, function((r) -> record(key: r.k, value: r)))
+    floats := aggregate(idx, sum, function((r) -> r.f))
+    ints   := aggregate(idx, sum, function((r) -> r.n))
+
+  # Key 1 has one contributing row; key 2 has none. Both paths must report the
+  # sum for the first and `NONE` for the second, rather than dropping it.
+  input:
+    - a:
+        - [1, {k: 1, f: 1.5, n: 3}]
+        - [1, {k: 1, f: null, n: null}]
+        - [1, {k: 2, f: null, n: null}]
+
+  expected_exact_output:
+    - floats:
+        - [1, 1, 1.5]
+        - [1, 2, null]
+      ints:
+        - [1, 1, 3]
+        - [1, 2, null]

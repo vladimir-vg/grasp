@@ -117,6 +117,13 @@ map(s, function((row) -> record(id: row.id, name: row.name)))   # a value
 `array(T)` is a sequence of one element type, and an ordinary value: it can sit
 in a record, in a column and in a stream, and `flat_map` turns one into rows.
 
+**Field order is not part of a record's identity.** `record(a: i64, b: string)`
+and `record(b: string, a: i64)` are one type, so a frontend building the same
+record on two code paths need not canonicalise its own output first. Order is
+still load-bearing at runtime — the value is positional, and the order is the
+column order the codec writes — so the checker sorts fields by name, and sorts
+the values with them.
+
 `json` is a whole document of any shape. It has no structure the type system
 describes — that is the point of it — so reaching inside one is `get` and
 converting one is `cast`. See [Documents](#documents).
@@ -231,25 +238,31 @@ applied to each value in the group. Aggregators are bare names:
 aggregate(idx, max, function((v) -> v.salary))
 ```
 
-| aggregator | result | lowering |
-|---|---|---|
-| `min` / `max` | `A` — the minimum/maximum projected value in the group | `map_index` to re-project the value, then `aggregate(Min)` / `aggregate(Max)` |
-| `sum` | the sum of the projected values | `aggregate_linear_postprocess` |
-| `avg` | their mean | `aggregate_linear_postprocess` |
-| `count` | the number of rows whose projected value is non-null | `aggregate_linear_postprocess` |
+| aggregator | result |
+|---|---|
+| `min` / `max` | `A` — the smallest/largest projected value in the group |
+| `sum` | the sum of the projected values |
+| `avg` | their mean |
+| `count` | the number of rows whose projected value is not absent |
 
-`sum` yields the projection's own type; `avg` always yields `f64`, so averaging
-integers does not truncate. Both yield null for a group in which every
-projection was null.
+`sum` yields the projection's own type; `avg` always yields `optional(f64)`, so
+averaging integers does not truncate and a group with nothing to average is
+absent rather than missing.
 
-Two consequences worth stating explicitly:
+**Every aggregator ignores absent projections, as SQL does.** `min` and `max`
+report the smallest and largest value that is there; `sum` adds the ones that
+are there; `count` counts them. A group in which *every* projection is absent
+still reports — with `NONE`, rather than disappearing.
 
-- **`min` and `max` compare with the runtime value type's ordering.** That
-  ordering is therefore load-bearing for query results, not merely for batch
-  layout — see the invariants section of [`mapping.md`](mapping.md).
-- **`sum`, `avg` and `count` are linear aggregates**, and a linear aggregate
-  cannot distinguish "the group summed to zero" from "the group is empty". They
-  carry an extra row counter for that reason; see [`mapping.md`](mapping.md).
+That is worth stating because it does not come for free. `NONE` sorts before
+every value, so the obvious lowering of `min` would report absence for a group
+that merely *contains* an absent row, while `max` would be unaffected. See
+[`mapping.md`](mapping.md) for what each is lowered to and why they differ.
+
+**`min` and `max` compare with the runtime value type's ordering**, which is
+therefore load-bearing for query results and not merely for batch layout — see
+the invariants section of [`mapping.md`](mapping.md). It is also why a `json`
+projection is rejected for them.
 
 To count rows regardless of nullability, use the `weighted_count` operator
 rather than the `count` aggregator — it sums Z-weights directly and is exact.
@@ -573,6 +586,13 @@ well as by the checker.
 **Integer arithmetic wraps.** Overflow in `+`, `-`, `*`, unary `-` and `abs`
 wraps rather than trapping or vanishing, so the result stays a definite value of
 the type its column declares. Float arithmetic is IEEE.
+
+That has one consequence at the output boundary: `f64` includes NaN and the
+infinities, which arithmetic can reach (`1e308 * 10`) and JSON cannot spell.
+They are written as `null`, which is what `serde_json` and therefore Feldera do
+— so such a row does not decode back into the same schema. This is not the
+codec refusing to write `NONE` into a definite column: `NONE` is not an `f64` at
+all, while NaN is one that JSON has no syntax for.
 
 **Division is the one arithmetic that can be absent.** A zero divisor has no
 value to return, so `/` and `%` have type `optional(T)` at every numeric type:

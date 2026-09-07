@@ -521,21 +521,11 @@ fn check_aggregate(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Plan
                             format!("`{agg_name}` needs a numeric projection, found `{out}`"),
                         );
                     }
-                    // Floating point is excluded from the linear aggregation
-                    // path: fp addition is not associative, so an incrementally
-                    // maintained sum would depend on the order additions and
-                    // retractions arrive in. `min`/`max` over `f64` are fine —
-                    // they are the non-linear path.
-                    if out.non_null() == &TypeDesc::F64 {
-                        return err(
-                            span,
-                            format!(
-                                "`{agg_name}` cannot be applied to `f64`: floating-point \
-                                 addition is not associative, so an incrementally maintained \
-                                 sum would depend on the order rows arrive in"
-                            ),
-                        );
-                    }
+                    // Floats are allowed, and lower to a fold rather than the
+                    // linear path — fp addition is not associative, so an
+                    // incrementally maintained sum would depend on the order
+                    // changes arrived in. That rules out the linear path, not
+                    // the operation, which is the split Feldera makes too.
                     // A mean of no contributing rows is undefined, so `avg` is
                     // always optional and always yields f64 rather than
                     // truncating. `sum` needs the same escape only when the
@@ -552,7 +542,7 @@ fn check_aggregate(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Plan
             };
             Ok((
                 BatchType::IndexedZSet(k, result),
-                PlanOp::Aggregate { input, agg, f: Arc::new(f) },
+                PlanOp::Aggregate { input, agg, f: Arc::new(f), projection: out },
             ))
         }
 

@@ -53,12 +53,18 @@ pub fn encode_value(v: &DynValue, ty: &TypeDesc) -> JResult<J> {
     Ok(match (v, ty) {
         (DynValue::Bool(b), TypeDesc::Bool) => J::Bool(*b),
         (DynValue::I64(n), TypeDesc::I64) => J::from(*n),
-        // NaN and the infinities have no JSON representation. Silently writing
-        // `null` would put absence in a column that is not optional.
-        (DynValue::F64(f), TypeDesc::F64) => match serde_json::Number::from_f64(f.into_inner()) {
-            Some(n) => J::Number(n),
-            None => return bad(format!("`{}` has no JSON representation", f.into_inner())),
-        },
+        // NaN and the infinities have no JSON spelling, so they write as `null`
+        // — which is what `serde_json`'s own `serialize_f64` does, and what
+        // Feldera therefore emits for the same query.
+        //
+        // This is not the refusal above it, and the difference is the point:
+        // `NONE` is not an `f64` at all, so writing it into a definite column
+        // would contradict the type. NaN *is* an `f64`; JSON simply cannot spell
+        // it. The cost is real and stated in the docs — such a row does not
+        // decode back into the same schema.
+        (DynValue::F64(f), TypeDesc::F64) => serde_json::Number::from_f64(f.into_inner())
+            .map(J::Number)
+            .unwrap_or(J::Null),
         (DynValue::String(s), TypeDesc::String) => J::String(s.clone()),
         (DynValue::Record(fields), TypeDesc::Record(schema)) => {
             if fields.len() != schema.len() {

@@ -360,3 +360,24 @@
   expected_exact_output:
     - out:
         - [1, {x: [1, 2], y: [1, 2]}]
+
+- name: field order is not part of a record's identity
+  source: |
+    a := input("a")
+    a :: zset(record(n: i64, s: string))
+    forward  := map(a, function((r) -> record(name: r.s, id: r.n)))
+    reversed := map(a, function((r) -> record(id: r.n, name: r.s)))
+    both     := plus(forward, reversed)
+
+  # `plus` needs identical batch types, and these two literals name the same
+  # fields in different orders. A frontend building the same record on two code
+  # paths should not have to canonicalise its own output first, so the checker
+  # does it: fields are sorted by name, and the values sorted with them since
+  # the runtime record is positional.
+  input:
+    - a:
+        - [1, {n: 1, s: "ana"}]
+
+  expected_exact_output:
+    - both:
+        - [2, {id: 1, name: "ana"}]
