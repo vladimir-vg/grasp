@@ -71,14 +71,16 @@
         - [1, "b"]
         - [1, "c"]
 
-- name: has_key tells an absent key from an explicit null
+- name: get tells an absent key from one holding null
   source: |
     events := input("events")
     events :: zset(record(id: i64, payload: json))
     out := map(events, function((r) -> record(
         id:      r.id,
-        present: has_key(r.payload, "x"),
-        # `get` cannot tell them apart: both extract as absent.
+        # A member that is not there is absence; one holding JSON null is a
+        # document that is null. `get` returns `optional(json)`, so the two are
+        # different values rather than two spellings of the same one.
+        present: get(r.payload, "x") != NONE,
         value:   cast(get(r.payload, "x"), optional(i64)))))
 
   input:
@@ -92,6 +94,52 @@
         - [1, {id: 1, present: true, value: 5}]
         - [1, {id: 2, present: true, value: null}]
         - [1, {id: 3, present: false, value: null}]
+
+- name: get chains through a missing level
+  source: |
+    events := input("events")
+    events :: zset(record(id: i64, payload: json))
+    out := map(events, function((r) ->
+        record(id: r.id, deep: cast(get(get(get(r.payload, "a"), "b"), "c"), optional(i64)))))
+
+  # `get` accepts what it returns, so absence passes through a chain without a
+  # guard at any level. That is not the propagation arithmetic refuses:
+  # navigating into nothing has one sensible answer, where `+` on an unknown
+  # does not.
+  input:
+    - events:
+        - [1, {id: 1, payload: {a: {b: {c: 7}}}}]
+        - [1, {id: 2, payload: {a: {}}}]
+        - [1, {id: 3, payload: {a: 5}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {id: 1, deep: 7}]
+        - [1, {id: 2, deep: null}]
+        - [1, {id: 3, deep: null}]
+
+- name: an optional(json) column reads null and omission as absence
+  source: |
+    events := input("events")
+    events :: zset(record(id: i64, payload: optional(json)))
+    out := map(events, function((r) ->
+        record(id: r.id, here: r.payload != NONE)))
+
+  # The same rule every other optional type follows, and Feldera's for a
+  # nullable VARIANT. The cost is that a *top-level* null document cannot be
+  # received here — declare the column `json` for that, which is Feldera's
+  # VARIANT NOT NULL.
+  input:
+    - events:
+        - [1, {id: 1, payload: {a: 1}}]
+        - [1, {id: 2, payload: null}]
+        - [1, {id: 3}]
+
+  expected_exact_output:
+    - out:
+        - [1, {id: 1, here: true}]
+        - [1, {id: 2, here: false}]
+        - [1, {id: 3, here: false}]
 
 - name: key order is canonicalised away
   source: |

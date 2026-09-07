@@ -73,6 +73,13 @@ derived `IsNone` answers "never", since the struct is not an `Option`: absence
 lives in the encoding's tag, so it is tested by comparing against the one-byte
 `sql_null` sentinel.
 
+**A `DynValue::Json` never holds that sentinel.** `get` converts it to
+`DynValue::None` at the boundary, and nothing else produces one — the
+deserializer maps a bare `null` to `TAG_VARIANT_NULL`, and so does building a
+document from an absent value. The encoding distinguishes three states; the
+language shows two, because the third would be a value that serializes as `null`
+without being the null document, which nothing could observe.
+
 There is no tuple variant. `map_index`, `join_index` and `flat_map_index` take
 an ordinary `record(key: …, value: …)` and the lowering splits it, so nothing
 pair-shaped is ever streamed.

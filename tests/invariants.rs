@@ -175,9 +175,8 @@ fn any_type() -> impl Strategy<Value = TypeDesc> {
         let field = prop_oneof![
             inner.clone(),
             inner.prop_map(|t| TypeDesc::Optional(Box::new(t))),
-            // `optional(json)` is disallowed, so `json` only ever appears
-            // unwrapped — a document carries its own null.
             Just(TypeDesc::Json),
+            Just(TypeDesc::Optional(Box::new(TypeDesc::Json))),
         ];
         prop_oneof![
             prop::collection::vec(field, 1..4).prop_map(|ts| {
@@ -191,6 +190,7 @@ fn any_type() -> impl Strategy<Value = TypeDesc> {
             prop_oneof![Just(t.clone()), Just(TypeDesc::Optional(Box::new(t)))]
         }),
         Just(TypeDesc::Json),
+        Just(TypeDesc::Optional(Box::new(TypeDesc::Json))),
     ]
 }
 
@@ -206,6 +206,17 @@ fn value_of(ty: TypeDesc) -> BoxedStrategy<DynValue> {
             .prop_map(|f| DynValue::F64(dbsp::algebra::F64::new(f)))
             .boxed(),
         TypeDesc::String => ".{0,8}".prop_map(DynValue::String).boxed(),
+        // A *bare* null document is excluded under `optional(json)`: it writes
+        // `null`, which reads back as absence, so it does not round-trip there.
+        // `optional_json_null_degrades_to_absence` pins that rather than leaving
+        // it implied by this filter. Nested nulls are unaffected.
+        TypeDesc::Optional(inner) if *inner == TypeDesc::Json => prop_oneof![
+            Just(DynValue::None),
+            any_json()
+                .prop_filter("a bare null document degrades to absence", |v| !v.is_null())
+                .prop_map(json_value),
+        ]
+        .boxed(),
         TypeDesc::Optional(inner) => {
             prop_oneof![Just(DynValue::None), value_of(*inner)].boxed()
         }
@@ -309,4 +320,36 @@ fn an_omitted_optional_column_is_still_none() {
     }
     let definite = record_type(&[("v", TypeDesc::I64)]);
     assert!(decode_value(&serde_json::json!({}), &definite).is_err(), "and neither for a definite one");
+}
+
+/// A JSON null document survives in a `json` column and not in an
+/// `optional(json)` one.
+///
+/// Both spellings of nothing write `null`, and for an optional column `null`
+/// reads back as absence — Feldera's rule for a nullable `VARIANT`, and the one
+/// every other optional type follows. Declaring the column definite is what
+/// keeps the document, which is Feldera's `VARIANT NOT NULL`.
+#[test]
+fn optional_json_null_degrades_to_absence() {
+    let null_doc: DynValue = json_value(serde_json::Value::Null);
+
+    let round_trip = |v: &DynValue, ty: &TypeDesc| -> DynValue {
+        let j = encode_value(v, ty).expect("encodes");
+        assert_eq!(j, serde_json::Value::Null, "both write as `null`");
+        decode_value(&j, ty).expect("decodes")
+    };
+
+    assert_eq!(
+        round_trip(&null_doc, &TypeDesc::Json),
+        null_doc,
+        "a definite `json` column keeps the null document"
+    );
+
+    let opt = TypeDesc::Optional(Box::new(TypeDesc::Json));
+    assert_eq!(
+        round_trip(&null_doc, &opt),
+        DynValue::None,
+        "an `optional(json)` column reads it back as absence"
+    );
+    assert_eq!(round_trip(&DynValue::None, &opt), DynValue::None, "and absence stays absence");
 }

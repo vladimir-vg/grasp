@@ -825,17 +825,6 @@
 
 # --- Documents ---------------------------------------------------------------
 
-- name: optional(json) is not a type
-  source: |
-    a := input("a")
-    a :: zset(record(payload: optional(json)))
-
-  # A document carries its own null, so absence around one adds nothing — and on
-  # the wire the two would be indistinguishable, since both write as `null`.
-  expected_diagnostics:
-    - pass: parse
-      message: "a document is never absent"
-
 - name: documents have no order
   source: |
     a := input("a")

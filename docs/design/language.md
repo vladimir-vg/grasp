@@ -387,8 +387,7 @@ above and with each other.
 | `length` | `string → i64`, `array(T) → i64` | element or character count |
 | `concat` | `string × string → string` | concatenation |
 | `lower` / `upper` / `trim` | `string → string` | |
-| `get` | `json × string → json`, `json × i64 → json` | a member, by key or 0-based index |
-| `has_key` | `json × string → bool` | the key is present |
+| `get` | `(json \| optional(json)) × (string \| i64) → optional(json)` | a member, by key or 0-based index |
 | `keys` | `json → optional(array(string))` | an object's keys, `NONE` otherwise |
 
 Every builtin but `coalesce` rejects an `optional` argument, for the reason
@@ -457,13 +456,17 @@ integer column could not be written.
 A `json` is a whole document. The type system says nothing about its shape, so
 there are two operations and no third:
 
-- **`get`** reaches inside one. It is total — a missing key, an index past the
-  end, or a document that is not an object at all yields *absence* — so a chain
-  needs no guard at any level:
+- **`get`** reaches inside one. A missing key, an index past the end, or a
+  document that is not a container yields `NONE`, and `get` accepts what it
+  returns — so a chain needs no guard at any level:
 
   ```
   cast(get(get(r.payload, "user"), "id"), optional(i64))
   ```
+
+  It is the one builtin whose argument may be absent. That is not the
+  propagation arithmetic refuses: navigating into nothing has one sensible
+  answer, whereas `+` on an unknown has none without inventing SQL's semantics.
 
 - **`cast`** converts one out. Every extraction is fallible, because a document
   need not hold the shape asked of it, so the target is `optional`. A `record`
@@ -482,22 +485,33 @@ case those did, and cost no new grammar.
 takes an integer document exactly — a 64-bit key survives — while
 `cast(d, optional(f64))` takes any number, so `5` and `5.0` both convert.
 
-**Three kinds of nothing.** A `json` column is never `optional` — `optional(json)`
-is rejected — because a document carries its own null:
+**Two kinds of nothing, and `get` tells them apart.** `NONE` means *there is no
+such member*; a document that is null means *the member is there, holding
+`null`*. So `get(d, "x") != NONE` is a presence test, and
+`cast(get(d, "x"), optional(i64))` is absent for both a missing key and a null
+one — which is usually what you want, and the comparison is there when it is
+not.
 
-| | means |
-|---|---|
-| an **absent** member | the key was not there, or the document is not an object |
-| **JSON null** | the key was there, holding `null` |
-| `NONE` | absence in the surrounding language, which a `json` never has |
+The encoding has a third state, an absent sentinel distinct from JSON null, but
+the language never shows it: `get` converts it to `NONE` at the boundary. It
+would otherwise be a value that prints as `null` without *being* the null
+document — a difference nothing could see.
 
-`get` cannot tell the first two apart, since both extract as absence.
-**`has_key` is what does.**
+On the wire the codec follows Feldera exactly:
 
-On the wire the codec follows Feldera exactly. A `json` column is `VARIANT NOT
-NULL`, so an **omitted** column is a decode error while an explicit `null` is
-JSON null. For every other type, omitted and `null` both read as `NONE` where
-the column is optional and are an error where it is not.
+| column | omitted | `null` |
+|---|---|---|
+| `T` | error | error |
+| `optional(T)` | `NONE` | `NONE` |
+| `json` | error | **the null document** |
+| `optional(json)` | `NONE` | `NONE` |
+
+`json` is the one type whose value set contains null, which is why a definite
+`json` column may accept a bare `null` where a definite `i64` may not. The cost
+is on the last row: in an `optional(json)` column a null document and absence
+both write `null` and both read back as absence, so **a top-level null document
+degrades to absence there**. Declare the column `json` to keep it. Nulls
+*inside* a document are unaffected either way.
 
 **Documents compare, but do not order.** `==` and `!=` are allowed: the encoding
 is canonical — map keys are stored sorted and deduplicated, so `{"a":1,"b":2}`

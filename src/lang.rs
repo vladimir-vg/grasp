@@ -875,15 +875,6 @@ impl Parser {
                     // silently flattening it.
                     return self.err("`optional(optional(T))` is not a distinct type; use `optional(T)`");
                 }
-                if inner == TypeDesc::Json {
-                    // A document carries its own null, so absence around one
-                    // adds nothing — and on the wire the two would be
-                    // indistinguishable, since both write as `null`.
-                    return self.err(
-                        "`optional(json)` is not a type: a document is never absent, \
-                         and `null` is a value it holds. Write `json`.",
-                    );
-                }
                 Ok(TypeDesc::Optional(Box::new(inner)))
             }
             "record" => {

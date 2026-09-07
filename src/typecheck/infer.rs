@@ -691,31 +691,36 @@ fn infer_builtin(
             out
         }
 
-        // Navigation into a document. `get` is the one builtin that takes two
-        // different key types, the way `length` takes a string or an array: a
-        // string names an object member, an `i64` a 0-based array element.
-        Builtin::Get | Builtin::HasKey => {
-            for arg in args.iter() {
-                definite(arg, name, span)?;
-            }
-            let doc = args[0].settle().expect("definite() rejected the none case");
-            if doc.non_null() != &TypeDesc::Json {
-                return err(span, format!("`{name}` needs a document, found `{doc}`"));
-            }
-            let key = args[1].settle().expect("definite() rejected the none case");
-            let key_ok = match (b, key.non_null()) {
-                (Builtin::Get, TypeDesc::String | TypeDesc::I64) => true,
-                (Builtin::HasKey, TypeDesc::String) => true,
-                _ => false,
+        // Navigation into a document. `get` takes two different key types, the
+        // way `length` takes a string or an array: a string names an object
+        // member, an `i64` a 0-based array element.
+        //
+        // It is also the one builtin whose first argument may be absent, so it
+        // does not go through `definite`. Chaining is what needs that — the
+        // result of one `get` is the input to the next — and absence passing
+        // through is not the propagation arithmetic refuses: navigating into
+        // nothing has one sensible answer.
+        Builtin::Get => {
+            let Some(doc) = args[0].settle() else {
+                return err(span, "`get` needs a document, but this is `NONE`");
             };
-            if !key_ok {
-                let want = if b == Builtin::Get { "a string key or an i64 index" } else { "a string key" };
-                return err(span, format!("`{name}` needs {want}, found `{key}`"));
+            if doc.non_null() != &TypeDesc::Json {
+                return err(span, format!("`get` needs a document, found `{doc}`"));
+            }
+            definite(&args[1], name, span)?;
+            let key = args[1].settle().expect("definite() rejected the none case");
+            if !matches!(key.non_null(), TypeDesc::String | TypeDesc::I64) {
+                return err(
+                    span,
+                    format!("`get` needs a string key or an i64 index, found `{key}`"),
+                );
             }
             // An `i64` key settles here, so a bare literal index is an index and
             // not something waiting on further context.
             pin(&mut exprs[1], key.non_null());
-            if b == Builtin::Get { Ty::Known(TypeDesc::Json) } else { Ty::Known(TypeDesc::Bool) }
+            // A member may not be there, and the type says so — rather than
+            // handing back the encoding's absent sentinel dressed as a document.
+            Ty::Known(optional(TypeDesc::Json))
         }
 
         // `NONE` for anything that is not an object, so "not an object" is not

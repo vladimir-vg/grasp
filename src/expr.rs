@@ -33,11 +33,17 @@ pub enum Builtin {
     Upper,
     Trim,
     /// `get(doc, key)` — a document's member, by string key or 0-based array
-    /// index. Total: anything that does not resolve is the absent sentinel.
+    /// index, as `optional(json)`.
+    ///
+    /// Absence means *no such member*; a member holding JSON null comes back as
+    /// a document that is null. Those are different, and this is what tells
+    /// them apart.
+    ///
+    /// It is also the one builtin that accepts absence and passes it on. That
+    /// is not the propagation arithmetic refuses: `get`'s domain genuinely
+    /// includes absence and has one sensible answer there, whereas `+` on an
+    /// unknown has no answer without inventing SQL's semantics.
     Get,
-    /// `has_key(doc, key)` — what separates an absent key from one holding an
-    /// explicit JSON null, which `get` alone cannot.
-    HasKey,
     /// `keys(doc)` — an object's keys, or `NONE` for anything else.
     Keys,
 }
@@ -57,7 +63,6 @@ impl Builtin {
             "upper" => Builtin::Upper,
             "trim" => Builtin::Trim,
             "get" => Builtin::Get,
-            "has_key" => Builtin::HasKey,
             "keys" => Builtin::Keys,
             _ => return None,
         })
@@ -66,14 +71,14 @@ impl Builtin {
     /// Every builtin name, so the reserved-word list cannot drift from it.
     pub const ALL: &'static [&'static str] = &[
         "coalesce", "if", "abs", "floor", "ceil", "round", "length", "concat", "lower", "upper",
-        "trim", "get", "has_key", "keys",
+        "trim", "get", "keys",
     ];
 
     /// Number of arguments, or `None` if variadic.
     pub fn arity(self) -> Option<usize> {
         Some(match self {
             Builtin::If => 3,
-            Builtin::Coalesce | Builtin::Concat | Builtin::Get | Builtin::HasKey => 2,
+            Builtin::Coalesce | Builtin::Concat | Builtin::Get => 2,
             _ => 1,
         })
     }
@@ -579,28 +584,27 @@ fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValu
             }
             None => DynValue::None,
         },
-        // Navigation is total, so a document that is not an object, or an index
-        // that does not land, is the absent sentinel rather than a failure.
-        Builtin::Get => match (&vals[0], &vals[1]) {
-            (DynValue::Json(fv), DynValue::String(k)) => DynValue::Json(fv.index_string(k)),
-            (DynValue::Json(fv), DynValue::I64(i)) => {
-                // 0-based here; `index_from_one` is SQL's convention, and the
-                // language has no other 1-based indexing.
-                let one_based = i.checked_add(1).map(Variant::BigInt).map(FlatVariant::from);
-                let found = one_based.and_then(|k| fv.index_from_one(&k));
-                DynValue::Json(found.unwrap_or_else(FlatVariant::sql_null))
+        // Navigation is total: a missing key, an index past the end, or a
+        // document that is not a container yields absence. The encoding's absent
+        // sentinel is converted here rather than escaping as a `json` value —
+        // it would print as `null` and not be the null document, which is a
+        // third kind of nothing nobody can see.
+        Builtin::Get => {
+            let found = match (&vals[0], &vals[1]) {
+                (DynValue::Json(fv), DynValue::String(k)) => Some(fv.index_string(k)),
+                (DynValue::Json(fv), DynValue::I64(i)) => {
+                    // 0-based here; `index_from_one` is SQL's convention, and
+                    // the language has no other 1-based indexing.
+                    let one_based = i.checked_add(1).map(Variant::BigInt).map(FlatVariant::from);
+                    one_based.and_then(|k| fv.index_from_one(&k))
+                }
+                _ => Option::None,
+            };
+            match found {
+                Some(fv) if !is_absent(&fv) => DynValue::Json(fv),
+                _ => DynValue::None,
             }
-            _ => DynValue::None,
-        },
-        // A key holding an explicit JSON null is present, and `index_string`
-        // returns that null rather than the absent sentinel — which is exactly
-        // the difference this reports.
-        Builtin::HasKey => match (&vals[0], &vals[1]) {
-            (DynValue::Json(fv), DynValue::String(k)) => {
-                DynValue::Bool(!is_absent(&fv.index_string(k)))
-            }
-            _ => DynValue::None,
-        },
+        }
         Builtin::Keys => match &vals[0] {
             DynValue::Json(fv) => match Variant::from(fv) {
                 Variant::Map(m) => DynValue::Array(
