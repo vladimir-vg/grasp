@@ -1,7 +1,7 @@
 //! Does `dbsp`'s typed operator API instantiate at a single universal value
 //! type?
 //!
-//! This is the design's central bet, stated in `docs/design/mapping.md`. If
+//! This is the design's central bet, stated in `docs/grasp-dbsp/mapping.md`. If
 //! these tests do not compile, the architecture is wrong and no amount of
 //! parser work rescues it — so they exist before the parser does, and they are
 //! deliberately written against the `dbsp` API directly rather than through
@@ -139,7 +139,7 @@ fn retractions_cancel() {
 }
 
 /// Weights of magnitude greater than one survive as a single entry rather than
-/// being expanded into repeats. `docs/design/mapping.md` makes the `weighted`
+/// being expanded into repeats. `docs/grasp-dbsp/mapping.md` makes the `weighted`
 /// JSON format the default output encoding for exactly this reason.
 #[test]
 fn weights_greater_than_one_are_preserved() {

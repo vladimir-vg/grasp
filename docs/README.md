@@ -1,0 +1,41 @@
+# Design documents
+
+This workspace holds two languages, one directory each. They are designed
+separately and meet at exactly one file.
+
+## [`grasp-dbsp/`](grasp-dbsp/) — the target language
+
+Declarative dataflow, executed incrementally as a DBSP circuit. Implemented by
+[`grasp-dbsp-runner`](../crates/grasp-dbsp-runner), which parses it and builds
+the circuit at startup with no code generation.
+
+- [`overview.md`](grasp-dbsp/overview.md) — goals, design principles, scope, future work, architecture
+- [`language.md`](grasp-dbsp/language.md) — the language as implemented: types, operators, expressions
+- [`mapping.md`](grasp-dbsp/mapping.md) — how the language maps onto the `dbsp` crate
+
+## [`grasp/`](grasp/) — the source language
+
+A Datalog dialect that compiles to grasp-dbsp. Implemented by
+[`grasp-compiler`](../crates/grasp-compiler). It has no runtime of its own.
+Both documents are placeholders; the design is not yet written.
+
+- [`overview.md`](grasp/overview.md)
+- [`language.md`](grasp/language.md)
+
+## Where the two meet
+
+[`grasp-dbsp/language.md`](grasp-dbsp/language.md), and nowhere else. It is what
+`grasp-compiler` emits and what `grasp-dbsp-runner` accepts, which is why these
+documents live at the workspace root rather than inside either crate. A change
+to that file is a change to the contract between them.
+
+grasp-dbsp is a deliberate *compilation target* — explicit and uniform rather
+than convenient, because it is written by a compiler or an agent and not by
+hand. [`grasp-dbsp/overview.md`](grasp-dbsp/overview.md) records the principles
+that follow from this, and they are worth reading before emitting it.
+
+**A note on the name.** `grasp-dbsp` here always means the language specified in
+[`grasp-dbsp/`](grasp-dbsp/). There is also an unrelated Erlang project called
+grasp-dbsp, which is where the grammar was borrowed from; these documents always
+name it explicitly. See
+[`grasp-dbsp/overview.md`](grasp-dbsp/overview.md#relationship-to-other-projects).

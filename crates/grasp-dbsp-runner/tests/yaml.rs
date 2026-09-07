@@ -251,7 +251,7 @@ fn check_output(
     let plan = grasp_dbsp_runner::compile(&case.source)
         .map_err(|d| format!("{where_}: compilation failed:\n{}", indent(&render_diags(&d))))?;
 
-    // Outputs are whatever the expectations mention, as grasp-dbsp does.
+    // Outputs are whatever the expectations mention, as the Erlang grasp-dbsp does.
     let mut outputs: Vec<String> =
         expected.iter().flat_map(|e| e.keys().cloned()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
     outputs.sort();

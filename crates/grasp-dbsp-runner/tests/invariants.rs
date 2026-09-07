@@ -1,4 +1,4 @@
-//! The `DynValue` invariants from `docs/design/mapping.md`.
+//! The `DynValue` invariants from `docs/grasp-dbsp/mapping.md`.
 //!
 //! Each of these fails *silently* if violated — producing wrong query results
 //! or rows that never consolidate, rather than a panic — which is why they are

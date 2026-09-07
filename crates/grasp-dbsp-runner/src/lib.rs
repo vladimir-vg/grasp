@@ -1,12 +1,12 @@
-//! DBSP Runner: a runtime for declarative dataflow programs.
+//! The grasp-dbsp runtime.
 //!
-//! Reads a program written in a small purpose-built language, instantiates it
-//! as a DBSP circuit using the `dbsp` crate, and executes that circuit
-//! incrementally over Feldera-native JSON input/output.
+//! Reads a program written in grasp-dbsp, a small purpose-built language,
+//! instantiates it as a DBSP circuit using the `dbsp` crate, and executes that
+//! circuit incrementally over Feldera-native JSON input/output.
 //!
-//! The design is described in `docs/design/` at the workspace root — the
-//! language is the contract between this crate and the compiler frontend, so
-//! the documents belong to neither:
+//! The design is described in `docs/grasp-dbsp/` at the workspace root — the
+//! language is the contract between this crate and `grasp-compiler`, so the
+//! documents belong to neither:
 //! - `overview.md`  — goals, scope, future work, architecture
 //! - `language.md`  — the source language (types, operators, builtins)
 //! - `mapping.md`   — how the language maps onto the `dbsp` crate

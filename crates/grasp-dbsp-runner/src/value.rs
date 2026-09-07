@@ -4,7 +4,7 @@
 //! The language's type system lives at the level of [`TypeDesc`], which the type
 //! checker computes per node and the JSON codec reads.
 //!
-//! See `docs/design/mapping.md` for the invariants this type must uphold.
+//! See `docs/grasp-dbsp/mapping.md` for the invariants this type must uphold.
 
 use dbsp::ZWeight;
 use dbsp::algebra::{AddAssignByRef, AddByRef, F64, HasZero, MulByRef};
@@ -154,7 +154,7 @@ impl DynValue {
 /// `f64` — the division happens in the postprocess, not the accumulator.
 ///
 /// `rows` is what lets a linear aggregate tell "the group summed to zero" from
-/// "the group is empty" — see the aggregation section of `docs/design/mapping.md`.
+/// "the group is empty" — see the aggregation section of `docs/grasp-dbsp/mapping.md`.
 /// It is also `count` itself.
 #[derive(
     Debug,

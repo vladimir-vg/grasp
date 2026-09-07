@@ -1,4 +1,4 @@
-# DBSP Runner — Mapping onto `dbsp`
+# grasp-dbsp — Mapping onto `dbsp`
 
 This document describes how the language is mapped onto the `dbsp` crate: the
 runtime value model, circuit construction, the operator mapping, the
@@ -375,8 +375,9 @@ Two operators that look like they belong in this table but do not:
   It is not needed. A left join is `join ∪ (antijoin × null)`, three operators
   that already exist, now that the mapping family accepts an indexed stream and
   `cast` can widen the matched side to `optional`. See
-  [`language.md`](language.md); `tests/cases/joins.yaml` has it end to end,
-  including the retraction when a missing match later arrives.
+  [`language.md`](language.md); `crates/grasp-dbsp-runner/tests/cases/joins.yaml`
+  has it end to end, including the retraction when a missing match later
+  arrives.
 
 ## Aggregation
 
@@ -504,8 +505,8 @@ remain available as explicit primitives for two uses only:
 1. materializing an accumulated relation (running sum of deltas), and
 2. constructing feedback/recursive structures (together with `delay`).
 
-This is the key difference from grasp-dbsp, which inserts I/D pairs as a
-compilation step. Here that step does not exist because it is unnecessary.
+This is the key difference from the Erlang grasp-dbsp, which inserts I/D pairs
+as a compilation step. Here that step does not exist because it is unnecessary.
 
 ## Input / output
 

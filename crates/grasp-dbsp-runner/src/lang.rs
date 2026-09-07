@@ -1,6 +1,6 @@
 //! Lexing and parsing the source language.
 //!
-//! The grammar is in `docs/design/language.md`. This is a hand-written
+//! The grammar is in `docs/grasp-dbsp/language.md`. This is a hand-written
 //! recursive-descent parser producing an untyped AST: field accesses still carry
 //! names, which `typecheck` resolves to positional indices.
 

@@ -1,9 +1,10 @@
-# DBSP Runner — Language
+# grasp-dbsp — Language
 
-The source language is declarative: a program is a flat list of declarations
-that name streams and describe how they are derived from inputs. The grammar is
-borrowed from grasp-dbsp; the operators and types it refers to come from
-`dbsp`.
+grasp-dbsp is declarative: a program is a flat list of declarations that name
+streams and describe how they are derived from inputs. The grammar is borrowed
+from the Erlang project of the same name — see
+[`overview.md`](overview.md#relationship-to-other-projects) — while the
+operators and types it refers to come from `dbsp`.
 
 This describes the language as implemented.
 

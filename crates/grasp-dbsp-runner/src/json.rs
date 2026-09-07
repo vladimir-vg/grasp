@@ -3,7 +3,7 @@
 //! `{"weight": 2, "data": {…}}` represents a Z-set delta exactly, including
 //! weights whose magnitude is greater than one. `insert_delete` cannot say
 //! "weight 3" except by repeating the row, which is why `weighted` is the
-//! default here; see `docs/design/mapping.md`.
+//! default here; see `docs/grasp-dbsp/mapping.md`.
 //!
 //! Encoding is schema-driven: a [`TypeDesc`] supplies record field names on the
 //! way out and the expected variant on the way in. That is what lets record

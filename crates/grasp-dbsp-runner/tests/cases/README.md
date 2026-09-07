@@ -103,6 +103,7 @@ fixture's own source — which would also fail to compile — cannot satisfy it.
 
 - Unknown keys are rejected, so a misspelled key fails loudly instead of
   silently asserting nothing.
-- The language this exercises is documented in
-  [`docs/design/language.md`](../../docs/design/language.md). Operators not yet
-  implemented are listed under future work in `docs/design/overview.md`.
+- The language this exercises is grasp-dbsp, documented in
+  [`docs/grasp-dbsp/language.md`](../../../../docs/grasp-dbsp/language.md).
+  Operators not yet implemented are listed under future work in
+  `docs/grasp-dbsp/overview.md`.

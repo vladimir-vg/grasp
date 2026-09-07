@@ -1,27 +1,31 @@
 # grasp
 
-A runtime for declarative dataflow programs, executed incrementally as DBSP
-circuits via the [Feldera `dbsp` crate](https://github.com/feldera/feldera).
+Two languages for declarative dataflow, executed incrementally as DBSP circuits
+via the [Feldera `dbsp` crate](https://github.com/feldera/feldera).
 
-A program is a flat list of stream declarations; the runner parses it, builds a
-`dbsp` circuit at startup with no code generation, and streams input changes
-through it, emitting output changes as they are produced.
+**grasp-dbsp** is the target language: a flat list of stream declarations. The
+runner parses it, builds a `dbsp` circuit at startup with no code generation,
+and streams input changes through it, emitting output changes as they are
+produced.
+
+**grasp** is a Datalog dialect that compiles to grasp-dbsp. It has no runtime of
+its own. Not yet designed.
 
 ## Crates
 
 | crate | |
 |---|---|
-| [`grasp-dbsp-runner`](crates/grasp-dbsp-runner) | parses the language and executes it as a `dbsp` circuit |
-| [`grasp-compiler`](crates/grasp-compiler) | the frontend that will emit that language — empty so far |
+| [`grasp-dbsp-runner`](crates/grasp-dbsp-runner) | parses grasp-dbsp and executes it as a `dbsp` circuit |
+| [`grasp-compiler`](crates/grasp-compiler) | compiles grasp down to grasp-dbsp — empty so far |
 
-The language is the contract between them, which is why the design documents
-live at the workspace root rather than inside either crate.
+grasp-dbsp is the contract between them, which is why the design documents live
+at the workspace root rather than inside either crate. They are in
+[`docs/`](docs/), a directory per language — start at
+[`docs/README.md`](docs/README.md):
 
-Design documents live in [`docs/design/`](docs/design/):
-
-- [`overview.md`](docs/design/overview.md) — goals, design principles, scope, future work, architecture
-- [`language.md`](docs/design/language.md) — the source language
-- [`mapping.md`](docs/design/mapping.md) — how the language maps onto `dbsp`
+- [`docs/grasp-dbsp/`](docs/grasp-dbsp/) — the target language: its goals and
+  principles, the spec as implemented, and how it maps onto `dbsp`
+- [`docs/grasp/`](docs/grasp/) — the Datalog dialect. Placeholders for now
 
 ## Building
 

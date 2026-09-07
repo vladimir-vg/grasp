@@ -26,7 +26,7 @@
         - [3, {v: 1}]
 
   # The format has nowhere to put a magnitude. This is why `weighted` is the
-  # default -- see docs/design/mapping.md.
+  # default -- see docs/grasp-dbsp/mapping.md.
   output_format: insert_delete
   expected_exact_output:
     - out:

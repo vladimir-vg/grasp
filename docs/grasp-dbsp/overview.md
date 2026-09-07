@@ -1,25 +1,26 @@
-# DBSP Runner — Overview
+# grasp-dbsp — Overview
 
-DBSP Runner is a runtime for declarative dataflow programs. It reads a source
-program written in a small purpose-built language, instantiates it as a DBSP
-circuit using the [`dbsp`](https://github.com/feldera/feldera/tree/main/crates/dbsp)
-crate, and executes that circuit incrementally: input changes stream through
-the circuit and output changes are emitted as they are produced.
+grasp-dbsp is a small purpose-built language for declarative dataflow programs.
+A program in it is instantiated as a DBSP circuit using the
+[`dbsp`](https://github.com/feldera/feldera/tree/main/crates/dbsp) crate and
+executed incrementally: input changes stream through the circuit and output
+changes are emitted as they are produced.
 
 ## What it is
 
-- One Rust crate, `grasp-dbsp-runner`, linking against `dbsp` and
+- Executed by one Rust crate, `grasp-dbsp-runner`, linking against `dbsp` and
   `feldera-macros`, for the `IsNone` derive `dbsp`'s `DBData` bound requires.
-  It shares a workspace with `grasp-compiler`, the frontend that will emit this
-  language; the two meet at [`language.md`](language.md) and nowhere else.
+  It shares a workspace with `grasp-compiler`, which compiles
+  [grasp](../grasp/overview.md) down to this language; the two meet at
+  [`language.md`](language.md) and nowhere else.
 - A **runtime interpreter**: the program is parsed at startup and the circuit
   is assembled at startup, through `dbsp`'s ordinary operator API instantiated
   at a single universal value type. There is **no code generation and no Rust
   toolchain at runtime** — assembling the circuit is still a build step, but it
   needs no compiler.
 - A **thin layer over `dbsp`**. DBSP defines the computational model (Z-sets,
-  incremental operators, weights, epochs, state); DBSP Runner defines the
-  language, the value model, and how the language maps onto `dbsp`. It does
+  incremental operators, weights, epochs, state); grasp-dbsp adds the surface
+  syntax, the value model, and the mapping from one onto the other. It does
   not reimplement or re-describe DBSP's model.
 
 ## Design principles
@@ -153,17 +154,21 @@ become an output — by declared name, or by content id for a node that has none
 
 ## Relationship to other projects
 
-- **grasp-dbsp** — an Erlang DBSP runtime with its own language. DBSP Runner
-  borrows only the *grammar* (declaration forms, `name := op(...)`,
-  `name :: type`, `function((params) -> ...)`, and `record(...)` where grasp-dbsp
-  writes `struct(...)`). Operators, types, and semantics come from `dbsp`, not
-  from grasp-dbsp.
-- **dbsp** — the computational engine. DBSP Runner relies on `dbsp` for all
-  execution and state management. The design documents describe only *how the
-  language is mapped onto* `dbsp`.
+- **grasp-dbsp (Erlang)** — an Erlang DBSP runtime with its own language, and
+  the source of this one's name. **Not the language specified here**: the
+  language in these documents borrows only the *grammar* (declaration forms,
+  `name := op(...)`, `name :: type`, `function((params) -> ...)`, and
+  `record(...)` where the Erlang project writes `struct(...)`). Operators,
+  types, and semantics come from `dbsp`. Where the rest of these documents say
+  grasp-dbsp unqualified, they mean the language specified here; the Erlang
+  project is always named as such.
+- **dbsp** — the computational engine. `grasp-dbsp-runner` relies on `dbsp` for
+  all execution and state management. The design documents describe only *how
+  the language is mapped onto* `dbsp`.
 - **Feldera's SQL compiler** — solves the same lowering problem by generating
-  Rust. DBSP Runner does the same lowering at runtime instead, so the two agree
-  on operator vocabulary and on the shape of aggregation, but share no code.
+  Rust. `grasp-dbsp-runner` does the same lowering at runtime instead, so the
+  two agree on operator vocabulary and on the shape of aggregation, but share no
+  code.
 
 ## Architecture
 

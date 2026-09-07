@@ -517,7 +517,7 @@
 #
 # Every operation whose result may be absent says so in its type, and every
 # operation that cannot handle absence rejects it. See the "Absence" section of
-# docs/design/language.md.
+# docs/grasp-dbsp/language.md.
 
 - name: length needs a string
   source: |
