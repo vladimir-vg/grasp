@@ -83,11 +83,21 @@ struct ExpectedDiagnostic {
 
 impl ExpectedDiagnostic {
     fn matches(&self, d: &Diagnostic) -> bool {
-        let sev_ok = self.severity.as_ref().is_none_or(|s| s == d.severity.as_str());
+        let sev_ok = self
+            .severity
+            .as_ref()
+            .is_none_or(|s| s == d.severity.as_str());
         let pass_ok = self.pass.as_ref().is_none_or(|s| s == d.pass.as_str());
-        let msg_ok = self.message.as_ref().is_none_or(|m| d.message.contains(m.as_str()));
-        let line_ok = self.line.is_none_or(|l| d.span.is_some_and(|s| s.line == l));
-        let col_ok = self.column.is_none_or(|c| d.span.is_some_and(|s| s.column == c));
+        let msg_ok = self
+            .message
+            .as_ref()
+            .is_none_or(|m| d.message.contains(m.as_str()));
+        let line_ok = self
+            .line
+            .is_none_or(|l| d.span.is_some_and(|s| s.line == l));
+        let col_ok = self
+            .column
+            .is_none_or(|c| d.span.is_some_and(|s| s.column == c));
         sev_ok && pass_ok && msg_ok && line_ok && col_ok
     }
 
@@ -132,10 +142,10 @@ fn collect_trials() -> Result<Vec<Trial>, String> {
     let mut trials = Vec::new();
     for path in files {
         let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
-        let text = std::fs::read_to_string(&path)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        let cases: Vec<Case> = serde_yaml::from_str(&text)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let cases: Vec<Case> =
+            serde_yaml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
 
         for (i, case) in cases.into_iter().enumerate() {
             let name = match &case.name {
@@ -153,7 +163,13 @@ fn collect_trials() -> Result<Vec<Trial>, String> {
 
 fn slug(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
         .collect::<String>()
         .trim_matches('_')
         .to_string()
@@ -177,7 +193,11 @@ fn run_case(case: &Case, where_: &str) -> Result<(), String> {
                  (expected_output, expected_exact_output or expected_diagnostics)"
             ));
         }
-        _ => return Err(format!("{where_}: a case may have only one `expected_*` key")),
+        _ => {
+            return Err(format!(
+                "{where_}: a case may have only one `expected_*` key"
+            ));
+        }
     }
 
     if let Some(expected) = &case.expected_diagnostics {
@@ -200,7 +220,9 @@ fn check_diagnostics(
 ) -> Result<(), String> {
     let actual = match grasp_dbsp_runner::compile(&case.source) {
         Ok(_) => {
-            return Err(format!("{where_}: expected compilation to fail, but it succeeded"));
+            return Err(format!(
+                "{where_}: expected compilation to fail, but it succeeded"
+            ));
         }
         Err(diags) => diags,
     };
@@ -233,12 +255,7 @@ fn check_diagnostics(
     Ok(())
 }
 
-fn check_output(
-    case: &Case,
-    expected: &[Epoch],
-    exact: bool,
-    where_: &str,
-) -> Result<(), String> {
+fn check_output(case: &Case, expected: &[Epoch], exact: bool, where_: &str) -> Result<(), String> {
     if expected.len() != case.input.len() {
         return Err(format!(
             "{where_}: {} input epoch(s) but {} expected epoch(s); \
@@ -248,16 +265,28 @@ fn check_output(
         ));
     }
 
-    let plan = grasp_dbsp_runner::compile(&case.source)
-        .map_err(|d| format!("{where_}: compilation failed:\n{}", indent(&render_diags(&d))))?;
+    let plan = grasp_dbsp_runner::compile(&case.source).map_err(|d| {
+        format!(
+            "{where_}: compilation failed:\n{}",
+            indent(&render_diags(&d))
+        )
+    })?;
 
     // Outputs are whatever the expectations mention, as the Erlang grasp-dbsp does.
-    let mut outputs: Vec<String> =
-        expected.iter().flat_map(|e| e.keys().cloned()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    let mut outputs: Vec<String> = expected
+        .iter()
+        .flat_map(|e| e.keys().cloned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
     outputs.sort();
 
-    let mut runner = Runner::build(&plan, &outputs)
-        .map_err(|d| format!("{where_}: building the circuit failed:\n{}", indent(&render_diags(&d))))?;
+    let mut runner = Runner::build(&plan, &outputs).map_err(|d| {
+        format!(
+            "{where_}: building the circuit failed:\n{}",
+            indent(&render_diags(&d))
+        )
+    })?;
 
     let in_format = parse_format(case.input_format.as_deref(), "input_format")
         .map_err(|e| format!("{where_}: {e}"))?;
@@ -380,7 +409,10 @@ fn decode_input_row(
         .as_sequence()
         .ok_or_else(|| "an input row is [weight, row]".to_string())?;
     if row.len() != 2 {
-        return Err(format!("an input row is [weight, row]; found {} element(s)", row.len()));
+        return Err(format!(
+            "an input row is [weight, row]; found {} element(s)",
+            row.len()
+        ));
     }
     let weight = yaml_to_json(&row[0])
         .as_i64()
@@ -410,14 +442,21 @@ fn yaml_to_json(y: &serde_yaml::Value) -> J {
         serde_yaml::Value::Number(n) => n
             .as_i64()
             .map(J::from)
-            .or_else(|| n.as_f64().and_then(serde_json::Number::from_f64).map(J::Number))
+            .or_else(|| {
+                n.as_f64()
+                    .and_then(serde_json::Number::from_f64)
+                    .map(J::Number)
+            })
             .unwrap_or(J::Null),
         serde_yaml::Value::String(s) => J::String(s.clone()),
         serde_yaml::Value::Sequence(items) => J::Array(items.iter().map(yaml_to_json).collect()),
         serde_yaml::Value::Mapping(map) => J::Object(
             map.iter()
                 .map(|(k, v)| {
-                    let key = k.as_str().map(str::to_string).unwrap_or_else(|| format!("{k:?}"));
+                    let key = k
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("{k:?}"));
                     (key, yaml_to_json(v))
                 })
                 .collect(),
@@ -445,16 +484,26 @@ fn rows_to_string(rows: &[J]) -> String {
     if rows.is_empty() {
         return "(nothing)".to_string();
     }
-    rows.iter().map(|r| r.to_string()).collect::<Vec<_>>().join("\n")
+    rows.iter()
+        .map(|r| r.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn render_diags(diags: &[Diagnostic]) -> String {
     if diags.is_empty() {
         return "(none)".to_string();
     }
-    diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")
+    diags
+        .iter()
+        .map(|d| d.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn indent(s: &str) -> String {
-    s.lines().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n")
+    s.lines()
+        .map(|l| format!("    {l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }

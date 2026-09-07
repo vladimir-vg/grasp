@@ -15,8 +15,13 @@ use grasp_dbsp_runner::typecheck::{AGGREGATORS, OPERATORS};
 fn every_listed_operator_is_recognised() {
     for op in OPERATORS {
         let src = format!("x := {op}()");
-        let diags = grasp_dbsp_runner::compile(&src).expect_err("no operator accepts zero arguments");
-        let text = diags.iter().map(|d| d.message.as_str()).collect::<Vec<_>>().join("; ");
+        let diags =
+            grasp_dbsp_runner::compile(&src).expect_err("no operator accepts zero arguments");
+        let text = diags
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
         assert!(
             !text.contains("unknown operator"),
             "`{op}` is in OPERATORS but check_op does not know it: {text}"
@@ -29,8 +34,12 @@ fn every_listed_operator_is_recognised() {
 #[test]
 fn unlisted_names_are_unknown_operators() {
     for name in ["frobnicate", "zip", "explode"] {
-        assert!(!OPERATORS.contains(&name), "test needs a name that is not an operator");
-        let diags = grasp_dbsp_runner::compile(&format!("x := {name}()")).expect_err("not an operator");
+        assert!(
+            !OPERATORS.contains(&name),
+            "test needs a name that is not an operator"
+        );
+        let diags =
+            grasp_dbsp_runner::compile(&format!("x := {name}()")).expect_err("not an operator");
         assert!(
             diags.iter().any(|d| d.message.contains("unknown operator")),
             "`{name}` should be an unknown operator"
@@ -41,7 +50,10 @@ fn unlisted_names_are_unknown_operators() {
 #[test]
 fn every_operator_aggregator_and_builtin_is_reserved() {
     for name in OPERATORS.iter().chain(AGGREGATORS).chain(Builtin::ALL) {
-        assert!(is_reserved(name), "`{name}` is a language name but is not reserved");
+        assert!(
+            is_reserved(name),
+            "`{name}` is a language name but is not reserved"
+        );
     }
 }
 
@@ -60,12 +72,25 @@ fn every_builtin_name_resolves() {
 #[test]
 fn the_reserved_set_has_the_right_shape() {
     for name in [
-        "zset", "indexed_zset", "optional", "record", "array", "string", "sql", "NONE", "null",
-        "function", "return", "if", "cast",
+        "zset",
+        "indexed_zset",
+        "optional",
+        "record",
+        "array",
+        "string",
+        "sql",
+        "NONE",
+        "null",
+        "function",
+        "return",
+        "if",
+        "cast",
     ] {
         assert!(is_reserved(name), "`{name}` should be reserved");
     }
-    for name in ["emp", "dept", "by_dept", "row", "r", "k", "v", "total", "pos"] {
+    for name in [
+        "emp", "dept", "by_dept", "row", "r", "k", "v", "total", "pos",
+    ] {
         assert!(!is_reserved(name), "`{name}` should not be reserved");
     }
 }
@@ -115,7 +140,11 @@ fn every_construct_appears_in_a_fixture() {
             missing.push(format!("`{other}`"));
         }
     }
-    assert!(missing.is_empty(), "not exercised by any fixture: {}", missing.join(", "));
+    assert!(
+        missing.is_empty(),
+        "not exercised by any fixture: {}",
+        missing.join(", ")
+    );
 }
 
 /// The worked example in `language.md` compiles.
@@ -128,8 +157,8 @@ fn every_construct_appears_in_a_fixture() {
 fn the_language_example_compiles() {
     // The design documents live at the workspace root, not in this crate: the
     // language is the contract between the runner and the compiler frontend.
-    let doc = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/grasp-dbsp/language.md");
+    let doc =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/grasp-dbsp/language.md");
     let doc = std::fs::read_to_string(&doc).expect("language.md");
     // Splitting on the fence gives prose at even indices and code at odd ones;
     // the prose around the example mentions the same names, so parity is what
@@ -144,7 +173,11 @@ fn the_language_example_compiles() {
     if let Err(diags) = grasp_dbsp_runner::compile(block.trim_start_matches('\n')) {
         panic!(
             "the example in language.md does not compile: {}",
-            diags.iter().map(|d| d.message.as_str()).collect::<Vec<_>>().join("; ")
+            diags
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; ")
         );
     }
 }

@@ -59,13 +59,34 @@ pub enum Agg {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlanOp {
-    Input { table: String },
-    Map { input: usize, f: Arc<TypedExpr> },
-    Filter { input: usize, f: Arc<TypedExpr> },
-    MapIndex { input: usize, f: Arc<TypedExpr>, kv: KeyValue },
-    Join { left: usize, right: usize, f: Arc<TypedExpr> },
-    Antijoin { left: usize, right: usize },
-    Distinct { input: usize },
+    Input {
+        table: String,
+    },
+    Map {
+        input: usize,
+        f: Arc<TypedExpr>,
+    },
+    Filter {
+        input: usize,
+        f: Arc<TypedExpr>,
+    },
+    MapIndex {
+        input: usize,
+        f: Arc<TypedExpr>,
+        kv: KeyValue,
+    },
+    Join {
+        left: usize,
+        right: usize,
+        f: Arc<TypedExpr>,
+    },
+    Antijoin {
+        left: usize,
+        right: usize,
+    },
+    Distinct {
+        input: usize,
+    },
     Aggregate {
         input: usize,
         agg: Agg,
@@ -75,21 +96,51 @@ pub enum PlanOp {
         /// `f64` whatever it was given.
         projection: crate::value::TypeDesc,
     },
-    WeightedCount { input: usize },
-    Neg { input: usize },
-    Plus { left: usize, right: usize },
-    Minus { left: usize, right: usize },
-    Sum { inputs: Vec<usize> },
+    WeightedCount {
+        input: usize,
+    },
+    Neg {
+        input: usize,
+    },
+    Plus {
+        left: usize,
+        right: usize,
+    },
+    Minus {
+        left: usize,
+        right: usize,
+    },
+    Sum {
+        inputs: Vec<usize>,
+    },
     /// One expression per output row: fan-out is fixed by the source, not by
     /// the data.
     /// `f` returns an `array`, so the number of rows emitted per input row
     /// follows the data rather than being fixed by the source.
-    FlatMap { input: usize, f: Arc<TypedExpr> },
-    FlatMapIndex { input: usize, f: Arc<TypedExpr>, kv: KeyValue },
-    JoinIndex { left: usize, right: usize, f: Arc<TypedExpr>, kv: KeyValue },
-    Integrate { input: usize },
-    Differentiate { input: usize },
-    Delay { input: usize },
+    FlatMap {
+        input: usize,
+        f: Arc<TypedExpr>,
+    },
+    FlatMapIndex {
+        input: usize,
+        f: Arc<TypedExpr>,
+        kv: KeyValue,
+    },
+    JoinIndex {
+        left: usize,
+        right: usize,
+        f: Arc<TypedExpr>,
+        kv: KeyValue,
+    },
+    Integrate {
+        input: usize,
+    },
+    Differentiate {
+        input: usize,
+    },
+    Delay {
+        input: usize,
+    },
     /// An empty stream. Its type is fixed by where it is used.
     Empty,
 
@@ -98,14 +149,24 @@ pub enum PlanOp {
     /// The body is a sub-plan built inside a nested circuit, so this is the one
     /// place the node list stops being flat. It yields one stream per recursive
     /// parameter; `FixpointExport` picks them out.
-    Fixpoint { body: Vec<PlanNode>, outputs: Vec<usize> },
+    Fixpoint {
+        body: Vec<PlanNode>,
+        outputs: Vec<usize>,
+    },
     /// One convergent stream of a `Fixpoint` node.
-    FixpointExport { fixpoint: usize, slot: usize },
+    FixpointExport {
+        fixpoint: usize,
+        slot: usize,
+    },
 
     /// Body-only: a parent stream imported into the nested circuit (`delta0`).
-    Import { outer: usize },
+    Import {
+        outer: usize,
+    },
     /// Body-only: the previous round's value of recursive slot `slot`.
-    RecVar { slot: usize },
+    RecVar {
+        slot: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

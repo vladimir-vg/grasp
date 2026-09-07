@@ -35,7 +35,10 @@ impl Span {
             // Multi-line: keep the start, and do not invent a length.
             return Span { len: 0, ..self };
         }
-        Span { len: end.column - self.column + end.len, ..self }
+        Span {
+            len: end.column - self.column + end.len,
+            ..self
+        }
     }
 }
 
@@ -101,7 +104,11 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
-    pub fn error(pass: Pass, span: impl Into<Option<Span>>, message: impl Into<String>) -> Diagnostic {
+    pub fn error(
+        pass: Pass,
+        span: impl Into<Option<Span>>,
+        message: impl Into<String>,
+    ) -> Diagnostic {
         Diagnostic {
             severity: Severity::Error,
             pass,
@@ -114,7 +121,11 @@ impl Diagnostic {
 impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.span {
-            Some(span) => write!(f, "{}[{}] at {}: {}", self.severity, self.pass, span, self.message),
+            Some(span) => write!(
+                f,
+                "{}[{}] at {}: {}",
+                self.severity, self.pass, span, self.message
+            ),
             None => write!(f, "{}[{}]: {}", self.severity, self.pass, self.message),
         }
     }
@@ -124,5 +135,9 @@ impl std::error::Error for Diagnostic {}
 
 /// Renders a list of diagnostics one per line, for a panic message or a CLI.
 pub fn render(diags: &[Diagnostic]) -> String {
-    diags.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")
+    diags
+        .iter()
+        .map(|d| d.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
 }

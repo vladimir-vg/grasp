@@ -29,7 +29,11 @@ fn the_mapping_example_compiles() {
     if let Err(diags) = grasp_dbsp_runner::compile(block.trim_start_matches('\n')) {
         panic!(
             "the worked example in docs/grasp/mapping.md does not compile: {}",
-            diags.iter().map(|d| d.message.as_str()).collect::<Vec<_>>().join("; ")
+            diags
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; ")
         );
     }
 }

@@ -23,7 +23,10 @@ pub(super) fn expand(
 
     for (label, _) in &inst.args {
         if !def.params.iter().any(|(l, _)| l == label) {
-            return err(inst.span, format!("`{}` has no parameter `{label}`", inst.circuit));
+            return err(
+                inst.span,
+                format!("`{}` has no parameter `{label}`", inst.circuit),
+            );
         }
     }
 
@@ -35,9 +38,20 @@ pub(super) fn expand(
     let mut scope = Scope::new();
     for (label, internal) in &def.params {
         let Some((_, arg)) = inst.args.iter().find(|(l, _)| l == label) else {
-            return err(inst.span, format!("missing argument `{label}` for `{}`", inst.circuit));
+            return err(
+                inst.span,
+                format!("missing argument `{label}` for `{}`", inst.circuit),
+            );
         };
-        let resolved = resolve_arg(arg, plan, Env { specs: &Specs::new(), scope: env.scope, ..env })?;
+        let resolved = resolve_arg(
+            arg,
+            plan,
+            Env {
+                specs: &Specs::new(),
+                scope: env.scope,
+                ..env
+            },
+        )?;
         let idx = match resolved {
             RArg::Stream(i) => i,
             // `empty()` takes the type of the body node this parameter feeds,
@@ -53,7 +67,13 @@ pub(super) fn expand(
                         ),
                     );
                 };
-                push_node(plan, format!("empty@{espan}"), (*ty).clone(), PlanOp::Empty, espan)
+                push_node(
+                    plan,
+                    format!("empty@{espan}"),
+                    (*ty).clone(),
+                    PlanOp::Empty,
+                    espan,
+                )
             }
             RArg::Name(n) => return err(inst.span, format!("unknown stream `{n}`")),
             _ => return err(inst.span, format!("argument `{label}` must be a stream")),
@@ -64,7 +84,18 @@ pub(super) fn expand(
     for i in topo_order(&group.nodes)? {
         let (bname, rhs, bspan) = group.nodes[i];
         let mangled = format!("{instance}.{bname}");
-        check_decl(&mangled, rhs, bspan, plan, Env { specs: &group.specs, scope: &scope, prefix: instance, ..env })?;
+        check_decl(
+            &mangled,
+            rhs,
+            bspan,
+            plan,
+            Env {
+                specs: &group.specs,
+                scope: &scope,
+                prefix: instance,
+                ..env
+            },
+        )?;
         // Only bind a body-local shorthand when a node was actually registered
         // under that name. A nested instantiation registers a *namespace*, so
         // there is nothing to bind and its members are reached by their path.
@@ -157,12 +188,18 @@ pub(super) fn check_fixpoint(
     };
     for (label, _) in &inst.args {
         if !def.params.iter().any(|(l, _)| l == label) {
-            return err(inst.span, format!("`{}` has no parameter `{label}`", inst.circuit));
+            return err(
+                inst.span,
+                format!("`{}` has no parameter `{label}`", inst.circuit),
+            );
         }
     }
     let group = collect(&def.body)?;
 
-    let mut sub = Plan { nodes: Vec::new(), by_name: HashMap::new() };
+    let mut sub = Plan {
+        nodes: Vec::new(),
+        by_name: HashMap::new(),
+    };
     let mut scope = Scope::new();
     let mut recs: Vec<(String, BatchType)> = Vec::new();
 
@@ -175,7 +212,10 @@ pub(super) fn check_fixpoint(
     let mut known: HashMap<String, BatchType> = HashMap::new();
     for (label, internal) in &def.params {
         let Some((_, arg)) = inst.args.iter().find(|(l, _)| l == label) else {
-            return err(inst.span, format!("missing argument `{label}` for `{}`", inst.circuit));
+            return err(
+                inst.span,
+                format!("missing argument `{label}` for `{}`", inst.circuit),
+            );
         };
         if recursive(label) {
             if !matches!(arg, Arg::Op(c) if c.op == "empty") {
@@ -189,7 +229,15 @@ pub(super) fn check_fixpoint(
             }
             continue;
         }
-        let idx = match resolve_arg(arg, plan, Env { specs: &Specs::new(), scope: env.scope, ..env })? {
+        let idx = match resolve_arg(
+            arg,
+            plan,
+            Env {
+                specs: &Specs::new(),
+                scope: env.scope,
+                ..env
+            },
+        )? {
             RArg::Stream(i) => i,
             RArg::Name(n) => return err(inst.span, format!("unknown stream `{n}`")),
             _ => return err(inst.span, format!("argument `{label}` must be a stream")),
@@ -282,7 +330,13 @@ pub(super) fn check_fixpoint(
             rhs,
             bspan,
             &mut sub,
-            Env { specs: &group.specs, scope: &scope, prefix: "", in_fixpoint: true, ..env },
+            Env {
+                specs: &group.specs,
+                scope: &scope,
+                prefix: "",
+                in_fixpoint: true,
+                ..env
+            },
         )?;
         if let Some(idx) = sub.by_name.get(bname.as_str()).copied() {
             scope.insert(bname.clone(), idx);
@@ -294,7 +348,10 @@ pub(super) fn check_fixpoint(
     plan.nodes.push(PlanNode {
         name: instance.to_string(),
         ty: first,
-        op: PlanOp::Fixpoint { body: sub.nodes, outputs },
+        op: PlanOp::Fixpoint {
+            body: sub.nodes,
+            outputs,
+        },
         span: inst.span,
     });
     let fixpoint = plan.nodes.len() - 1;

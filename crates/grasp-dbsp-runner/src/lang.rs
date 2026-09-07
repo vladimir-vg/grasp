@@ -21,7 +21,11 @@ pub enum Decl {
     /// `name := <rhs>`
     Node { name: String, rhs: Rhs, span: Span },
     /// `name :: batch_type`
-    TypeSpec { name: String, ty: BatchType, span: Span },
+    TypeSpec {
+        name: String,
+        ty: BatchType,
+        span: Span,
+    },
     /// `circuit name(label: internal, ...) { ... }`
     Circuit(CircuitDef),
     /// `function name(a, b) { return expr }`
@@ -215,8 +219,18 @@ fn parse_error<T>(span: Span, message: impl Into<String>) -> PResult<T> {
 
 /// Type constructors and namespaces.
 const TYPE_NAMES: &[&str] = &[
-    "bool", "i64", "f64", "string", "json", "optional", "record", "array", "dict", "sql",
-    "zset", "indexed_zset",
+    "bool",
+    "i64",
+    "f64",
+    "string",
+    "json",
+    "optional",
+    "record",
+    "array",
+    "dict",
+    "sql",
+    "zset",
+    "indexed_zset",
 ];
 
 /// Literals and keywords. `if` is not here: it is a builtin, so it is reserved
@@ -284,7 +298,12 @@ struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     fn new(src: &'a str) -> Self {
-        Lexer { src: src.as_bytes(), pos: 0, line: 1, line_start: 0 }
+        Lexer {
+            src: src.as_bytes(),
+            pos: 0,
+            line: 1,
+            line_start: 0,
+        }
     }
 
     /// 1-based column of the current position.
@@ -428,7 +447,7 @@ impl<'a> Lexer<'a> {
                             return self.err(format!(
                                 "unknown escape \\{}",
                                 other.map(|c| c as char).unwrap_or('?')
-                            ))
+                            ));
                         }
                     };
                     out.push(esc);
@@ -451,7 +470,10 @@ impl<'a> Lexer<'a> {
         // A `.` only starts a fraction when a digit follows, so `x.0` on a tuple
         // and `1.5` do not collide.
         if self.peek_byte() == Some(b'.')
-            && self.src.get(self.pos + 1).is_some_and(|c| c.is_ascii_digit())
+            && self
+                .src
+                .get(self.pos + 1)
+                .is_some_and(|c| c.is_ascii_digit())
         {
             is_float = true;
             self.pos += 1;
@@ -488,7 +510,12 @@ pub fn parse(src: &str) -> PResult<Program> {
         }
     }
     let start = toks[0].1;
-    Parser { toks, pos: 0, prev: start }.program()
+    Parser {
+        toks,
+        pos: 0,
+        prev: start,
+    }
+    .program()
 }
 
 struct Parser {
@@ -525,7 +552,10 @@ impl Parser {
     /// Builds an expression spanning from `start` through the last token
     /// consumed.
     fn mk(&self, start: Span, kind: ExprKind) -> Expr {
-        Expr { kind, span: start.to(self.prev) }
+        Expr {
+            kind,
+            span: start.to(self.prev),
+        }
     }
 
     fn err<T>(&self, msg: impl Into<String>) -> PResult<T> {
@@ -555,7 +585,10 @@ impl Parser {
                 self.bump();
                 Ok(name)
             }
-            other => self.err(format!("expected an identifier, found {}", describe(&other))),
+            other => self.err(format!(
+                "expected an identifier, found {}",
+                describe(&other)
+            )),
         }
     }
 
@@ -618,7 +651,10 @@ impl Parser {
         self.bump(); // `circuit`
         let name = self.ident()?;
         if is_reserved(&name) {
-            return parse_error(span, format!("`{name}` is a reserved word and cannot name a circuit"));
+            return parse_error(
+                span,
+                format!("`{name}` is a reserved word and cannot name a circuit"),
+            );
         }
         self.expect(&Tok::LParen, "`(` after a circuit name")?;
         let mut params: Vec<(String, String)> = Vec::new();
@@ -626,7 +662,10 @@ impl Parser {
             loop {
                 let pspan = self.span();
                 let label = self.ident()?;
-                self.expect(&Tok::Colon, "`:` between a parameter's label and its internal name")?;
+                self.expect(
+                    &Tok::Colon,
+                    "`:` between a parameter's label and its internal name",
+                )?;
                 let internal = self.ident()?;
                 if is_reserved(&internal) {
                     return parse_error(
@@ -664,7 +703,12 @@ impl Parser {
                 }
             }
         }
-        Ok(CircuitDef { name, params, body, span })
+        Ok(CircuitDef {
+            name,
+            params,
+            body,
+            span,
+        })
     }
 
     /// Distinguishes the four right-hand sides by lookahead.
@@ -686,9 +730,7 @@ impl Parser {
             }
             (Tok::Ident(_), Tok::LParen) => Ok(Rhs::Op(self.op_call()?)),
             (Tok::Ident(_), _) => Ok(Rhs::Ref(self.node_ref()?)),
-            (other, _) => {
-                self.err(format!("expected a definition, found {}", describe(other)))
-            }
+            (other, _) => self.err(format!("expected a definition, found {}", describe(other))),
         }
     }
 
@@ -713,7 +755,11 @@ impl Parser {
                 break;
             }
         }
-        Ok(Instantiation { circuit, args, span })
+        Ok(Instantiation {
+            circuit,
+            args,
+            span,
+        })
     }
 
     fn node_ref(&mut self) -> PResult<NodeRef> {
@@ -794,7 +840,12 @@ impl Parser {
         self.bump();
         let body = self.expr()?;
         self.expect(&Tok::RBrace, "`}` closing a function body")?;
-        Ok(FunctionDef { name, params, body, span })
+        Ok(FunctionDef {
+            name,
+            params,
+            body,
+            span,
+        })
     }
 
     /// `(a, b, c)` — the parameter names, which carry no types.
@@ -905,7 +956,8 @@ impl Parser {
                     // There is one null, so a doubly-nullable type has no
                     // values the singly-nullable one lacks. Rejecting it beats
                     // silently flattening it.
-                    return self.err("`optional(optional(T))` is not a distinct type; use `optional(T)`");
+                    return self
+                        .err("`optional(optional(T))` is not a distinct type; use `optional(T)`");
                 }
                 Ok(TypeDesc::Optional(Box::new(inner)))
             }
@@ -951,7 +1003,10 @@ impl Parser {
             // All binary operators here are left-associative.
             let rhs = self.binary(prec + 1)?;
             let span = lhs.span.to(rhs.span);
-            lhs = Expr { kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)), span };
+            lhs = Expr {
+                kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)),
+                span,
+            };
         }
         Ok(lhs)
     }
@@ -995,7 +1050,10 @@ impl Parser {
             // The span covers the whole access, so `r.nope` is reported rather
             // than just the field name.
             let span = e.span.to(self.prev);
-            e = Expr { kind: ExprKind::Field(Box::new(e), name), span };
+            e = Expr {
+                kind: ExprKind::Field(Box::new(e), name),
+                span,
+            };
         }
         Ok(e)
     }
@@ -1064,7 +1122,10 @@ impl Parser {
                 )
             }
             Tok::Ident(word) => self.ident_expr(word, start),
-            other => self.err(format!("expected an expression, found {}", describe(&other))),
+            other => self.err(format!(
+                "expected an expression, found {}",
+                describe(&other)
+            )),
         }
     }
 

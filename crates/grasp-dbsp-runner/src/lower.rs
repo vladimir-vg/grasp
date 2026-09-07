@@ -10,14 +10,14 @@ use crate::diag::{Diagnostic, Pass};
 use crate::expr::{eval, is_true};
 use crate::typecheck::{Agg, Plan, PlanOp};
 use crate::value::{Acc, BatchType, DynValue, FpAcc, FpAccSemigroup};
+use dbsp::Circuit;
 use dbsp::algebra::F64;
 use dbsp::algebra::{AddAssignByRef, HasZero, Semigroup};
 use dbsp::dynamic::{DataTrait, DynUnit, Erase, WeightTrait};
 use dbsp::operator::{Aggregator, Fold, Generator, Max};
-use dbsp::Circuit;
 use dbsp::{
-    DBSPHandle, NestedCircuit, IndexedZSetReader, OrdIndexedZSet, OrdZSet, OutputHandle, RootCircuit, Runtime,
-    Stream, ZSetHandle, ZWeight,
+    DBSPHandle, IndexedZSetReader, NestedCircuit, OrdIndexedZSet, OrdZSet, OutputHandle,
+    RootCircuit, Runtime, Stream, ZSetHandle, ZWeight,
 };
 use std::collections::HashMap;
 use std::fmt;
@@ -236,7 +236,10 @@ impl Runner {
         // still be observed.
         let ids = crate::typecheck::content_ids(plan);
         let index_of = |name: &String| -> Option<usize> {
-            plan.by_name.get(name).copied().or_else(|| ids.iter().position(|i| i == name))
+            plan.by_name
+                .get(name)
+                .copied()
+                .or_else(|| ids.iter().position(|i| i == name))
         };
         let mut wanted: Vec<(String, usize)> = Vec::with_capacity(outputs.len());
         for name in outputs {
@@ -293,7 +296,11 @@ impl Runner {
             // in `Error::Constructor`, so a Diagnostic raised inside the
             // constructor round-trips out through two layers.
             let fallback = |e: &dyn fmt::Display| {
-                vec![Diagnostic::error(Pass::Lower, None, format!("building the circuit: {e}"))]
+                vec![Diagnostic::error(
+                    Pass::Lower,
+                    None,
+                    format!("building the circuit: {e}"),
+                )]
             };
             match e {
                 dbsp::Error::Constructor(any) => match any.downcast::<Diagnostic>() {
@@ -304,7 +311,11 @@ impl Runner {
             }
         })?;
 
-        Ok(Runner { dbsp, inputs: inputs.into_iter().collect(), outputs: outs })
+        Ok(Runner {
+            dbsp,
+            inputs: inputs.into_iter().collect(),
+            outputs: outs,
+        })
     }
 
     /// Queues a change to an input table. Applied at the next [`Self::step`].
@@ -332,12 +343,20 @@ impl Runner {
                 Out::Flat(h) => h
                     .consolidate()
                     .iter()
-                    .map(|(k, (), w)| Delta { key: k, value: None, weight: w })
+                    .map(|(k, (), w)| Delta {
+                        key: k,
+                        value: None,
+                        weight: w,
+                    })
                     .collect(),
                 Out::Indexed(h) => h
                     .consolidate()
                     .iter()
-                    .map(|(k, v, w)| Delta { key: k, value: Some(v), weight: w })
+                    .map(|(k, v, w)| Delta {
+                        key: k,
+                        value: Some(v),
+                        weight: w,
+                    })
                     .collect(),
             };
             out.push((name.clone(), deltas));
@@ -661,12 +680,12 @@ fn build_root(
         // is what makes this expressible; the erased batch types have no zero
         // without factories.
         PlanOp::Empty => match &node.ty {
-            BatchType::ZSet(_) => Node::Flat(
-                circuit.add_source(Generator::new(dbsp::algebra::HasZero::zero)),
-            ),
-            BatchType::IndexedZSet(..) => Node::Indexed(
-                circuit.add_source(Generator::new(dbsp::algebra::HasZero::zero)),
-            ),
+            BatchType::ZSet(_) => {
+                Node::Flat(circuit.add_source(Generator::new(dbsp::algebra::HasZero::zero)))
+            }
+            BatchType::IndexedZSet(..) => {
+                Node::Indexed(circuit.add_source(Generator::new(dbsp::algebra::HasZero::zero)))
+            }
         },
 
         PlanOp::Input { table } => {
@@ -721,7 +740,11 @@ fn build_body(
         // Every stream created inside a recursive scope needs a persistent id,
         // or taking a checkpoint fails with `NoPersistentId`. A `RecVar` was
         // already named by the caller, before anything was built from it.
-        nodes.push(if matches!(bn.op, PlanOp::RecVar { .. }) { built } else { built.named(&ids[i]) });
+        nodes.push(if matches!(bn.op, PlanOp::RecVar { .. }) {
+            built
+        } else {
+            built.named(&ids[i])
+        });
     }
     Ok(nodes)
 }

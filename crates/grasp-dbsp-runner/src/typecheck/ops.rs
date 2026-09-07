@@ -1,8 +1,8 @@
 //! Checking one operator call, and resolving its arguments to nodes.
 
 use super::infer::{check_fun, is_numeric, optional};
-use super::{Env, Functions, TResult, err, lookup, push_node};
 use super::plan::{Agg, KeyValue, Plan, PlanOp};
+use super::{Env, Functions, TResult, err, lookup, push_node};
 use crate::diag::Span;
 use crate::lang::{Arg, Expr, FunLit, OpCall};
 use crate::value::{BatchType, TypeDesc};
@@ -23,22 +23,21 @@ pub(super) enum RArg<'a> {
     Fun(&'a FunLit),
 }
 
-
 /// Resolves one argument, checking and pushing a node for a nested call.
 ///
 /// Recursion is depth-first and pushes before returning, so a nested node
 /// always lands at a lower index than the node using it — which is what
 /// `lower.rs` needs, since it builds `plan.nodes` in order.
-pub(super) fn resolve_arg<'a>(
-    arg: &'a Arg,
-    plan: &mut Plan,
-    env: Env<'_>,
-) -> TResult<RArg<'a>> {
+pub(super) fn resolve_arg<'a>(arg: &'a Arg, plan: &mut Plan, env: Env<'_>) -> TResult<RArg<'a>> {
     Ok(match arg {
         Arg::Str(_) => RArg::Str,
         Arg::Fun(f) => RArg::Fun(f),
         Arg::Field(r) => RArg::Stream(lookup(r, plan, env.scope, env.prefix)?),
-        Arg::Name(n) => match env.scope.get(n.as_str()).or_else(|| plan.by_name.get(n.as_str())) {
+        Arg::Name(n) => match env
+            .scope
+            .get(n.as_str())
+            .or_else(|| plan.by_name.get(n.as_str()))
+        {
             Some(i) => RArg::Stream(*i),
             // Not a node: an aggregator name, or an error the caller reports
             // with the context to say what was expected.
@@ -46,7 +45,10 @@ pub(super) fn resolve_arg<'a>(
         },
         Arg::Op(call) if call.op == "empty" => {
             if !call.args.is_empty() {
-                return err(call.span, "`empty()` takes no arguments; its type comes from where it is used");
+                return err(
+                    call.span,
+                    "`empty()` takes no arguments; its type comes from where it is used",
+                );
             }
             RArg::Empty(call.span)
         }
@@ -124,7 +126,10 @@ impl<'a> Ctx<'a> {
             Ok(())
         } else {
             let (op, found) = (self.op, self.args.len());
-            err(self.span, format!("`{op}` takes {n} argument(s), found {found}"))
+            err(
+                self.span,
+                format!("`{op}` takes {n} argument(s), found {found}"),
+            )
         }
     }
 
@@ -141,17 +146,26 @@ impl<'a> Ctx<'a> {
                      `plus`, `minus` or `sum`."
                 ),
             ),
-            _ => err(span, format!("argument {} of `{op}` must name a stream", i + 1)),
+            _ => err(
+                span,
+                format!("argument {} of `{op}` must name a stream", i + 1),
+            ),
         }
     }
 
     fn fun_arg(&self, i: usize) -> TResult<FnArg<'a>> {
         let (op, span) = (self.op, self.span);
         match &self.rargs[i] {
-            RArg::Fun(f) => Ok(FnArg { params: &f.params, body: &f.body }),
+            RArg::Fun(f) => Ok(FnArg {
+                params: &f.params,
+                body: &f.body,
+            }),
             // A bare name that is not a stream may still be a function.
             RArg::Name(n) => match self.funcs.get(n) {
-                Some(def) => Ok(FnArg { params: &def.params, body: &def.body }),
+                Some(def) => Ok(FnArg {
+                    params: &def.params,
+                    body: &def.body,
+                }),
                 None => err(span, format!("unknown stream or function `{n}`")),
             },
             _ => err(
@@ -187,7 +201,10 @@ impl<'a> Ctx<'a> {
             BatchType::ZSet(t) => Ok((i, t.clone())),
             other => err(
                 self.span,
-                format!("`{}` is `{other}`, but a flat zset is required here", node.name),
+                format!(
+                    "`{}` is `{other}`, but a flat zset is required here",
+                    node.name
+                ),
             ),
         }
     }
@@ -198,7 +215,10 @@ impl<'a> Ctx<'a> {
             BatchType::IndexedZSet(k, v) => Ok((i, k.clone(), v.clone())),
             other => err(
                 self.span,
-                format!("`{}` is `{other}`, but an indexed_zset is required here", node.name),
+                format!(
+                    "`{}` is `{other}`, but an indexed_zset is required here",
+                    node.name
+                ),
             ),
         }
     }
@@ -211,9 +231,8 @@ impl<'a> Ctx<'a> {
 /// namespace. They are matched by name, so the order they are written in does
 /// not matter, and the two indices travel to the lowering in a [`KeyValue`].
 fn key_value(ty: &TypeDesc, op: &str, span: Span) -> TResult<(KeyValue, TypeDesc, TypeDesc)> {
-    let wanted = format!(
-        "`{op}`'s function must return `record(key: ..., value: ...)`, found `{ty}`"
-    );
+    let wanted =
+        format!("`{op}`'s function must return `record(key: ..., value: ...)`, found `{ty}`");
     let TypeDesc::Record(fields) = ty else {
         return err(span, wanted);
     };
@@ -234,7 +253,11 @@ fn key_value(ty: &TypeDesc, op: &str, span: Span) -> TResult<(KeyValue, TypeDesc
             ),
         );
     }
-    Ok((KeyValue { key, value }, fields[key].1.clone(), fields[value].1.clone()))
+    Ok((
+        KeyValue { key, value },
+        fields[key].1.clone(),
+        fields[value].1.clone(),
+    ))
 }
 
 /// Checks one operator call.
@@ -258,8 +281,14 @@ pub(super) fn check_op(
     for a in &call.args {
         rargs.push(resolve_arg(a, plan, env)?);
     }
-    let cx =
-        Ctx { op, span, args: &call.args, rargs, funcs: env.funcs, expected: env.specs.get(name).map(|(t, _)| *t) };
+    let cx = Ctx {
+        op,
+        span,
+        args: &call.args,
+        rargs,
+        funcs: env.funcs,
+        expected: env.specs.get(name).map(|(t, _)| *t),
+    };
 
     if let Some(r) = check_source(name, &cx, env)? {
         return Ok(r);
@@ -290,20 +319,26 @@ fn check_source(name: &str, cx: &Ctx<'_>, env: Env<'_>) -> TResult<Option<(Batch
                 return err(span, "`input` takes a table name in quotes");
             };
             let Some((spec, _)) = env.specs.get(name) else {
-                return err(span, format!("`{name}` is an input and needs a `::` typespec"));
+                return err(
+                    span,
+                    format!("`{name}` is an input and needs a `::` typespec"),
+                );
             };
             match spec {
                 BatchType::ZSet(TypeDesc::Record(_)) => {}
                 other => {
                     return err(
                         span,
-                        format!(
-                            "an input must be `zset(record(...))`, found `{other}`"
-                        ),
+                        format!("an input must be `zset(record(...))`, found `{other}`"),
                     );
                 }
             }
-            Ok(((*spec).clone(), PlanOp::Input { table: table.clone() }))
+            Ok((
+                (*spec).clone(),
+                PlanOp::Input {
+                    table: table.clone(),
+                },
+            ))
         }
 
         // Reached only for a standalone `x := empty()`; as an argument it is
@@ -340,19 +375,32 @@ fn check_source(name: &str, cx: &Ctx<'_>, env: Env<'_>) -> TResult<Option<(Batch
 fn check_map_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, PlanOp)>> {
     let (op, span) = (cx.op, cx.span);
     let out = match op {
-
         "map" => {
             cx.want(2)?;
             let input = cx.stream(cx.stream_arg(0)?)?;
             let params = cx.element(plan, input);
             let (f, out) = {
                 let f = cx.fun_arg(1)?;
-                check_fun(f.params, f.body, &params, span, "the body of `map`", cx.funcs, cx.want_row())?
+                check_fun(
+                    f.params,
+                    f.body,
+                    &params,
+                    span,
+                    "the body of `map`",
+                    cx.funcs,
+                    cx.want_row(),
+                )?
             };
             // Flattening: an indexed stream mapped row-at-a-time produces a
             // plain zset, which is the only way out of an indexed shape other
             // than a join.
-            Ok((BatchType::ZSet(out), PlanOp::Map { input, f: Arc::new(f) }))
+            Ok((
+                BatchType::ZSet(out),
+                PlanOp::Map {
+                    input,
+                    f: Arc::new(f),
+                },
+            ))
         }
 
         "filter" => {
@@ -361,12 +409,29 @@ fn check_map_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pla
             let params = cx.element(plan, input);
             let (f, out) = {
                 let f = cx.fun_arg(1)?;
-                check_fun(f.params, f.body, &params, span, "the body of `filter`", cx.funcs, Option::None)?
+                check_fun(
+                    f.params,
+                    f.body,
+                    &params,
+                    span,
+                    "the body of `filter`",
+                    cx.funcs,
+                    Option::None,
+                )?
             };
             if out.non_null() != &TypeDesc::Bool {
-                return err(span, format!("`filter`'s function must return bool, found `{out}`"));
+                return err(
+                    span,
+                    format!("`filter`'s function must return bool, found `{out}`"),
+                );
             }
-            Ok((plan.nodes[input].ty.clone(), PlanOp::Filter { input, f: Arc::new(f) }))
+            Ok((
+                plan.nodes[input].ty.clone(),
+                PlanOp::Filter {
+                    input,
+                    f: Arc::new(f),
+                },
+            ))
         }
 
         "flat_map" => {
@@ -376,7 +441,15 @@ fn check_map_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pla
             let want = cx.want_row().map(|t| TypeDesc::Array(Box::new(t.clone())));
             let (f, out) = {
                 let f = cx.fun_arg(1)?;
-                check_fun(f.params, f.body, &params, span, "the body of `flat_map`", cx.funcs, want.as_ref())?
+                check_fun(
+                    f.params,
+                    f.body,
+                    &params,
+                    span,
+                    "the body of `flat_map`",
+                    cx.funcs,
+                    want.as_ref(),
+                )?
             };
             // One row per element, so the fan-out follows the data.
             let TypeDesc::Array(row) = out else {
@@ -385,7 +458,13 @@ fn check_map_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pla
                     format!("`flat_map`'s function must return an array of rows, found `{out}`"),
                 );
             };
-            Ok((BatchType::ZSet(*row), PlanOp::FlatMap { input, f: Arc::new(f) }))
+            Ok((
+                BatchType::ZSet(*row),
+                PlanOp::FlatMap {
+                    input,
+                    f: Arc::new(f),
+                },
+            ))
         }
 
         "flat_map_index" => {
@@ -396,7 +475,12 @@ fn check_map_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pla
             let (f, out) = {
                 let f = cx.fun_arg(1)?;
                 check_fun(
-                    f.params, f.body, &params, span, "the body of `flat_map_index`", cx.funcs,
+                    f.params,
+                    f.body,
+                    &params,
+                    span,
+                    "the body of `flat_map_index`",
+                    cx.funcs,
                     want.as_ref(),
                 )?
             };
@@ -410,7 +494,14 @@ fn check_map_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pla
                 );
             };
             let (kv, kt, vt) = key_value(&row, op, span)?;
-            Ok((BatchType::IndexedZSet(kt, vt), PlanOp::FlatMapIndex { input, f: Arc::new(f), kv }))
+            Ok((
+                BatchType::IndexedZSet(kt, vt),
+                PlanOp::FlatMapIndex {
+                    input,
+                    f: Arc::new(f),
+                    kv,
+                },
+            ))
         }
 
         "map_index" => {
@@ -420,12 +511,24 @@ fn check_map_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pla
             let want = cx.want_kv();
             let (f, out) = {
                 let f = cx.fun_arg(1)?;
-                check_fun(f.params, f.body, &params, span, "the body of `map_index`", cx.funcs, want.as_ref())?
+                check_fun(
+                    f.params,
+                    f.body,
+                    &params,
+                    span,
+                    "the body of `map_index`",
+                    cx.funcs,
+                    want.as_ref(),
+                )?
             };
             let (kv, kt, vt) = key_value(&out, op, span)?;
             Ok((
                 BatchType::IndexedZSet(kt, vt),
-                PlanOp::MapIndex { input, f: Arc::new(f), kv },
+                PlanOp::MapIndex {
+                    input,
+                    f: Arc::new(f),
+                    kv,
+                },
             ))
         }
 
@@ -438,7 +541,6 @@ fn check_map_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pla
 fn check_join_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, PlanOp)>> {
     let (op, span) = (cx.op, cx.span);
     let out = match op {
-
         "join" => {
             cx.want(3)?;
             let (left, k1, v1) = cx.indexed(plan, cx.stream_arg(0)?)?;
@@ -449,12 +551,26 @@ fn check_join_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pl
                     format!("`join` needs equal key types, found `{k1}` and `{k2}`"),
                 );
             }
-            let (f, out) =
-                {
+            let (f, out) = {
                 let f = cx.fun_arg(2)?;
-                check_fun(f.params, f.body, &[k1, v1, v2], span, "the body of `join`", cx.funcs, cx.want_row())?
+                check_fun(
+                    f.params,
+                    f.body,
+                    &[k1, v1, v2],
+                    span,
+                    "the body of `join`",
+                    cx.funcs,
+                    cx.want_row(),
+                )?
             };
-            Ok((BatchType::ZSet(out), PlanOp::Join { left, right, f: Arc::new(f) }))
+            Ok((
+                BatchType::ZSet(out),
+                PlanOp::Join {
+                    left,
+                    right,
+                    f: Arc::new(f),
+                },
+            ))
         }
 
         "join_index" => {
@@ -468,18 +584,27 @@ fn check_join_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pl
                 );
             }
             let want = cx.want_kv();
-            let (f, out) =
-                {
+            let (f, out) = {
                 let f = cx.fun_arg(2)?;
                 check_fun(
-                    f.params, f.body, &[k1, v1, v2], span, "the body of `join_index`", cx.funcs,
+                    f.params,
+                    f.body,
+                    &[k1, v1, v2],
+                    span,
+                    "the body of `join_index`",
+                    cx.funcs,
                     want.as_ref(),
                 )?
             };
             let (kv, kt, vt) = key_value(&out, op, span)?;
             Ok((
                 BatchType::IndexedZSet(kt, vt),
-                PlanOp::JoinIndex { left, right, f: Arc::new(f), kv },
+                PlanOp::JoinIndex {
+                    left,
+                    right,
+                    f: Arc::new(f),
+                    kv,
+                },
             ))
         }
 
@@ -493,7 +618,10 @@ fn check_join_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pl
                     format!("`antijoin` needs equal key types, found `{k1}` and `{k2}`"),
                 );
             }
-            Ok((BatchType::IndexedZSet(k1, v1), PlanOp::Antijoin { left, right }))
+            Ok((
+                BatchType::IndexedZSet(k1, v1),
+                PlanOp::Antijoin { left, right },
+            ))
         }
 
         _ => return Ok(None),
@@ -505,12 +633,14 @@ fn check_join_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pl
 fn check_aggregate(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, PlanOp)>> {
     let (op, span) = (cx.op, cx.span);
     let out = match op {
-
         "aggregate" => {
             cx.want(3)?;
             let (input, k, v) = cx.indexed(plan, cx.stream_arg(0)?)?;
             let Arg::Name(agg_name) = &cx.args[1] else {
-                return err(span, "`aggregate`'s second argument must be an aggregator name");
+                return err(
+                    span,
+                    "`aggregate`'s second argument must be an aggregator name",
+                );
             };
             let agg = match agg_name.as_str() {
                 "min" => Agg::Min,
@@ -530,7 +660,15 @@ fn check_aggregate(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Plan
             };
             let (f, out) = {
                 let f = cx.fun_arg(2)?;
-                check_fun(f.params, f.body, &[v], span, "the body of `aggregate`", cx.funcs, Option::None)?
+                check_fun(
+                    f.params,
+                    f.body,
+                    &[v],
+                    span,
+                    "the body of `aggregate`",
+                    cx.funcs,
+                    Option::None,
+                )?
             };
             let optional_in = out.is_optional();
 
@@ -579,7 +717,12 @@ fn check_aggregate(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Plan
             };
             Ok((
                 BatchType::IndexedZSet(k, result),
-                PlanOp::Aggregate { input, agg, f: Arc::new(f), projection: out },
+                PlanOp::Aggregate {
+                    input,
+                    agg,
+                    f: Arc::new(f),
+                    projection: out,
+                },
             ))
         }
 
@@ -604,7 +747,6 @@ fn check_aggregate(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Plan
 fn check_algebraic(cx: &Ctx<'_>, plan: &mut Plan) -> TResult<Option<(BatchType, PlanOp)>> {
     let (op, span) = (cx.op, cx.span);
     let out = match op {
-
         "integrate" | "differentiate" | "delay" => {
             cx.want(1)?;
             let input = cx.stream(cx.stream_arg(0)?)?;
@@ -696,9 +838,13 @@ pub(super) fn materialize(
 ) -> TResult<usize> {
     match a {
         RArg::Stream(i) => Ok(*i),
-        RArg::Empty(espan) => {
-            Ok(push_node(plan, format!("empty@{espan}"), want.clone(), PlanOp::Empty, *espan))
-        }
+        RArg::Empty(espan) => Ok(push_node(
+            plan,
+            format!("empty@{espan}"),
+            want.clone(),
+            PlanOp::Empty,
+            *espan,
+        )),
         RArg::Name(n) => err(span, format!("unknown stream `{n}`")),
         _ => err(span, format!("an argument of `{op}` must name a stream")),
     }
@@ -716,7 +862,10 @@ pub(super) fn resolve_pair(
         _ => None,
     });
     let Some(ty) = typed else {
-        return err(span, format!("`{op}` needs at least one operand with a known type"));
+        return err(
+            span,
+            format!("`{op}` needs at least one operand with a known type"),
+        );
     };
     let l = materialize(&rargs[0], &ty, plan, span, op)?;
     let r = materialize(&rargs[1], &ty, plan, span, op)?;

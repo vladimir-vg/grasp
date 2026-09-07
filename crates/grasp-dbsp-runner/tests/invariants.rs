@@ -99,7 +99,11 @@ fn signed_zero_hashes_consistently() {
     let pos = DynValue::F64(dbsp::algebra::F64::new(0.0));
     let neg = DynValue::F64(dbsp::algebra::F64::new(-0.0));
     if pos == neg {
-        assert_eq!(hash_of(&pos), hash_of(&neg), "0.0 and -0.0 compare equal but hash differently");
+        assert_eq!(
+            hash_of(&pos),
+            hash_of(&neg),
+            "0.0 and -0.0 compare equal but hash differently"
+        );
     }
 }
 
@@ -123,8 +127,9 @@ fn archived_round_trip_preserves_values() {
         // `from_bytes` would require the archived type to derive `CheckBytes`,
         // which it does not; `dbsp` reads batches through the unchecked path too.
         let archived = unsafe { rkyv::archived_root::<DynValue>(&bytes) };
-        let back: DynValue =
-            archived.deserialize(&mut rkyv::Infallible).expect("deserialize");
+        let back: DynValue = archived
+            .deserialize(&mut rkyv::Infallible)
+            .expect("deserialize");
         assert_eq!(v, back);
     }
 }
@@ -187,7 +192,11 @@ fn any_type() -> impl Strategy<Value = TypeDesc> {
         ];
         prop_oneof![
             prop::collection::vec(field, 1..4).prop_map(|ts| {
-                TypeDesc::record(ts.into_iter().enumerate().map(|(i, t)| (format!("f{i}"), t)))
+                TypeDesc::record(
+                    ts.into_iter()
+                        .enumerate()
+                        .map(|(i, t)| (format!("f{i}"), t)),
+                )
             }),
             inner2.clone().prop_map(|t| TypeDesc::Array(Box::new(t))),
             // Keys are scalars, which is what `TypeDesc::is_dict_key` admits and
@@ -239,9 +248,7 @@ fn value_of(ty: TypeDesc) -> BoxedStrategy<DynValue> {
         TypeDesc::Dict(k, v) => prop::collection::vec((value_of(*k), value_of(*v)), 0..4)
             .prop_map(|kvs| DynValue::Dict(kvs.into_iter().collect()))
             .boxed(),
-        TypeDesc::Optional(inner) => {
-            prop_oneof![Just(DynValue::None), value_of(*inner)].boxed()
-        }
+        TypeDesc::Optional(inner) => prop_oneof![Just(DynValue::None), value_of(*inner)].boxed(),
         TypeDesc::Record(fields) => fields
             .into_iter()
             .map(|(_, t)| value_of(t))
@@ -280,9 +287,16 @@ proptest! {
 /// read back.
 #[test]
 fn a_value_that_contradicts_its_type_is_refused() {
-    assert!(encode_value(&DynValue::None, &TypeDesc::I64).is_err(), "NONE in a definite column");
     assert!(
-        encode_value(&DynValue::None, &TypeDesc::Optional(Box::new(TypeDesc::I64))).is_ok(),
+        encode_value(&DynValue::None, &TypeDesc::I64).is_err(),
+        "NONE in a definite column"
+    );
+    assert!(
+        encode_value(
+            &DynValue::None,
+            &TypeDesc::Optional(Box::new(TypeDesc::I64))
+        )
+        .is_ok(),
         "NONE is fine where the type allows it"
     );
 }
@@ -336,7 +350,10 @@ fn an_explicit_null_in_a_json_column_is_a_value() {
     let ty = record_type(&[("payload", TypeDesc::Json)]);
     let decoded = decode_value(&serde_json::json!({ "payload": null }), &ty).expect("json null");
     let json = serde_json::to_string(&encode_value(&decoded, &ty).expect("encodes")).unwrap();
-    assert_eq!(json, r#"{"payload":null}"#, "JSON null survives a round trip");
+    assert_eq!(
+        json, r#"{"payload":null}"#,
+        "JSON null survives a round trip"
+    );
 }
 
 #[test]
@@ -353,7 +370,10 @@ fn an_omitted_optional_column_is_still_none() {
         );
     }
     let definite = record_type(&[("v", TypeDesc::I64)]);
-    assert!(decode_value(&serde_json::json!({}), &definite).is_err(), "and neither for a definite one");
+    assert!(
+        decode_value(&serde_json::json!({}), &definite).is_err(),
+        "and neither for a definite one"
+    );
 }
 
 /// A JSON null document survives in a `json` column and not in an
@@ -385,5 +405,9 @@ fn optional_json_null_degrades_to_absence() {
         DynValue::None,
         "an `optional(json)` column reads it back as absence"
     );
-    assert_eq!(round_trip(&DynValue::None, &opt), DynValue::None, "and absence stays absence");
+    assert_eq!(
+        round_trip(&DynValue::None, &opt),
+        DynValue::None,
+        "and absence stays absence"
+    );
 }

@@ -20,7 +20,9 @@ use circuits::{check_fixpoint, expand};
 use ops::check_op;
 
 use crate::diag::{Diagnostic, Pass, Span};
-use crate::lang::{Arg, CircuitDef, Decl, Expr, ExprKind, FunctionDef, NodeRef, OpCall, Program, Rhs};
+use crate::lang::{
+    Arg, CircuitDef, Decl, Expr, ExprKind, FunctionDef, NodeRef, OpCall, Program, Rhs,
+};
 use crate::value::BatchType;
 use std::collections::HashMap;
 
@@ -40,7 +42,10 @@ pub(super) struct Group<'a> {
 }
 
 pub(super) fn collect<'a>(decls: &'a [Decl]) -> TResult<Group<'a>> {
-    let mut g = Group { nodes: Vec::new(), specs: HashMap::new() };
+    let mut g = Group {
+        nodes: Vec::new(),
+        specs: HashMap::new(),
+    };
     for decl in decls {
         match decl {
             Decl::Node { name, rhs, span } => {
@@ -64,7 +69,10 @@ pub(super) fn collect<'a>(decls: &'a [Decl]) -> TResult<Group<'a>> {
     }
     for (name, (_, span)) in &g.specs {
         if !g.nodes.iter().any(|(n, _, _)| n.as_str() == *name) {
-            return err(*span, format!("typespec for `{name}`, which is not declared"));
+            return err(
+                *span,
+                format!("typespec for `{name}`, which is not declared"),
+            );
         }
     }
     Ok(g)
@@ -104,7 +112,10 @@ pub fn check(program: &Program) -> TResult<Plan> {
         if let Decl::Circuit(c) = decl
             && circuits.insert(&c.name, c).is_some()
         {
-            return err(c.span, format!("circuit `{}` is defined more than once", c.name));
+            return err(
+                c.span,
+                format!("circuit `{}` is defined more than once", c.name),
+            );
         }
     }
 
@@ -115,7 +126,10 @@ pub fn check(program: &Program) -> TResult<Plan> {
         if let Decl::Function(f) = decl
             && funcs.insert(&f.name, f).is_some()
         {
-            return err(f.span, format!("function `{}` is defined more than once", f.name));
+            return err(
+                f.span,
+                format!("function `{}` is defined more than once", f.name),
+            );
         }
     }
     check_function_cycles(&funcs)?;
@@ -128,7 +142,10 @@ pub fn check(program: &Program) -> TResult<Plan> {
     let owned: Vec<Decl> = top.into_iter().cloned().collect();
     let group = collect(&owned)?;
 
-    let mut plan = Plan { nodes: Vec::new(), by_name: HashMap::new() };
+    let mut plan = Plan {
+        nodes: Vec::new(),
+        by_name: HashMap::new(),
+    };
     let scope = Scope::new();
     for i in topo_order(&group.nodes)? {
         let (name, rhs, span) = group.nodes[i];
@@ -238,7 +255,9 @@ fn check_no_name_collides_with_a_function(plan: &Plan, funcs: &Functions<'_>) ->
 fn check_one_type_per_table(plan: &Plan) -> TResult<()> {
     let mut seen: HashMap<&str, (&BatchType, Span)> = HashMap::new();
     for node in &plan.nodes {
-        let PlanOp::Input { table } = &node.op else { continue };
+        let PlanOp::Input { table } = &node.op else {
+            continue;
+        };
         if let Some((prev, _)) = seen.get(table.as_str()) {
             return err(
                 node.span,
@@ -265,7 +284,13 @@ fn check_one_type_per_table(plan: &Plan) -> TResult<()> {
 ///
 /// `Fixpoint` is excluded: its body carries spans, so structural equality would
 /// be span-sensitive and would never match anyway.
-pub(super) fn push_node(plan: &mut Plan, name: String, ty: BatchType, op: PlanOp, span: Span) -> usize {
+pub(super) fn push_node(
+    plan: &mut Plan,
+    name: String,
+    ty: BatchType,
+    op: PlanOp,
+    span: Span,
+) -> usize {
     if !matches!(op, PlanOp::Fixpoint { .. })
         && let Some(i) = plan.nodes.iter().position(|n| n.ty == ty && n.op == op)
     {
@@ -306,7 +331,11 @@ fn check_circuit_cycles(circuits: &HashMap<&str, &CircuitDef>) -> TResult<()> {
         }
         path.push(name);
         for decl in &def.body {
-            if let Decl::Node { rhs: Rhs::Instantiate(i) | Rhs::Fixpoint(i), .. } = decl {
+            if let Decl::Node {
+                rhs: Rhs::Instantiate(i) | Rhs::Fixpoint(i),
+                ..
+            } = decl
+            {
                 walk(&i.circuit, circuits, path, done)?;
             }
         }
@@ -444,8 +473,11 @@ pub(super) fn collect_deps<'a>(rhs: &'a Rhs, out: &mut Vec<&'a String>) {
 /// Dependency order, rejecting cycles. Recursion needs `delay`, which this cut
 /// does not implement, so any cycle is an error rather than a fixpoint.
 pub(super) fn topo_order(decls: &[(&String, &Rhs, Span)]) -> TResult<Vec<usize>> {
-    let index: HashMap<&str, usize> =
-        decls.iter().enumerate().map(|(i, (n, _, _))| (n.as_str(), i)).collect();
+    let index: HashMap<&str, usize> = decls
+        .iter()
+        .enumerate()
+        .map(|(i, (n, _, _))| (n.as_str(), i))
+        .collect();
 
     #[derive(Clone, Copy, PartialEq)]
     enum Mark {
@@ -482,8 +514,10 @@ pub(super) fn topo_order(decls: &[(&String, &Rhs, Span)]) -> TResult<Vec<usize>>
                         Mark::Active => {
                             return err(
                                 span,
-                                format!("`{name}` participates in a cycle through `{dep}`; \
-                                         recursion needs `delay`, which is not implemented"),
+                                format!(
+                                    "`{name}` participates in a cycle through `{dep}`; \
+                                         recursion needs `delay`, which is not implemented"
+                                ),
                             );
                         }
                         Mark::None => stack.push((d, 0)),

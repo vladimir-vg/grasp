@@ -16,7 +16,11 @@ fn nested_nodes_are_not_addressable_by_name() {
     let plan = compile(NESTED).expect("compiles");
 
     // input, the nested filter, and the named distinct.
-    assert_eq!(plan.nodes.len(), 3, "the nested filter should be its own node");
+    assert_eq!(
+        plan.nodes.len(),
+        3,
+        "the nested filter should be its own node"
+    );
 
     let mut names: Vec<&str> = plan.by_name.keys().map(String::as_str).collect();
     names.sort();
@@ -24,7 +28,11 @@ fn nested_nodes_are_not_addressable_by_name() {
 
     // Its synthesized name carries the operator and where it came from, so a
     // diagnostic about it is locatable.
-    let nested = plan.nodes.iter().find(|n| n.name.starts_with("filter@")).expect("nested node");
+    let nested = plan
+        .nodes
+        .iter()
+        .find(|n| n.name.starts_with("filter@"))
+        .expect("nested node");
     assert_eq!(nested.span.line, 3);
 }
 
@@ -56,7 +64,11 @@ fn operands_always_precede_their_consumer() {
 #[test]
 fn a_nested_node_cannot_be_an_output() {
     let plan = compile(NESTED).expect("compiles");
-    let nested = plan.nodes.iter().find(|n| n.name.starts_with("filter@")).unwrap();
+    let nested = plan
+        .nodes
+        .iter()
+        .find(|n| n.name.starts_with("filter@"))
+        .unwrap();
 
     // `Runner` is not `Debug`, so match rather than `expect_err`.
     match Runner::build(&plan, std::slice::from_ref(&nested.name)) {
@@ -83,7 +95,11 @@ fn identical_work_becomes_one_node() {
     )
     .expect("compiles");
 
-    let filters = plan.nodes.iter().filter(|n| n.name.starts_with("filter@")).count();
+    let filters = plan
+        .nodes
+        .iter()
+        .filter(|n| n.name.starts_with("filter@"))
+        .count();
     assert_eq!(filters, 1, "the two identical filters should be one node");
     // input, filter, plus.
     assert_eq!(plan.nodes.len(), 3);
@@ -132,7 +148,10 @@ fn different_work_stays_separate() {
     )
     .expect("compiles");
 
-    assert_ne!(plan.by_name["p"], plan.by_name["q"], "different predicates, different nodes");
+    assert_ne!(
+        plan.by_name["p"], plan.by_name["q"],
+        "different predicates, different nodes"
+    );
     assert_eq!(plan.nodes.len(), 3);
 }
 
@@ -190,9 +209,9 @@ fn a_numeric_literal_is_pinned_to_its_context() {
                     walk(l, out);
                     walk(r, out);
                 }
-                TypedExpr::Call(_, args)
-                | TypedExpr::Record(args)
-                | TypedExpr::Array(args) => args.iter().for_each(|a| walk(a, out)),
+                TypedExpr::Call(_, args) | TypedExpr::Record(args) | TypedExpr::Array(args) => {
+                    args.iter().for_each(|a| walk(a, out))
+                }
                 TypedExpr::Dict(entries) => entries.iter().for_each(|(k, v)| {
                     walk(k, out);
                     walk(v, out);
@@ -219,7 +238,11 @@ fn a_numeric_literal_is_pinned_to_its_context() {
         )
     };
 
-    assert_eq!(consts(&body("i64")), vec![DynValue::I64(2)], "`2` beside an i64");
+    assert_eq!(
+        consts(&body("i64")),
+        vec![DynValue::I64(2)],
+        "`2` beside an i64"
+    );
     assert_eq!(
         consts(&body("f64")),
         vec![DynValue::F64(dbsp::algebra::F64::new(2.0))],
@@ -262,7 +285,9 @@ src := input(\"emp\")\n\
 ";
 
     let ids = |src: &str| -> BTreeSet<String> {
-        content_ids(&compile(src).expect("compiles")).into_iter().collect()
+        content_ids(&compile(src).expect("compiles"))
+            .into_iter()
+            .collect()
     };
     assert_eq!(ids(a), ids(b), "the same dataflow, written two ways");
 
@@ -282,7 +307,11 @@ fn a_nested_node_is_observable_by_content_id() {
 
     let plan = compile(NESTED).expect("compiles");
     let ids = content_ids(&plan);
-    let nested = plan.nodes.iter().position(|n| n.name.starts_with("filter@")).unwrap();
+    let nested = plan
+        .nodes
+        .iter()
+        .position(|n| n.name.starts_with("filter@"))
+        .unwrap();
 
     let runner = Runner::build(&plan, &[ids[nested].clone()]).expect("builds");
     runner.kill();
