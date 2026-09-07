@@ -6,6 +6,8 @@
 //!
 //! See `docs/grasp-dbsp/mapping.md` for the invariants this type must uphold.
 
+use std::collections::BTreeMap;
+
 use dbsp::ZWeight;
 use dbsp::algebra::{AddAssignByRef, AddByRef, F64, HasZero, MulByRef};
 use feldera_macros::IsNone;
@@ -75,7 +77,11 @@ pub enum DynValue {
     /// The consequence is real: `dbsp`'s memory accounting does not see record
     /// payloads, so reported sizes under-count. A hand-written `SizeOf` impl
     /// would fix it and is the obvious follow-up.
-    Record(#[omit_bounds] #[size_of(skip, skip_bounds)] Vec<DynValue>),
+    Record(
+        #[omit_bounds]
+        #[size_of(skip, skip_bounds)]
+        Vec<DynValue>,
+    ),
     /// `json` — a whole document, byte-encoded.
     ///
     /// **Appended, and new variants must be too**: the variant order is the
@@ -87,7 +93,11 @@ pub enum DynValue {
     /// the same bytes. Map entries are stored sorted and deduplicated, so two
     /// documents written with their keys in different orders are one value,
     /// one hash and one Z-set key.
-    Json(#[omit_bounds] #[size_of(skip, skip_bounds)] FlatVariant),
+    Json(
+        #[omit_bounds]
+        #[size_of(skip, skip_bounds)]
+        FlatVariant,
+    ),
     /// `array(T)` — a sequence of one element type.
     ///
     /// **Appended, and new variants must be too**: the variant order is the
@@ -96,7 +106,35 @@ pub enum DynValue {
     /// Like `Record`, this is a container whose `Ord`, `Hash` and archived
     /// ordering are ours rather than borrowed, so it is covered by the
     /// proptests in `tests/invariants.rs`. Same derive caveats as `Record`.
-    Array(#[omit_bounds] #[size_of(skip, skip_bounds)] Vec<DynValue>),
+    Array(
+        #[omit_bounds]
+        #[size_of(skip, skip_bounds)]
+        Vec<DynValue>,
+    ),
+    /// `dict(K,V)` — a key-value map.
+    ///
+    /// **Appended, and new variants must be too**: the variant order is the
+    /// archived discriminant, which is a storage format.
+    ///
+    /// A `BTreeMap` rather than a sorted `Vec` of pairs so that the canonical
+    /// form is structural: there is no way to build an unsorted or duplicated
+    /// dict, so two dicts written with their entries in different orders are
+    /// one value, one hash and one Z-set key without anything having to
+    /// remember to canonicalise. `Record` gets the same property by sorting its
+    /// *type*'s fields; a dict's keys are values, so it has to come from the
+    /// container.
+    ///
+    /// This upholds invariant 1 because `ArchivedBTreeMap`'s `cmp` is
+    /// `self.iter().cmp(other.iter())` — iteration order, the same lexicographic
+    /// comparison `BTreeMap` itself uses. `sqllib::Variant` stores its `Map` the
+    /// same way, behind an `Arc` it needs for sharing and we do not.
+    ///
+    /// Same derive caveats as `Record`.
+    Dict(
+        #[omit_bounds]
+        #[size_of(skip, skip_bounds)]
+        BTreeMap<DynValue, DynValue>,
+    ),
 }
 
 impl DynValue {
@@ -126,6 +164,28 @@ impl DynValue {
         self.fields()?.get(index)
     }
 
+    /// This value as a JSON object key.
+    ///
+    /// A dict encodes as an object, whose keys are strings, so every key needs
+    /// one spelling that [`TypeDesc::parse_dict_key`] reads back. `None` where
+    /// there is none: a non-finite float, or a composite value, which
+    /// [`TypeDesc::is_dict_key`] does not admit as a key type anyway.
+    ///
+    /// This is shared by the JSON codec and by `cast(d, json)` so the two
+    /// cannot spell a key differently.
+    pub fn dict_key_string(&self) -> Option<String> {
+        match self {
+            DynValue::String(s) => Some(s.clone()),
+            DynValue::I64(n) => Some(n.to_string()),
+            DynValue::Bool(b) => Some(b.to_string()),
+            DynValue::F64(f) => {
+                let f = f.into_inner();
+                f.is_finite().then(|| f.to_string())
+            }
+            _ => Option::None,
+        }
+    }
+
     /// The name of this value's variant, for error messages.
     pub fn type_name(&self) -> &'static str {
         match self {
@@ -136,6 +196,7 @@ impl DynValue {
             DynValue::String(_) => "string",
             DynValue::Record(_) => "record",
             DynValue::Array(_) => "array",
+            DynValue::Dict(_) => "dict",
             DynValue::Json(_) => "json",
         }
     }
@@ -189,13 +250,21 @@ pub struct Acc {
 
 impl Acc {
     pub fn value(v: i64) -> Acc {
-        Acc { sum: v, rows: 1, present: 1 }
+        Acc {
+            sum: v,
+            rows: 1,
+            present: 1,
+        }
     }
 
     /// A row whose projection was `NONE`: counted by neither `sum` nor `count`,
     /// but still present, so the group does not vanish.
     pub fn none() -> Acc {
-        Acc { sum: 0, rows: 0, present: 1 }
+        Acc {
+            sum: 0,
+            rows: 0,
+            present: 1,
+        }
     }
 }
 
@@ -279,7 +348,10 @@ pub struct FpAccSemigroup;
 
 impl dbsp::algebra::Semigroup<FpAcc> for FpAccSemigroup {
     fn combine(left: &FpAcc, right: &FpAcc) -> FpAcc {
-        FpAcc { sum: left.sum + right.sum, rows: left.rows + right.rows }
+        FpAcc {
+            sum: left.sum + right.sum,
+            rows: left.rows + right.rows,
+        }
     }
 }
 
@@ -301,6 +373,8 @@ pub enum TypeDesc {
     Record(Vec<(String, TypeDesc)>),
     /// `array(T)`. Every element has type `T`.
     Array(Box<TypeDesc>),
+    /// `dict(K,V)`. `K` is restricted to scalars — see [`TypeDesc::is_dict_key`].
+    Dict(Box<TypeDesc>, Box<TypeDesc>),
     /// `json`. A document of any shape — never `optional`, because a document
     /// carries its own null.
     Json,
@@ -335,10 +409,40 @@ impl TypeDesc {
 
     pub fn field_type(&self, name: &str) -> Option<&TypeDesc> {
         match self {
-            TypeDesc::Record(fields) => {
-                fields.iter().find(|(n, _)| n == name).map(|(_, t)| t)
-            }
+            TypeDesc::Record(fields) => fields.iter().find(|(n, _)| n == name).map(|(_, t)| t),
             _ => None,
+        }
+    }
+
+    /// Whether this type may be a `dict` key.
+    ///
+    /// Scalars only. A dict encodes as a JSON object, whose keys are strings, so
+    /// a key type has to have one string spelling that its own type can parse
+    /// back — which `string`, `i64`, `f64` and `bool` do and no composite type
+    /// does. Absence has no spelling either, so `optional` is out.
+    ///
+    /// This is the *type* rule; [`DynValue::Dict`] can structurally hold any key,
+    /// which is what the ordering proptests exercise.
+    pub fn is_dict_key(&self) -> bool {
+        matches!(
+            self,
+            TypeDesc::Bool | TypeDesc::I64 | TypeDesc::F64 | TypeDesc::String
+        )
+    }
+
+    /// Reads a dict key back from its object-key spelling — the inverse of
+    /// [`DynValue::dict_key_string`], with this type saying what to parse.
+    pub fn parse_dict_key(&self, s: &str) -> Option<DynValue> {
+        match self {
+            TypeDesc::String => Some(DynValue::String(s.to_string())),
+            TypeDesc::I64 => s.parse().ok().map(DynValue::I64),
+            TypeDesc::Bool => s.parse().ok().map(DynValue::Bool),
+            TypeDesc::F64 => s
+                .parse::<f64>()
+                .ok()
+                .filter(|f| f.is_finite())
+                .map(|f| DynValue::F64(dbsp::algebra::F64::new(f))),
+            _ => Option::None,
         }
     }
 
@@ -365,6 +469,7 @@ impl std::fmt::Display for TypeDesc {
             TypeDesc::String => write!(f, "string"),
             TypeDesc::Optional(inner) => write!(f, "optional({inner})"),
             TypeDesc::Array(elem) => write!(f, "array({elem})"),
+            TypeDesc::Dict(k, v) => write!(f, "dict({k}, {v})"),
             TypeDesc::Json => write!(f, "json"),
             TypeDesc::Record(fields) => {
                 write!(f, "record(")?;

@@ -53,12 +53,7 @@ name. That is not a coincidence — it is why the names were chosen.
 | `record(f: T, …)` | `record(f: T, …)` | field order is not part of identity in either |
 | `array(T)` | `array(T)` | |
 | `json` | `json` | |
-| `dict(K,V)` | — | **no target yet** |
-
-`dict(K,V)` is specified in [`language.md`](language.md#value-types) but cannot
-be emitted: grasp-dbsp has no dict type. It is listed under future work there.
-Until it lands, a program using a dict is rejected by grasp with a diagnostic
-saying so, rather than emitting something that will not compile.
+| `dict(K,V)` | `dict(K,V)` | `K` is a scalar in both |
 
 The types grasp does not have yet — `dynamic`, the narrower integers, `f32`,
 `numeric`, `bytes`, `bits`, the temporal types, general `enum` — are absent for
@@ -110,6 +105,29 @@ re-indexed for another join emits as one `join_index` rather than a `join`
 followed by a `map_index`. Same for `flat_map` into `flat_map_index`. This is an
 emission choice, not a DAG node kind — [`compilation.md`](compilation.md) keeps
 the DAG in terms of `join` and `map_index` alone.
+
+## Dicts
+
+A dict literal is a dict literal — grasp's `{k: v}` is grasp-dbsp's
+`{k => v}`, and the entry sorting and deduplication both languages promise
+is one mechanism, not two.
+
+| grasp | grasp-dbsp |
+|---|---|
+| `{k: v, …}` | `{k => v, …}` |
+| `d[k]` lookup | `get(d, k)` → `optional(V)` |
+| `keys(d)` | `keys(d)` → `array(K)` |
+| `length(d)` | `length(d)` |
+| `{k: v} := d` destructure | `get` per key, guarded by `length(d) = N` |
+| `(k, v) := **d` unnest | `flat_map` over `entries(d)` |
+
+`entries(d)` yields `array(record(key: K, value: V))`, sorted by key, which is
+what makes the unnest deterministic. Its inverse is the other form of the dict
+literal, `dict(a)`, for building a dict whose size follows the data.
+
+`{k: v, **rest} := d` has no lowering yet: subtracting the named keys needs a
+`without_keys` builtin grasp-dbsp does not have. See
+[`overview.md`](overview.md#future-work).
 
 ## Rules and unions
 

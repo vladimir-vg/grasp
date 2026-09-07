@@ -32,6 +32,7 @@ implemented:
 - `Record(Vec<DynValue>)` — the language's `record(...)`. **Positional.**
 - `Array(Vec<DynValue>)` — the language's `array(T)`.
 - `Json(FlatVariant)` — the language's `json`, a byte-encoded document.
+- `Dict(BTreeMap<DynValue, DynValue>)` — the language's `dict(K,V)`.
 
 The rest of the vocabulary — the other integer widths, `f32`, and the `sql.*`
 types — is future work, listed in [`overview.md`](overview.md). **Append new
@@ -39,9 +40,9 @@ variants at the end**: the variant order is the archived discriminant, which is
 a storage format. Removing one shifts it too, which is why `SqlString` could go
 now and could not once anything is stored.
 
-`Record` and `Array` are the two containers whose `Ord`, `Hash` and archived
-ordering are ours rather than borrowed, so both are covered by the proptests in
-`tests/invariants.rs`.
+`Record`, `Array` and `Dict` are the containers whose `Ord`, `Hash` and archived
+ordering are ours rather than borrowed, so all three are covered by the proptests
+in `tests/invariants.rs`.
 
 ### Why `json` is a `FlatVariant`
 
@@ -83,6 +84,31 @@ without being the null document, which nothing could observe.
 There is no tuple variant. `map_index`, `join_index` and `flat_map_index` take
 an ordinary `record(key: …, value: …)` and the lowering splits it, so nothing
 pair-shaped is ever streamed.
+
+### Why `dict` is a `BTreeMap`
+
+A dict's canonical form is **structural**, not a rule. A `BTreeMap` cannot hold
+its entries unsorted or hold a key twice, so two dicts built from the same
+entries in different orders are the same value — one `Ord`, one `Hash`, one
+Z-set key — without any construction site having to remember to sort. Entry
+order is not part of a dict's identity, and there is no way to write one for
+which it is.
+
+`Record` reaches the same place from the other side: its *type* sorts its fields
+by name, so the positional value follows. A dict cannot do that, because its keys
+are values rather than a fixed part of the type — so the container has to carry
+the invariant instead.
+
+This upholds invariant 1 because `ArchivedBTreeMap::cmp` is
+`self.iter().cmp(other.iter())` — the same lexicographic comparison over the same
+order that `BTreeMap` itself uses. `sqllib::Variant` stores its `Map` the same
+way (`sqllib/src/map.rs:9`), behind an `Arc` it needs for sharing and this does
+not.
+
+**Keys are scalars** — `bool`, `i64`, `f64`, `string` — which is a JSON
+constraint rather than a representation one: `DynValue::Dict` can structurally
+hold any key, and the proptests exercise that, but a dict encodes as an object
+and an object's keys are strings. See [Input / output](#input--output).
 
 ### Records are positional
 
@@ -528,6 +554,19 @@ dead-code elimination.
 At each clock cycle the handle exposes the deltas produced by the circuit,
 encoded back to JSON. The runner emits these deltas as they are produced; it does
 not materialize a final table.
+
+**A dict is an object.** One wire shape, whatever its key type: the key's own
+type says how to spell it and how to read it back, so `dict(i64,V)` writes
+`{"1": …}` and parses `"1"` as an `i64`. This is why the key types are the
+scalars and no more — a composite key has no object-key spelling, and the
+alternatives were a second wire shape for some dicts or JSON text nested inside
+the key. `DynValue::dict_key_string` and `TypeDesc::parse_dict_key` are the one
+definition of that spelling, shared by the codec and by `cast(d, json)` so the
+two cannot disagree.
+
+A non-finite `f64` key is refused. Non-finite floats already write as `null` in
+value position, and `null` is not a legal object key, so there is no spelling to
+give it — the codec says so rather than inventing one.
 
 **Encodings.** Two formats, both Feldera-native. See
 <https://docs.feldera.com/formats/json/>

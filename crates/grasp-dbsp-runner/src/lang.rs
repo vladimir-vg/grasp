@@ -133,6 +133,19 @@ pub struct Expr {
     pub span: Span,
 }
 
+/// The two ways to build a dict.
+///
+/// They share a constructor because they are one idea, and neither can do the
+/// other's job: the literal fixes its entries in the source, the array form
+/// takes however many the data carries.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DictLit {
+    /// `{k => v, ...}`. Empty for `{}`, which takes its type from context.
+    Pairs(Vec<(Expr, Expr)>),
+    /// `dict(a)`, from an `array(record(key: K, value: V))`.
+    From(Box<Expr>),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
     /// The `NONE` literal: a value meaning "this field has none".
@@ -156,6 +169,8 @@ pub enum ExprKind {
     /// type, and the array is an ordinary value: `flat_map` emits one row per
     /// element, so fan-out follows the data rather than the source.
     List(Vec<Expr>),
+    /// `{k => v, ...}` or `dict(a)` — see [`DictLit`].
+    Dict(DictLit),
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Call(String, Vec<Expr>),
@@ -200,8 +215,8 @@ fn parse_error<T>(span: Span, message: impl Into<String>) -> PResult<T> {
 
 /// Type constructors and namespaces.
 const TYPE_NAMES: &[&str] = &[
-    "bool", "i64", "f64", "string", "json", "optional", "record", "array", "sql", "zset",
-    "indexed_zset",
+    "bool", "i64", "f64", "string", "json", "optional", "record", "array", "dict", "sql",
+    "zset", "indexed_zset",
 ];
 
 /// Literals and keywords. `if` is not here: it is a builtin, so it is reserved
@@ -241,6 +256,8 @@ enum Tok {
     HasType,
     /// `->`
     Arrow,
+    /// `=>`, between a dict key and its value.
+    FatArrow,
     LParen,
     RParen,
     LBracket,
@@ -330,6 +347,7 @@ impl<'a> Lexer<'a> {
                 b":=" => Some(Tok::Assign),
                 b"::" => Some(Tok::HasType),
                 b"->" => Some(Tok::Arrow),
+                b"=>" => Some(Tok::FatArrow),
                 b"==" => Some(Tok::Op(BinOp::Eq)),
                 b"!=" => Some(Tok::Op(BinOp::Ne)),
                 b"<=" => Some(Tok::Op(BinOp::Le)),
@@ -865,6 +883,20 @@ impl Parser {
                 self.expect(&Tok::RParen, "`)` closing array")?;
                 Ok(TypeDesc::Array(Box::new(elem)))
             }
+            "dict" => {
+                self.expect(&Tok::LParen, "`(` after dict")?;
+                let key = self.value_type()?;
+                self.expect(&Tok::Comma, "`,` between a dict's key and value types")?;
+                let value = self.value_type()?;
+                self.expect(&Tok::RParen, "`)` closing dict")?;
+                if !key.is_dict_key() {
+                    return self.err(format!(
+                        "`{key}` cannot be a dict key; a key must be `string`, `i64`, \
+                         `f64` or `bool`"
+                    ));
+                }
+                Ok(TypeDesc::Dict(Box::new(key), Box::new(value)))
+            }
             "optional" => {
                 self.expect(&Tok::LParen, "`(` after optional")?;
                 let inner = self.value_type()?;
@@ -998,6 +1030,25 @@ impl Parser {
                 }
                 Ok(self.mk(start, ExprKind::List(items)))
             }
+            // `{k => v, ...}` and `{}`. Braces are free in expression position:
+            // they open a circuit or function body, and both are declarations.
+            Tok::LBrace => {
+                self.bump();
+                let mut entries = Vec::new();
+                if !self.eat(&Tok::RBrace) {
+                    loop {
+                        let key = self.expr()?;
+                        self.expect(&Tok::FatArrow, "`=>` after a dict key")?;
+                        entries.push((key, self.expr()?));
+                        if self.eat(&Tok::Comma) {
+                            continue;
+                        }
+                        self.expect(&Tok::RBrace, "`,` or `}` in a dict literal")?;
+                        break;
+                    }
+                }
+                Ok(self.mk(start, ExprKind::Dict(DictLit::Pairs(entries))))
+            }
             // `(...)` is grouping and nothing else. There is no pair value:
             // the three indexing operators take an ordinary record instead.
             Tok::LParen => {
@@ -1061,6 +1112,14 @@ impl Parser {
                 }
                 return Ok(self.mk(start, ExprKind::Record(fields)));
             }
+            // `dict(a)` builds a dict from an array. The literal is written
+            // `{k => v}` — see the `Tok::LBrace` arm below.
+            "dict" => {
+                self.expect(&Tok::LParen, "`(` after dict")?;
+                let arr = self.expr()?;
+                self.expect(&Tok::RParen, "`)` closing dict")?;
+                return Ok(self.mk(start, ExprKind::Dict(DictLit::From(Box::new(arr)))));
+            }
             _ => {}
         }
 
@@ -1097,6 +1156,7 @@ fn describe(t: &Tok) -> String {
         Tok::Float(v) => format!("`{v}`"),
         Tok::Assign => "`:=`".into(),
         Tok::HasType => "`::`".into(),
+        Tok::FatArrow => "`=>`".into(),
         Tok::Arrow => "`->`".into(),
         Tok::LParen => "`(`".into(),
         Tok::RParen => "`)`".into(),

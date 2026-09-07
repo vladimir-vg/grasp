@@ -44,8 +44,14 @@ pub enum Builtin {
     /// includes absence and has one sensible answer there, whereas `+` on an
     /// unknown has no answer without inventing SQL's semantics.
     Get,
-    /// `keys(doc)` — an object's keys, or `NONE` for anything else.
+    /// `keys(doc)` — an object's keys, or `NONE` for anything else. On a dict,
+    /// an `array(K)` — definite, because a dict is always a dict.
     Keys,
+    /// `entries(d)` — a dict as an `array(record(key: K, value: V))`.
+    ///
+    /// The inverse of `dict(a)`, and what turns a dict into rows: `flat_map`
+    /// over it emits one row per entry.
+    Entries,
 }
 
 impl Builtin {
@@ -64,6 +70,7 @@ impl Builtin {
             "trim" => Builtin::Trim,
             "get" => Builtin::Get,
             "keys" => Builtin::Keys,
+            "entries" => Builtin::Entries,
             _ => return None,
         })
     }
@@ -71,7 +78,7 @@ impl Builtin {
     /// Every builtin name, so the reserved-word list cannot drift from it.
     pub const ALL: &'static [&'static str] = &[
         "coalesce", "if", "abs", "floor", "ceil", "round", "length", "concat", "lower", "upper",
-        "trim", "get", "keys",
+        "trim", "get", "keys", "entries",
     ];
 
     /// Number of arguments, or `None` if variadic.
@@ -155,6 +162,12 @@ pub enum TypedExpr {
     Record(Vec<TypedExpr>),
     /// An array literal. Every element has the array's one element type.
     Array(Vec<TypedExpr>),
+    /// `{k => v, ...}` — the literal form, as `(key, value)` pairs.
+    Dict(Vec<(TypedExpr, TypedExpr)>),
+    /// `dict(a)` — the array form. The operand is an
+    /// `array(record(key: K, value: V))`, whose fields are positional by then:
+    /// `key` sorts before `value`, so they are fields 0 and 1.
+    DictFrom(Box<TypedExpr>),
     /// `cast(x, T)`, resolved to the conversion it means.
     Cast(Box<TypedExpr>, Conv),
     Unary(UnOp, Box<TypedExpr>),
@@ -184,9 +197,29 @@ pub fn eval(e: &TypedExpr, args: &[&DynValue]) -> DynValue {
         TypedExpr::Record(fields) => {
             DynValue::Record(fields.iter().map(|f| eval(f, args)).collect())
         }
-        TypedExpr::Array(items) => {
-            DynValue::Array(items.iter().map(|i| eval(i, args)).collect())
-        }
+        TypedExpr::Array(items) => DynValue::Array(items.iter().map(|i| eval(i, args)).collect()),
+        // Collecting into a `BTreeMap` is what canonicalises: entries sort, and
+        // a repeated key keeps the last value written, as a later insert wins.
+        TypedExpr::Dict(entries) => DynValue::Dict(
+            entries
+                .iter()
+                .map(|(k, v)| (eval(k, args), eval(v, args)))
+                .collect(),
+        ),
+        // The operand is an `array(record(key: K, value: V))`. `key` sorts
+        // before `value`, so the record is positional as fields 0 and 1.
+        TypedExpr::DictFrom(inner) => match eval(inner, args) {
+            DynValue::Array(items) => DynValue::Dict(
+                items
+                    .iter()
+                    .filter_map(|e| match e.fields() {
+                        Some([k, v]) => Some((k.clone(), v.clone())),
+                        _ => Option::None,
+                    })
+                    .collect(),
+            ),
+            _ => DynValue::None,
+        },
         // Absence converts to absence. The checker only admits an absent input
         // where the target type is optional, so this cannot contradict a type.
         TypedExpr::Cast(inner, conv) => match eval(inner, args) {
@@ -356,7 +389,11 @@ fn convert(conv: &Conv, v: DynValue) -> DynValue {
         (Conv::IntToFloat, I64(n)) => F64(Flt::new(n as f64)),
         (Conv::FloatToInt, F64(f)) => {
             let x = f.into_inner();
-            if x.is_finite() && x >= -TWO_63 && x < TWO_63 { I64(x as i64) } else { None }
+            if x.is_finite() && x >= -TWO_63 && x < TWO_63 {
+                I64(x as i64)
+            } else {
+                None
+            }
         }
         (Conv::BoolToString, Bool(b)) => String(b.to_string()),
         (Conv::IntToString, I64(n)) => String(n.to_string()),
@@ -439,6 +476,20 @@ fn from_json(fv: &FlatVariant, ty: &TypeDesc) -> Option<DynValue> {
                 .map(|i| from_json(&FlatVariant::from(i), elem))
                 .collect::<Option<Vec<_>>>()?,
         ),
+        // A document's object keys are strings, and the dict's key type says
+        // what to read them as — the same pairing the JSON codec uses.
+        (Variant::Map(entries), TypeDesc::Dict(kt, vt)) => DynValue::Dict(
+            entries
+                .iter()
+                .map(|(k, v)| {
+                    let key = match k {
+                        Variant::String(s) => kt.parse_dict_key(s.str())?,
+                        other => kt.parse_dict_key(&format!("{other:?}"))?,
+                    };
+                    Some((key, from_json(&FlatVariant::from(v), vt)?))
+                })
+                .collect::<Option<_>>()?,
+        ),
         _ => return Option::None,
     };
     Some(value)
@@ -496,13 +547,36 @@ fn to_variant(v: &DynValue, ty: &TypeDesc) -> Variant {
                 .iter()
                 .zip(values)
                 .map(|((name, fty), value)| {
-                    (Variant::String(SqlString::from_ref(name)), to_variant(value, fty))
+                    (
+                        Variant::String(SqlString::from_ref(name)),
+                        to_variant(value, fty),
+                    )
                 })
                 .collect::<std::collections::BTreeMap<_, _>>()
                 .into(),
         ),
         (DynValue::Array(items), TypeDesc::Array(elem)) => Variant::Array(
-            items.iter().map(|i| to_variant(i, elem)).collect::<Vec<_>>().into(),
+            items
+                .iter()
+                .map(|i| to_variant(i, elem))
+                .collect::<Vec<_>>()
+                .into(),
+        ),
+        // Keys become strings, matching `DynValue::dict_key_string` and so the
+        // JSON codec: a dict cast to a document and then written out spells its
+        // keys the same way as one written out directly.
+        (DynValue::Dict(entries), TypeDesc::Dict(_, vt)) => Variant::Map(
+            entries
+                .iter()
+                .filter_map(|(k, v)| {
+                    let key = k.dict_key_string()?;
+                    Some((
+                        Variant::String(SqlString::from_ref(&key)),
+                        to_variant(v, vt),
+                    ))
+                })
+                .collect::<std::collections::BTreeMap<_, _>>()
+                .into(),
         ),
         // The checker pairs the value with its own type, so a mismatch means the
         // two passes disagree.
@@ -530,7 +604,11 @@ fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValu
     // branch is only worth having if the untaken side does not run. Handled
     // before the arguments are computed, for exactly that reason.
     if f == Builtin::If {
-        let taken = if is_true(&eval(&call_args[0], args)) { 1 } else { 2 };
+        let taken = if is_true(&eval(&call_args[0], args)) {
+            1
+        } else {
+            2
+        };
         return eval(&call_args[taken], args);
     }
 
@@ -539,7 +617,11 @@ fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValu
     // `coalesce` is the one builtin that inspects absence rather than being
     // rejected for it; everything else needs a definite value.
     if f == Builtin::Coalesce {
-        return if vals[0].is_none() { vals[1].clone() } else { vals[0].clone() };
+        return if vals[0].is_none() {
+            vals[1].clone()
+        } else {
+            vals[0].clone()
+        };
     }
 
     if vals.iter().any(|v| v.is_none()) {
@@ -567,6 +649,18 @@ fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValu
         Builtin::Length => match &vals[0] {
             DynValue::String(s) => DynValue::I64(s.chars().count() as i64),
             DynValue::Array(items) => DynValue::I64(items.len() as i64),
+            DynValue::Dict(entries) => DynValue::I64(entries.len() as i64),
+            _ => DynValue::None,
+        },
+        // Entries are already sorted by key: a `BTreeMap` iterates in order, so
+        // the array is deterministic without sorting anything here.
+        Builtin::Entries => match &vals[0] {
+            DynValue::Dict(entries) => DynValue::Array(
+                entries
+                    .iter()
+                    .map(|(k, v)| DynValue::record([k.clone(), v.clone()]))
+                    .collect(),
+            ),
             _ => DynValue::None,
         },
         Builtin::Concat => match (as_str(&vals[0]), as_str(&vals[1])) {
@@ -590,6 +684,11 @@ fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValu
         // it would print as `null` and not be the null document, which is a
         // third kind of nothing nobody can see.
         Builtin::Get => {
+            // A dict lookup is exact: the key is a value, not a path, so there
+            // is no navigation to be total about.
+            if let DynValue::Dict(entries) = &vals[0] {
+                return entries.get(&vals[1]).cloned().unwrap_or(DynValue::None);
+            }
             let found = match (&vals[0], &vals[1]) {
                 (DynValue::Json(fv), DynValue::String(k)) => Some(fv.index_string(k)),
                 (DynValue::Json(fv), DynValue::I64(i)) => {
@@ -606,6 +705,7 @@ fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValu
             }
         }
         Builtin::Keys => match &vals[0] {
+            DynValue::Dict(entries) => DynValue::Array(entries.keys().cloned().collect()),
             DynValue::Json(fv) => match Variant::from(fv) {
                 Variant::Map(m) => DynValue::Array(
                     m.keys()

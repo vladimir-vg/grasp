@@ -85,7 +85,12 @@ fn hash_op(h: &mut Xxh3Default, op: &PlanOp, ids: &[String]) {
         }
         PlanOp::Antijoin { left, right } => return finish(h, 9, &[*left, *right], ids),
         PlanOp::Distinct { input } => (10, std::slice::from_ref(input)),
-        PlanOp::Aggregate { input, agg, f, projection } => {
+        PlanOp::Aggregate {
+            input,
+            agg,
+            f,
+            projection,
+        } => {
             (*agg as u8).hash(h);
             projection.hash(h);
             hash_expr(h, f);
@@ -229,6 +234,18 @@ fn hash_expr(h: &mut Xxh3Default, e: &TypedExpr) {
             6u8.hash(h);
             items.len().hash(h);
             items.iter().for_each(|i| hash_expr(h, i));
+        }
+        TypedExpr::Dict(entries) => {
+            11u8.hash(h);
+            entries.len().hash(h);
+            entries.iter().for_each(|(k, v)| {
+                hash_expr(h, k);
+                hash_expr(h, v);
+            });
+        }
+        TypedExpr::DictFrom(inner) => {
+            12u8.hash(h);
+            hash_expr(h, inner);
         }
         TypedExpr::Unary(op, inner) => {
             7u8.hash(h);

@@ -31,8 +31,10 @@ trade-offs below, so it is worth stating what it wants.
 
 - **Explicit is free.** An emitter always knows the type it intends, so it can
   always write it down. Inference is never load-bearing: wherever it falls
-  short, an ascription resolves it, and inference is not made cleverer to avoid
-  one.
+  short, saying the type resolves it — a `cast`, or the node's own `::`
+  typespec — and inference is not made cleverer to avoid one. A typespec
+  supplies a type only where inference has none, as for an empty container
+  literal; it never overrides one.
 - **Regeneration is the norm.** An agent re-emits whole programs — different
   whitespace, ordering and intermediate names, same computation. Nothing may be
   keyed to source position; identity is content. See
@@ -80,7 +82,9 @@ implicit numeric promotion deleted, both to satisfy the third and fifth.
   grammar at all.
 - The type system described in [`language.md`](language.md) (batch types and
   value types). The value vocabulary is `bool`, `i64`, `f64`, `string`,
-  `optional(T)`, `record(...)`, `array(T)` and `json`.
+  `optional(T)`, `record(...)`, `array(T)`, `dict(K,V)` and `json`. A dict's
+  entries are sorted and deduplicated by construction, and its keys are the
+  scalars — the ones with a JSON object-key spelling.
 - The value model described in [`mapping.md`](mapping.md).
 - Feldera-native JSON input and output, emitting deltas — `weighted` by default
   here because it represents a Z-set delta exactly, `insert_delete` for
@@ -127,16 +131,6 @@ become an output — by declared name, or by content id for a node that has none
   persisted storage format. Nothing is persisted yet, so the variant order is
   still free to settle — which stops being true after the first stored batch.
   That freedom is what let `SqlString` be removed rather than deprecated.
-
-- **`dict(K,V)`** — a typed key-value map, alongside `record` and `array`.
-  Needed by [grasp](../grasp/language.md#value-types), whose dict type, dict
-  literals, `{k: v} := d` destructure and `(k, v) := **d` unnest all lower onto
-  it; there is nothing to lower them to today. Like the value types above it
-  needs a `DynValue` variant, a `TypeDesc` variant, a parser name and a JSON
-  coding — and, particular to this one, a canonical key order, since the
-  invariants in [`mapping.md`](mapping.md) require that equal values compare and
-  hash equal however they were built. `record` already canonicalises its fields
-  by name for the same reason.
 
 - **Element access** — `e[0]` on an `array(T)`. Arrays are values and
   `flat_map` turns one into rows, but nothing reads an element by index. `get`

@@ -342,9 +342,10 @@ type ::= "boolean" | "i64" | "f64" | "string" | "json"
        | "optional" "(" type ")"
        | "record" "(" field ("," field)* ")"
        | "array" "(" type ")"
-       | "dict" "(" type "," type ")"
+       | "dict" "(" key_type "," type ")"
 
-field ::= name ":" type
+field    ::= name ":" type
+key_type ::= "boolean" | "i64" | "f64" | "string"
 ```
 
 That is the whole vocabulary, and it is exactly what
@@ -361,7 +362,7 @@ under [future work](overview.md#future-work).
 | `optional(T)` | a `T`, or absent |
 | `record(f: T, …)` | named fields, each with its own type |
 | `array(T)` | a sequence of one element type |
-| `dict(K,V)` | a key-value map |
+| `dict(K,V)` | a key-value map, keyed by a scalar |
 | `json` | a document of any shape |
 
 **`optional` does not nest.** `optional(optional(T))` is not a distinct type and
@@ -370,10 +371,14 @@ is rejected, following grasp-dbsp.
 **Record field order is not part of the type.** `record(a: i64, b: string)` and
 `record(b: string, a: i64)` are one type.
 
-**`dict(K,V)` is blocked.** It is specified here, but grasp-dbsp has no dict type
-yet, so nothing that uses one can be emitted. It is called `dict` rather than
-`map` because `map` is an operator name in grasp-dbsp and one word should not be
-both.
+**A dict key is a scalar** — `boolean`, `i64`, `f64` or `string`. A dict is a
+JSON object on the wire and an object's keys are strings, so a key type has to
+have one string spelling that its own type reads back. It is called `dict` rather
+than `map` because `map` is an operator name in grasp-dbsp, and one word should
+not be both.
+
+**A dict's entries are sorted and deduplicated.** Two dicts written with their
+keys in different orders are one value; a key written twice keeps the last value.
 
 **`record`, not `struct`.** The Erlang implementation calls this `struct(...)`
 and namespaces its operations `struct:`. grasp-dbsp calls it `record(...)`, and

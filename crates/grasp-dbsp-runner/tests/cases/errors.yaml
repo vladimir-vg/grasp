@@ -179,9 +179,12 @@
     a :: zset(record(id: i64))
     b := flat_map(a, function((r) -> []))
 
+  # An empty array is a complete value with an open type, so it is an error only
+  # where nothing supplies one — `b` carries no typespec here, and there is no
+  # sibling to take a type from. The diagnostic names both routes out.
   expected_diagnostics:
     - pass: typecheck
-      message: "at least one element"
+      message: "an empty array has no element type"
 
 - name: an array has one element type
   source: |
@@ -855,3 +858,69 @@
   expected_diagnostics:
     - pass: typecheck
       message: "write `cast(..., optional(i64))`"
+
+- name: a dict key must be a scalar
+  source: |
+    a := input("a")
+    a :: zset(record(m: dict(record(x: i64), i64)))
+    out := a
+
+  # A dict is a JSON object on the wire, and an object's keys are strings, so a
+  # key type has to have one string spelling its own type reads back. No
+  # composite type does.
+  expected_diagnostics:
+    - pass: parse
+      message: "cannot be a dict key"
+
+- name: a dict lookup uses the dict's own key type
+  source: |
+    a := input("a")
+    a :: zset(record(m: dict(string, i64)))
+    out := map(a, function((r) -> record(v: get(r.m, 1))))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "this dict is keyed by `string`"
+
+- name: an empty dict has no type to take
+  source: |
+    a := input("a")
+    a :: zset(record(k: i64))
+    out := map(a, function((r) -> record(d: {})))
+
+  # The same rule an empty array literal follows: `out` has no typespec, so
+  # nothing says what the dict is keyed by, and guessing would put a type nobody
+  # chose into the output schema.
+  expected_diagnostics:
+    - pass: typecheck
+      message: "an empty dict has no key or value type"
+
+- name: one dict has one key type and one value type
+  source: |
+    a := input("a")
+    a :: zset(record(k: i64))
+    out := map(a, function((r) -> record(d: {"p" => 1, 2 => 3})))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "has no `string` value"
+
+- name: entries needs a dict
+  source: |
+    a := input("a")
+    a :: zset(record(k: i64, s: string))
+    out := map(a, function((r) -> record(e: entries(r.s))))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "`entries` needs a dict"
+
+- name: the array form of dict needs key and value fields
+  source: |
+    a := input("a")
+    a :: zset(record(k: i64))
+    out := map(a, function((r) -> record(d: dict([record(k: r.k, v: r.k)]))))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "array(record(key: K, value: V))"

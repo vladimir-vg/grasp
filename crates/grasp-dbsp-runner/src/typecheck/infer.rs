@@ -4,11 +4,11 @@
 //! while `ops` decides what an operator does with the streams it is given.
 
 use super::{Functions, TResult, err};
-use std::fmt;
 use crate::diag::Span;
 use crate::expr::{Builtin, Conv, TypedExpr};
-use crate::lang::{BinOp, Expr, ExprKind, UnOp};
+use crate::lang::{BinOp, DictLit, Expr, ExprKind, UnOp};
 use crate::value::{DynValue, TypeDesc};
+use std::fmt;
 
 /// The type of an expression.
 ///
@@ -26,6 +26,15 @@ pub(super) enum Ty {
     Int,
     /// A float literal, which inhabits any floating type.
     Float,
+    /// `[]` — an empty array, whose element type is not yet known.
+    ///
+    /// Like `None`, this carries a value that is complete and a type that is
+    /// not: an empty array is one value whatever its elements would have been.
+    /// It takes its type from context and has no default, so an empty array
+    /// that never meets one is an error rather than a guess.
+    EmptyArray,
+    /// `{}` — an empty dict, on the same terms as `EmptyArray`.
+    EmptyDict,
 }
 
 impl Ty {
@@ -36,7 +45,7 @@ impl Ty {
             Ty::Known(t) => Some(t.clone()),
             Ty::Int => Some(TypeDesc::I64),
             Ty::Float => Some(TypeDesc::F64),
-            Ty::None => Option::None,
+            Ty::None | Ty::EmptyArray | Ty::EmptyDict => Option::None,
         }
     }
 }
@@ -74,6 +83,8 @@ fn pin(e: &mut TypedExpr, ty: &TypeDesc) {
         | TypedExpr::Field(..)
         | TypedExpr::Record(_)
         | TypedExpr::Array(_)
+        | TypedExpr::Dict(_)
+        | TypedExpr::DictFrom(_)
         | TypedExpr::Cast(..) => {}
     }
 }
@@ -93,7 +104,22 @@ pub(super) fn commit(
             pin(e, &t);
             Ok(t)
         }
-        Option::None => err(span, format!("cannot infer a type for `NONE` in {what}")),
+        // The three values that carry no type of their own. Each says what
+        // would give it one, rather than only that it has none.
+        Option::None => err(
+            span,
+            match ty {
+                Ty::EmptyArray => format!(
+                    "an empty array has no element type in {what}; give the node a \
+                     typespec, or write `cast([], array(T))`"
+                ),
+                Ty::EmptyDict => format!(
+                    "an empty dict has no key or value type in {what}; give the node a \
+                     typespec, or write `cast({{}}, dict(K, V))`"
+                ),
+                _ => format!("cannot infer a type for `NONE` in {what}"),
+            },
+        ),
     }
 }
 
@@ -117,6 +143,38 @@ fn unify(a: Ty, b: Ty, span: Span) -> TResult<Ty> {
         (Float, Float) | (Int, Float) | (Float, Int) => Float,
         (None, Int) | (Int, None) => Known(optional(TypeDesc::I64)),
         (None, Float) | (Float, None) => Known(optional(TypeDesc::F64)),
+        // An empty container takes the other side's type, if that side is a
+        // container of the right kind.
+        (EmptyArray, EmptyArray) => EmptyArray,
+        (EmptyDict, EmptyDict) => EmptyDict,
+        (EmptyArray, Known(t)) | (Known(t), EmptyArray) => {
+            if !matches!(t.non_null(), TypeDesc::Array(_)) {
+                return err(span, format!("an empty array is not a `{t}`"));
+            }
+            Known(t)
+        }
+        (EmptyDict, Known(t)) | (Known(t), EmptyDict) => {
+            if !matches!(t.non_null(), TypeDesc::Dict(..)) {
+                return err(span, format!("an empty dict is not a `{t}`"));
+            }
+            Known(t)
+        }
+        (EmptyArray, None) | (None, EmptyArray) => {
+            return err(span, "an empty array has no element type here");
+        }
+        (EmptyDict, None) | (None, EmptyDict) => {
+            return err(span, "an empty dict has no key or value type here");
+        }
+        (EmptyArray, Int | Float) | (Int | Float, EmptyArray) => {
+            return err(span, "an empty array is not a number");
+        }
+        (EmptyDict, Int | Float) | (Int | Float, EmptyDict) => {
+            return err(span, "an empty dict is not a number");
+        }
+        (EmptyArray, EmptyDict) | (EmptyDict, EmptyArray) => {
+            return err(span, "an empty array and an empty dict are different types");
+        }
+
         (Int, Known(t)) | (Known(t), Int) => {
             if !is_numeric(&t) {
                 return err(span, format!("an integer literal has no `{t}` value"));
@@ -152,7 +210,11 @@ fn unify(a: Ty, b: Ty, span: Span) -> TResult<Ty> {
 }
 
 pub(super) fn optional(t: TypeDesc) -> TypeDesc {
-    if t.is_optional() { t } else { TypeDesc::Optional(Box::new(t)) }
+    if t.is_optional() {
+        t
+    } else {
+        TypeDesc::Optional(Box::new(t))
+    }
 }
 
 pub(super) fn is_numeric(t: &TypeDesc) -> bool {
@@ -166,6 +228,15 @@ pub(super) fn is_stringy(t: &TypeDesc) -> bool {
 /// Checks one function body against the types at a call site, and settles its
 /// type. `what` names the position for the diagnostic, and reaching a concrete
 /// type here is also what pins any literal the body left waiting for context.
+/// `expected` is the type the operator will give this function's result, taken
+/// from the node's `::` typespec when it has one.
+///
+/// It **supplies a type only where inference has none** — an empty container
+/// literal — and never overrides one. That is what keeps a typespec a check on
+/// what was inferred, as [`check_decl`](super::check_decl) still verifies,
+/// while letting it reach the one thing inference cannot work out on its own.
+/// The stream-level equivalent already behaves this way: an `empty()` argument
+/// takes its type from the node its parameter feeds.
 pub(super) fn check_fun(
     names: &[String],
     body: &Expr,
@@ -173,6 +244,7 @@ pub(super) fn check_fun(
     span: Span,
     what: impl fmt::Display,
     funcs: &Functions<'_>,
+    expected: Option<&TypeDesc>,
 ) -> TResult<(TypedExpr, TypeDesc)> {
     if names.len() != params.len() {
         return err(
@@ -184,9 +256,12 @@ pub(super) fn check_fun(
             ),
         );
     }
-    let env: Vec<(&str, &TypeDesc)> =
-        names.iter().map(|s| s.as_str()).zip(params.iter()).collect();
-    let (mut e, ty) = infer(body, &env, funcs)?;
+    let env: Vec<(&str, &TypeDesc)> = names
+        .iter()
+        .map(|s| s.as_str())
+        .zip(params.iter())
+        .collect();
+    let (mut e, ty) = infer(body, &env, funcs, expected)?;
     let t = commit(&mut e, ty, body.span, what)?;
     Ok((e, t))
 }
@@ -203,6 +278,12 @@ fn substitute(e: &TypedExpr, args: &[TypedExpr]) -> TypedExpr {
         TypedExpr::Field(b, i) => TypedExpr::Field(Box::new(substitute(b, args)), *i),
         TypedExpr::Record(f) => TypedExpr::Record(f.iter().map(|x| substitute(x, args)).collect()),
         TypedExpr::Array(f) => TypedExpr::Array(f.iter().map(|x| substitute(x, args)).collect()),
+        TypedExpr::Dict(e) => TypedExpr::Dict(
+            e.iter()
+                .map(|(k, v)| (substitute(k, args), substitute(v, args)))
+                .collect(),
+        ),
+        TypedExpr::DictFrom(i) => TypedExpr::DictFrom(Box::new(substitute(i, args))),
         TypedExpr::Unary(op, i) => TypedExpr::Unary(*op, Box::new(substitute(i, args))),
         TypedExpr::Binary(op, l, r) => TypedExpr::Binary(
             *op,
@@ -213,22 +294,35 @@ fn substitute(e: &TypedExpr, args: &[TypedExpr]) -> TypedExpr {
             TypedExpr::Call(*f, a.iter().map(|x| substitute(x, args)).collect())
         }
         TypedExpr::Cast(i, c) => TypedExpr::Cast(Box::new(substitute(i, args)), c.clone()),
-        leaf @ (TypedExpr::Const(_) | TypedExpr::IntLit(_) | TypedExpr::FloatLit(_)) => leaf.clone(),
+        leaf @ (TypedExpr::Const(_) | TypedExpr::IntLit(_) | TypedExpr::FloatLit(_)) => {
+            leaf.clone()
+        }
     }
 }
 
-fn infer(e: &Expr, env: &[(&str, &TypeDesc)], funcs: &Functions<'_>) -> TResult<(TypedExpr, Ty)> {
+fn infer(
+    e: &Expr,
+    env: &[(&str, &TypeDesc)],
+    funcs: &Functions<'_>,
+    expected: Option<&TypeDesc>,
+) -> TResult<(TypedExpr, Ty)> {
     // Every diagnostic below is reported against the offending expression, not
     // the enclosing declaration.
     let span = e.span;
     Ok(match &e.kind {
         ExprKind::None => (TypedExpr::Const(DynValue::None), Ty::None),
-        ExprKind::Bool(b) => (TypedExpr::Const(DynValue::Bool(*b)), Ty::Known(TypeDesc::Bool)),
+        ExprKind::Bool(b) => (
+            TypedExpr::Const(DynValue::Bool(*b)),
+            Ty::Known(TypeDesc::Bool),
+        ),
         // A numeric literal has no type of its own; the operand beside it
         // decides, and `commit` supplies the default where nothing does.
         ExprKind::Int(v) => (TypedExpr::IntLit(*v), Ty::Int),
         ExprKind::Float(v) => (TypedExpr::FloatLit(*v), Ty::Float),
-        ExprKind::Str(s) => (TypedExpr::Const(DynValue::str(s)), Ty::Known(TypeDesc::String)),
+        ExprKind::Str(s) => (
+            TypedExpr::Const(DynValue::str(s)),
+            Ty::Known(TypeDesc::String),
+        ),
 
         ExprKind::Var(name) => {
             let Some(i) = env.iter().position(|(n, _)| n == name) else {
@@ -238,7 +332,7 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)], funcs: &Functions<'_>) -> TResult<
         }
 
         ExprKind::Field(base, field) => {
-            let (mut be, bt) = infer(base, env, funcs)?;
+            let (mut be, bt) = infer(base, env, funcs, Option::None)?;
             let bt = commit(&mut be, bt, span, "a field access")?;
             let rec = bt.non_null();
             let Some(index) = rec.field_index(field) else {
@@ -252,12 +346,14 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)], funcs: &Functions<'_>) -> TResult<
         }
 
         ExprKind::Cast(inner, to) => {
-            let (mut ie, it) = infer(inner, env, funcs)?;
+            let (mut ie, it) = infer(inner, env, funcs, Option::None)?;
             let conv = conversion(&it, to, span)?;
             // A literal operand settles before converting, so `cast(1, f64)`
             // goes i64 -> f64 rather than the literal simply being an f64.
             // Predictable, and it keeps one rule for what a literal does.
-            if !matches!(it, Ty::None) {
+            // A value with no type of its own is given one by the cast, so
+            // there is nothing to settle first.
+            if !matches!(it, Ty::None | Ty::EmptyArray | Ty::EmptyDict) {
                 commit(&mut ie, it, span, "the value being cast")?;
             }
             (TypedExpr::Cast(Box::new(ie), conv), Ty::Known(to.clone()))
@@ -266,7 +362,10 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)], funcs: &Functions<'_>) -> TResult<
         ExprKind::Record(fields) => {
             let mut built = Vec::with_capacity(fields.len());
             for (name, value) in fields {
-                let (mut te, ty) = infer(value, env, funcs)?;
+                // Fields are matched to the expected record's by name, so a
+                // literal written in any order reaches the right expectation.
+                let want = expected.and_then(|t| t.non_null().field_type(name));
+                let (mut te, ty) = infer(value, env, funcs, want)?;
                 let ty = commit(&mut te, ty, span, format!("field `{name}`"))?;
                 built.push((name.clone(), ty, te));
             }
@@ -276,16 +375,22 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)], funcs: &Functions<'_>) -> TResult<
             // position. Writing the fields in a different order builds the same
             // record.
             built.sort_by(|(a, _, _), (b, _, _)| a.cmp(b));
-            let (types, exprs): (Vec<_>, Vec<_>) =
-                built.into_iter().map(|(name, ty, te)| ((name, ty), te)).unzip();
+            let (types, exprs): (Vec<_>, Vec<_>) = built
+                .into_iter()
+                .map(|(name, ty, te)| ((name, ty), te))
+                .unzip();
             (TypedExpr::Record(exprs), Ty::Known(TypeDesc::Record(types)))
         }
 
         ExprKind::List(items) => {
+            let want = match expected.map(TypeDesc::non_null) {
+                Some(TypeDesc::Array(t)) => Some(&**t),
+                _ => Option::None,
+            };
             let mut exprs = Vec::with_capacity(items.len());
             let mut elem: Option<Ty> = Option::None;
             for item in items {
-                let (te, ty) = infer(item, env, funcs)?;
+                let (te, ty) = infer(item, env, funcs, want)?;
                 // One element type for the whole array, by the same `unify`
                 // arithmetic and comparison use.
                 elem = Some(match elem {
@@ -294,12 +399,17 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)], funcs: &Functions<'_>) -> TResult<
                 });
                 exprs.push(te);
             }
+            // An empty array is a complete value with an open type, so it is
+            // pending rather than an error — `commit` reports it only if
+            // nothing ever settles it.
             let Some(elem) = elem else {
-                return err(
-                    span,
-                    "an empty array has no element type; write at least one element, \
-                     or bind the array to a name carrying an `array(...)` typespec",
-                );
+                return Ok((
+                    TypedExpr::Array(Vec::new()),
+                    match want {
+                        Some(t) => Ty::Known(TypeDesc::Array(Box::new(t.clone()))),
+                        Option::None => Ty::EmptyArray,
+                    },
+                ));
             };
             // Settling the first element settles the array, and the rest follow
             // it — so a literal in any position takes the same type as the others.
@@ -307,11 +417,110 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)], funcs: &Functions<'_>) -> TResult<
             for e in exprs.iter_mut().skip(1) {
                 pin(e, elem.non_null());
             }
-            (TypedExpr::Array(exprs), Ty::Known(TypeDesc::Array(Box::new(elem))))
+            (
+                TypedExpr::Array(exprs),
+                Ty::Known(TypeDesc::Array(Box::new(elem))),
+            )
+        }
+
+        // The two spellings share a type rule: one key type, one value type, and
+        // a key type that has a JSON spelling.
+        ExprKind::Dict(lit) => {
+            let (te, key, value) = match lit {
+                DictLit::Pairs(entries) => {
+                    let want = match expected.map(TypeDesc::non_null) {
+                        Some(TypeDesc::Dict(k, v)) => Some((&**k, &**v)),
+                        _ => Option::None,
+                    };
+                    // As an empty array: a complete value with an open type.
+                    if entries.is_empty() {
+                        return Ok((
+                            TypedExpr::Dict(Vec::new()),
+                            match want {
+                                Some((k, v)) => Ty::Known(TypeDesc::Dict(
+                                    Box::new(k.clone()),
+                                    Box::new(v.clone()),
+                                )),
+                                Option::None => Ty::EmptyDict,
+                            },
+                        ));
+                    }
+                    let mut exprs: Vec<(TypedExpr, TypedExpr)> = Vec::with_capacity(entries.len());
+                    let (mut kt, mut vt): (Option<Ty>, Option<Ty>) = (Option::None, Option::None);
+                    for (k, v) in entries {
+                        let (ke, k_ty) = infer(k, env, funcs, want.map(|(k, _)| k))?;
+                        let (ve, v_ty) = infer(v, env, funcs, want.map(|(_, v)| v))?;
+                        // One key type and one value type for the whole dict, by
+                        // the same `unify` an array literal uses per element.
+                        kt = Some(match kt {
+                            Option::None => k_ty,
+                            Some(prev) => unify(prev, k_ty, k.span)?,
+                        });
+                        vt = Some(match vt {
+                            Option::None => v_ty,
+                            Some(prev) => unify(prev, v_ty, v.span)?,
+                        });
+                        exprs.push((ke, ve));
+                    }
+                    // Settling the first entry settles the dict; the rest follow
+                    // it, so a literal in any position takes the same type.
+                    let key = commit(&mut exprs[0].0, kt.expect("non-empty"), span, "a dict key")?;
+                    let value = commit(
+                        &mut exprs[0].1,
+                        vt.expect("non-empty"),
+                        span,
+                        "a dict value",
+                    )?;
+                    for (k, v) in exprs.iter_mut().skip(1) {
+                        pin(k, key.non_null());
+                        pin(v, value.non_null());
+                    }
+                    (TypedExpr::Dict(exprs), key, value)
+                }
+                DictLit::From(arr) => {
+                    let (mut ae, a_ty) = infer(arr, env, funcs, Option::None)?;
+                    let a_ty = commit(&mut ae, a_ty, arr.span, "the array a dict is built from")?;
+                    let TypeDesc::Array(elem) = a_ty.non_null() else {
+                        return err(
+                            arr.span,
+                            format!("a dict is built from an array, found `{a_ty}`"),
+                        );
+                    };
+                    let (Some(key), Some(value)) =
+                        (elem.field_type("key"), elem.field_type("value"))
+                    else {
+                        return err(
+                            arr.span,
+                            format!(
+                                "a dict is built from an `array(record(key: K, value: V))`, \
+                                 found `array({elem})`"
+                            ),
+                        );
+                    };
+                    (
+                        TypedExpr::DictFrom(Box::new(ae)),
+                        key.clone(),
+                        value.clone(),
+                    )
+                }
+            };
+            if !key.is_dict_key() {
+                return err(
+                    span,
+                    format!(
+                        "`{key}` cannot be a dict key; a key must be `string`, `i64`, \
+                         `f64` or `bool`"
+                    ),
+                );
+            }
+            (
+                te,
+                Ty::Known(TypeDesc::Dict(Box::new(key), Box::new(value))),
+            )
         }
 
         ExprKind::Unary(op, inner) => {
-            let (ie, it) = infer(inner, env, funcs)?;
+            let (ie, it) = infer(inner, env, funcs, Option::None)?;
             // Like arithmetic, both unary operators need a definite value.
             let name = match op {
                 UnOp::Neg => "-",
@@ -320,6 +529,9 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)], funcs: &Functions<'_>) -> TResult<
             let ty = match it {
                 Ty::None => {
                     return err(span, format!("`{name}` needs a value, but this is `NONE`"));
+                }
+                Ty::EmptyArray | Ty::EmptyDict => {
+                    return err(span, format!("cannot apply `{name}` to an empty container"));
                 }
                 // A negated literal is still a literal, so `-1` takes its type
                 // from whatever it is used with.
@@ -353,8 +565,8 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)], funcs: &Functions<'_>) -> TResult<
         }
 
         ExprKind::Binary(op, l, r) => {
-            let (mut le, lt) = infer(l, env, funcs)?;
-            let (mut re, rt) = infer(r, env, funcs)?;
+            let (mut le, lt) = infer(l, env, funcs, Option::None)?;
+            let (mut re, rt) = infer(r, env, funcs, Option::None)?;
             let ty = infer_binop(*op, &mut le, lt, &mut re, rt, span)?;
             (TypedExpr::Binary(*op, Box::new(le), Box::new(re)), ty)
         }
@@ -367,16 +579,17 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)], funcs: &Functions<'_>) -> TResult<
                 return instantiate(def, args, env, funcs, span);
             };
             if let Some(arity) = builtin.arity()
-                && args.len() != arity {
-                    return err(
-                        span,
-                        format!("`{name}` takes {arity} argument(s), found {}", args.len()),
-                    );
-                }
+                && args.len() != arity
+            {
+                return err(
+                    span,
+                    format!("`{name}` takes {arity} argument(s), found {}", args.len()),
+                );
+            }
             let mut exprs = Vec::with_capacity(args.len());
             let mut types = Vec::with_capacity(args.len());
             for a in args {
-                let (te, ty) = infer(a, env, funcs)?;
+                let (te, ty) = infer(a, env, funcs, Option::None)?;
                 exprs.push(te);
                 types.push(ty);
             }
@@ -396,6 +609,9 @@ fn extractable(t: &TypeDesc) -> bool {
         TypeDesc::Bool | TypeDesc::I64 | TypeDesc::F64 | TypeDesc::String | TypeDesc::Json => true,
         TypeDesc::Record(fields) => fields.iter().all(|(_, f)| extractable(f.non_null())),
         TypeDesc::Array(elem) => extractable(elem.non_null()),
+        // A document's object keys are strings, and a dict key parses from one,
+        // so extracting a dict is the same operation the codec already performs.
+        TypeDesc::Dict(k, v) => k.is_dict_key() && extractable(v.non_null()),
         TypeDesc::Optional(_) => false,
     }
 }
@@ -419,11 +635,31 @@ fn conversion(from: &Ty, to: &TypeDesc, span: Span) -> TResult<Conv> {
     // does for a numeric literal. This is how a definite value's absent
     // counterpart is written.
     let from = match from {
+        // An empty container converts to itself: the value is already right, and
+        // the cast is supplying the type inference had no way to find. This is
+        // `NONE`'s rule, for the same reason.
+        Ty::EmptyArray => {
+            return if matches!(target, TypeDesc::Array(_)) {
+                Ok(Conv::Identity)
+            } else {
+                err(span, format!("an empty array is not a `{to}`"))
+            };
+        }
+        Ty::EmptyDict => {
+            return if matches!(target, TypeDesc::Dict(..)) {
+                Ok(Conv::Identity)
+            } else {
+                err(span, format!("an empty dict is not a `{to}`"))
+            };
+        }
         Ty::None => {
             return if optional_target {
                 Ok(Conv::Identity)
             } else {
-                err(span, format!("`NONE` is not a `{to}`; write `cast(NONE, optional({target}))`"))
+                err(
+                    span,
+                    format!("`NONE` is not a `{to}`; write `cast(NONE, optional({target}))`"),
+                )
             };
         }
         other => other.settle().expect("Ty::None handled above"),
@@ -478,7 +714,10 @@ fn conversion(from: &Ty, to: &TypeDesc, span: Span) -> TResult<Conv> {
         (String, I64) => Conv::StringToInt,
         (String, F64) => Conv::StringToFloat,
         _ => {
-            return err(span, format!("there is no conversion from `{source}` to `{target}`"));
+            return err(
+                span,
+                format!("there is no conversion from `{source}` to `{target}`"),
+            );
         }
     };
 
@@ -534,8 +773,13 @@ fn instantiate(
     let mut arg_exprs = Vec::with_capacity(args.len());
     let mut param_types = Vec::with_capacity(args.len());
     for (a, p) in args.iter().zip(&def.params) {
-        let (mut e, ty) = infer(a, env, funcs)?;
-        param_types.push(commit(&mut e, ty, a.span, format!("argument `{p}` of `{}`", def.name))?);
+        let (mut e, ty) = infer(a, env, funcs, Option::None)?;
+        param_types.push(commit(
+            &mut e,
+            ty,
+            a.span,
+            format!("argument `{p}` of `{}`", def.name),
+        )?);
         arg_exprs.push(e);
     }
 
@@ -545,7 +789,7 @@ fn instantiate(
         .map(|s| s.as_str())
         .zip(param_types.iter())
         .collect();
-    let (body, ty) = infer(&def.body, &body_env, funcs).map_err(|mut d| {
+    let (body, ty) = infer(&def.body, &body_env, funcs, Option::None).map_err(|mut d| {
         d.message = format!("in `{}`, instantiated at {span}: {}", def.name, d.message);
         d
     })?;
@@ -557,8 +801,9 @@ fn instantiate(
 fn definite(t: &Ty, op: &str, span: Span) -> TResult<()> {
     match t {
         Ty::None => err(span, format!("`{op}` needs a value, but this is `NONE`")),
-        // A literal is a definite value; it just has not chosen a type yet.
-        Ty::Int | Ty::Float => Ok(()),
+        // A literal is a definite value; it just has not chosen a type yet. An
+        // empty container is the same: complete as a value, open as a type.
+        Ty::Int | Ty::Float | Ty::EmptyArray | Ty::EmptyDict => Ok(()),
         Ty::Known(t) if t.is_optional() => err(
             span,
             format!(
@@ -710,8 +955,26 @@ fn infer_builtin(
             let Some(doc) = args[0].settle() else {
                 return err(span, "`get` needs a document, but this is `NONE`");
             };
+            // A dict lookup shares the name but not the rules: the key is a
+            // value of the dict's own key type, and the result is its value
+            // type rather than another document.
+            if let TypeDesc::Dict(kt, vt) = doc.non_null() {
+                definite(&args[1], name, span)?;
+                let key = args[1].settle().expect("definite() rejected the none case");
+                if key.non_null() != &**kt {
+                    return err(
+                        span,
+                        format!("this dict is keyed by `{kt}`, but the key is `{key}`"),
+                    );
+                }
+                pin(&mut exprs[1], kt);
+                return Ok(Ty::Known(optional((**vt).clone())));
+            }
             if doc.non_null() != &TypeDesc::Json {
-                return err(span, format!("`get` needs a document, found `{doc}`"));
+                return err(
+                    span,
+                    format!("`get` needs a document or a dict, found `{doc}`"),
+                );
             }
             definite(&args[1], name, span)?;
             let key = args[1].settle().expect("definite() rejected the none case");
@@ -734,10 +997,32 @@ fn infer_builtin(
         Builtin::Keys => {
             definite(&args[0], name, span)?;
             let doc = args[0].settle().expect("definite() rejected the none case");
+            // Definite for a dict, unlike a document: a dict is always a dict,
+            // so there is no "not an object" case to report as absence.
+            if let TypeDesc::Dict(kt, _) = doc.non_null() {
+                return Ok(Ty::Known(TypeDesc::Array(kt.clone())));
+            }
             if doc.non_null() != &TypeDesc::Json {
-                return err(span, format!("`keys` needs a document, found `{doc}`"));
+                return err(
+                    span,
+                    format!("`keys` needs a document or a dict, found `{doc}`"),
+                );
             }
             Ty::Known(optional(TypeDesc::Array(Box::new(TypeDesc::String))))
+        }
+
+        // The inverse of the array form of `dict(...)`, so the record it yields
+        // is the one that form consumes.
+        Builtin::Entries => {
+            definite(&args[0], name, span)?;
+            let d = args[0].settle().expect("definite() rejected the none case");
+            let TypeDesc::Dict(kt, vt) = d.non_null() else {
+                return err(span, format!("`entries` needs a dict, found `{d}`"));
+            };
+            Ty::Known(TypeDesc::Array(Box::new(TypeDesc::record([
+                ("key".to_string(), (**kt).clone()),
+                ("value".to_string(), (**vt).clone()),
+            ]))))
         }
 
         Builtin::Coalesce => {
@@ -763,14 +1048,26 @@ fn infer_builtin(
                 definite(arg, name, span)?;
                 let t = arg.settle().expect("definite() rejected the none case");
                 let ok = is_stringy(&t)
-                    || (b == Builtin::Length && matches!(t.non_null(), TypeDesc::Array(_)));
+                    || (b == Builtin::Length
+                        && matches!(t.non_null(), TypeDesc::Array(_) | TypeDesc::Dict(..)));
                 if !ok {
                     let n = i + 1;
-                    let want = if b == Builtin::Length { "a string or an array" } else { "a string" };
-                    return err(span, format!("argument {n} of `{name}` must be {want}, found `{t}`"));
+                    let want = if b == Builtin::Length {
+                        "a string, an array or a dict"
+                    } else {
+                        "a string"
+                    };
+                    return err(
+                        span,
+                        format!("argument {n} of `{name}` must be {want}, found `{t}`"),
+                    );
                 }
             }
-            if b == Builtin::Length { Ty::Known(TypeDesc::I64) } else { Ty::Known(TypeDesc::String) }
+            if b == Builtin::Length {
+                Ty::Known(TypeDesc::I64)
+            } else {
+                Ty::Known(TypeDesc::String)
+            }
         }
         // Type-preserving, so a literal argument keeps its type open: `abs(-1)`
         // is still whatever it is used with.
@@ -780,6 +1077,12 @@ fn infer_builtin(
                 lit @ (Ty::Int | Ty::Float) => lit.clone(),
                 Ty::Known(t) if is_numeric(t) => Ty::Known(t.clone()),
                 Ty::Known(t) => return err(span, format!("`{name}` needs a number, found `{t}`")),
+                Ty::EmptyArray | Ty::EmptyDict => {
+                    return err(
+                        span,
+                        format!("`{name}` needs a number, found an empty container"),
+                    );
+                }
                 Ty::None => unreachable!("definite() rejected the none case"),
             }
         }

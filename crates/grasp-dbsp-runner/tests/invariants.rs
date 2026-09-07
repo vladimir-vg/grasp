@@ -28,10 +28,15 @@ fn hash_of(v: &DynValue) -> u64 {
 }
 
 /// Leaf values, plus nesting. Recursion is what makes the archived
-/// representation interesting, so the two containers whose `Ord`, `Hash` and
-/// archived ordering we own — `Record` and `Array` — must both be in the mix.
-/// `Json` is here for the opposite reason: `FlatVariant` is supposed to satisfy
-/// these by construction, so a failure would mean it does not.
+/// representation interesting, so the three containers whose `Ord`, `Hash` and
+/// archived ordering we own — `Record`, `Array` and `Dict` — must all be in the
+/// mix. `Json` is here for the opposite reason: `FlatVariant` is supposed to
+/// satisfy these by construction, so a failure would mean it does not.
+///
+/// `Dict` keys here are arbitrary values, not the scalars the *type system*
+/// admits: `DynValue` can hold a composite key structurally, and ordering
+/// safety should be exercised over everything the representation can hold
+/// rather than only what the checker will build.
 fn any_value() -> impl Strategy<Value = DynValue> {
     let leaf = prop_oneof![
         Just(DynValue::None),
@@ -46,7 +51,9 @@ fn any_value() -> impl Strategy<Value = DynValue> {
     leaf.prop_recursive(3, 16, 4, |inner| {
         prop_oneof![
             prop::collection::vec(inner.clone(), 0..4).prop_map(DynValue::Record),
-            prop::collection::vec(inner, 0..4).prop_map(DynValue::Array),
+            prop::collection::vec(inner.clone(), 0..4).prop_map(DynValue::Array),
+            prop::collection::vec((inner.clone(), inner), 0..4)
+                .prop_map(|kvs| DynValue::Dict(kvs.into_iter().collect())),
         ]
     })
 }
@@ -182,7 +189,19 @@ fn any_type() -> impl Strategy<Value = TypeDesc> {
             prop::collection::vec(field, 1..4).prop_map(|ts| {
                 TypeDesc::record(ts.into_iter().enumerate().map(|(i, t)| (format!("f{i}"), t)))
             }),
-            inner2.prop_map(|t| TypeDesc::Array(Box::new(t))),
+            inner2.clone().prop_map(|t| TypeDesc::Array(Box::new(t))),
+            // Keys are scalars, which is what `TypeDesc::is_dict_key` admits and
+            // what has a JSON object-key spelling to round-trip through.
+            (
+                prop_oneof![
+                    Just(TypeDesc::Bool),
+                    Just(TypeDesc::I64),
+                    Just(TypeDesc::F64),
+                    Just(TypeDesc::String)
+                ],
+                inner2,
+            )
+                .prop_map(|(k, v)| TypeDesc::Dict(Box::new(k), Box::new(v))),
         ]
     });
     prop_oneof![
@@ -217,6 +236,9 @@ fn value_of(ty: TypeDesc) -> BoxedStrategy<DynValue> {
                 .prop_map(json_value),
         ]
         .boxed(),
+        TypeDesc::Dict(k, v) => prop::collection::vec((value_of(*k), value_of(*v)), 0..4)
+            .prop_map(|kvs| DynValue::Dict(kvs.into_iter().collect()))
+            .boxed(),
         TypeDesc::Optional(inner) => {
             prop_oneof![Just(DynValue::None), value_of(*inner)].boxed()
         }

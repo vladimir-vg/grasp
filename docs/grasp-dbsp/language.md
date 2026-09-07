@@ -80,7 +80,7 @@ language's. [`mapping.md`](mapping.md) records which Rust types these become.
 ### Value types
 
 ```
-value_type := scalar | record_type | array_type | "json"
+value_type := scalar | record_type | array_type | dict_type | "json"
 
 scalar      := bool | i64 | f64 | string | optional "(" value_type ")"
 
@@ -88,6 +88,8 @@ record_type := "record" "(" field ("," field)* ")"
 field       := FIELD_NAME ":" value_type
 
 array_type  := "array" "(" value_type ")"
+dict_type   := "dict" "(" key_type "," value_type ")"
+key_type    := "bool" | "i64" | "f64" | "string"
 ```
 
 That is the whole vocabulary. It is deliberately narrow: the other integer
@@ -117,6 +119,17 @@ map(s, function((row) -> record(id: row.id, name: row.name)))   # a value
 
 `array(T)` is a sequence of one element type, and an ordinary value: it can sit
 in a record, in a column and in a stream, and `flat_map` turns one into rows.
+
+`dict(K,V)` is a key-value map, and an ordinary value in the same way. Its
+entries are **sorted by key and deduplicated**, so two dicts written with their
+entries in different orders are one value, one hash and one Z-set key — the same
+property `record` gets by sorting its fields and `json` gets from its encoding.
+
+**A dict key is a scalar** — `bool`, `i64`, `f64` or `string`. A dict is a JSON
+object on the wire and an object's keys are strings, so a key type has to have
+one string spelling that its own type reads back; no composite type does. It is
+called `dict` rather than `map` because `map` is an operator, and one word
+should not be both.
 
 **Field order is not part of a record's identity.** `record(a: i64, b: string)`
 and `record(b: string, a: i64)` are one type, so a frontend building the same
@@ -282,6 +295,8 @@ expr       := literal
             | NAME                                        # a bound parameter
             | expr "." FIELD_NAME                         # record field
             | "record" "(" FIELD_NAME ":" expr ("," FIELD_NAME ":" expr)* ")"
+            | "{" [expr "=>" expr ("," expr "=>" expr)*] "}"   # a dict
+            | "dict" "(" expr ")"                         # a dict, from an array
             | "[" expr ("," expr)* "]"                    # an array
             | "(" expr ")"                                # grouping, only
             | unop expr
@@ -310,6 +325,51 @@ function((k, e, d) -> record(name: e.name, dname: d.dname))
 ```
 
 Duplicate field names within one `record(...)` literal are a parse error.
+
+A dict is built two ways, because they do different jobs: `{k => v, …}` fixes
+its entries in the source, and `dict(a)` takes however many an
+`array(record(key: K, value: V))` carries. `entries` is the inverse of the
+second.
+
+```
+d := {"a" => 1, "b" => row.n}
+d := dict(row.pairs)                 # pairs : array(record(key:, value:))
+```
+
+Braces are unambiguous here: elsewhere they open a circuit or function body, and
+both of those are declarations rather than expressions.
+
+A key written twice keeps the last value.
+
+### Empty containers take a type from context
+
+`[]` and `{}` are complete values with open types — an empty array is one value
+whatever its elements would have been — so neither carries a type of its own.
+This is the rule `NONE` already follows, and `empty()` one level up.
+
+Three things can supply the type, and the first that applies wins:
+
+- **The node's typespec.** A `::` annotation says what the operator's function
+  must return, and that flows into the body:
+
+  ```
+  out :: zset(record(tags: dict(string, i64)))
+  out := map(t, function((r) -> record(tags: {})))
+  ```
+
+- **A sibling**, wherever two values must already meet under one type —
+  `coalesce(m, {})`, `if(c, m, {})`, a comparison.
+
+- **A `cast`**, written out where neither reaches:
+  `cast({}, dict(string, i64))`. This is `cast(NONE, optional(i64))` for the
+  same reason.
+
+With none of them, it is an error naming all three rather than a guess: an
+element type nobody chose would otherwise end up in the output schema.
+
+**A typespec supplies a type only where inference has none. It never overrides
+one** — a node whose inferred type disagrees with its annotation is still an
+error, which is what keeps the annotation a check.
 
 ### Named functions are templates
 
@@ -398,11 +458,14 @@ above and with each other.
 | `coalesce` | `optional(T) × T → T` | `x` if present, else `y` |
 | `if` | `bool × T × T → T` | the taken arm |
 | `abs` / `floor` / `ceil` / `round` | `T → T`, `T` numeric | type-preserving |
-| `length` | `string → i64`, `array(T) → i64` | element or character count |
+| `length` | `string → i64`, `array(T) → i64`, `dict(K,V) → i64` | element, entry or character count |
 | `concat` | `string × string → string` | concatenation |
 | `lower` / `upper` / `trim` | `string → string` | |
 | `get` | `(json \| optional(json)) × (string \| i64) → optional(json)` | a member, by key or 0-based index |
+| `get` | `dict(K,V) × K → optional(V)` | an entry, by key |
 | `keys` | `json → optional(array(string))` | an object's keys, `NONE` otherwise |
+| `keys` | `dict(K,V) → array(K)` | a dict's keys, sorted |
+| `entries` | `dict(K,V) → array(record(key: K, value: V))` | a dict's entries, sorted by key |
 
 Every builtin but `coalesce` rejects an `optional` argument, for the reason
 under [Absence](#absence). `coalesce` is the one that inspects absence rather
@@ -410,6 +473,12 @@ than being rejected for it.
 
 There is no `+` on strings. `concat` is the one way to join them, and `+` is
 arithmetic only.
+
+`get` and `keys` each cover a document and a dict, which are the same idea at
+two levels of typing. They differ where the types differ: a dict lookup is exact
+rather than navigation, and `keys` on a dict is definite — a dict is always a
+dict, so there is no "not an object" case to report as absence. `entries` is
+what turns a dict into rows, through `flat_map`.
 
 `if` is the only branching construct, and the only builtin that does not
 evaluate all of its arguments — the untaken arm does not run. Because every
@@ -712,7 +781,8 @@ closure := fp.path
   `map`, `join` or `aggregate`, whose result type comes from a function applied
   to the very value type being solved for; a recursion defined only that way
   needs a typespec. A typespec, when given, is checked against the inferred
-  type rather than overriding it.
+  type rather than overriding it — it supplies one only where inference has none
+  at all, as for an [empty container](#empty-containers-take-a-type-from-context).
 - **Only recursive members leave the fixpoint.** `fp.path` works; other body
   nodes exist only inside the nested circuit.
 - **`distinct` is applied for you** to each recursive stream, on every round.
@@ -737,8 +807,8 @@ Anywhere else it is an error saying so, rather than guessing.
 
 These may not name a node, a function or a parameter: the 20 operator names,
 the 5 aggregator names, the builtin names, the type constructors (`bool`,
-`i64`, `f64`, `string`, `json`, `optional`, `record`, `array`, `sql`, `zset`,
-`indexed_zset`), `cast`, and `true`, `false`, `NONE`, `null`, `function`,
+`i64`, `f64`, `string`, `json`, `optional`, `record`, `array`, `dict`, `sql`,
+`zset`, `indexed_zset`), `cast`, and `true`, `false`, `NONE`, `null`, `function`,
 `return`, `and`, `or`, `not`, `circuit`, `fixpoint`.
 
 `if` is reserved by being a builtin, like every other builtin name. `then` and

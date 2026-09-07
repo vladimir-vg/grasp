@@ -1,0 +1,318 @@
+# Dicts.
+#
+# `dict(K,V)` is a typed key-value map. Two forms build one thing — `{k => v}`
+# fixes its entries in the source, `dict(a)` takes however many an
+# `array(record(key:, value:))` carries — and the entries are sorted and
+# deduplicated whichever is used.
+#
+# Keys are scalars. A dict is a JSON object on the wire, and an object's keys
+# are strings, so a key type has to have one string spelling its own type reads
+# back. `string`, `i64`, `f64` and `bool` do; nothing composite does.
+
+- name: build a dict from key-value pairs
+  source: |
+    emp := input("emp")
+    emp :: zset(record(name: string, dept: i64))
+
+    out := map(emp, function((r) -> record(
+        name: r.name,
+        tags: {"dept" => r.dept, "rank" => 1})))
+
+  input:
+    - emp:
+        - [1, {name: "ana", dept: 10}]
+
+  expected_exact_output:
+    - out:
+        - [1, {name: "ana", tags: {dept: 10, rank: 1}}]
+
+- name: build a dict from an array of key-value records
+  source: |
+    emp := input("emp")
+    emp :: zset(record(name: string, dept: i64))
+
+    out := map(emp, function((r) -> record(
+        m: dict([record(key: r.name, value: r.dept)]))))
+
+  # The array form is the one that can build a dict whose size follows the data.
+  # `key` and `value` are resolved by name, as they are for `map_index`.
+  input:
+    - emp:
+        - [1, {name: "ana", dept: 10}]
+
+  expected_exact_output:
+    - out:
+        - [1, {m: {ana: 10}}]
+
+- name: entry order is canonicalised away
+  source: |
+    t := input("t")
+    t :: zset(record(a: i64))
+
+    x   := map(t, function((r) -> record(d: {"p" => 1, "q" => 2})))
+    y   := map(t, function((r) -> record(d: {"q" => 2, "p" => 1})))
+    out := plus(x, y)
+
+  # The two literals name their entries in different orders and are one value,
+  # so this is one row with weight 2 rather than two rows with weight 1. A dict
+  # is a `BTreeMap`, so there is no way to build an uncanonical one.
+  input:
+    - t:
+        - [1, {a: 1}]
+
+  expected_exact_output:
+    - out:
+        - [2, {d: {p: 1, q: 2}}]
+
+- name: a repeated key keeps the last value written
+  source: |
+    t := input("t")
+    t :: zset(record(a: i64))
+    out := map(t, function((r) -> record(d: {"k" => 1, "k" => 2})))
+
+  input:
+    - t:
+        - [1, {a: 1}]
+
+  expected_exact_output:
+    - out:
+        - [1, {d: {k: 2}}]
+
+- name: get, keys and length
+  source: |
+    t := input("t")
+    t :: zset(record(a: i64))
+
+    out := map(t, function((r) -> record(
+        hit:   get({"p" => 1, "q" => 2}, "p"),
+        miss:  get({"p" => 1, "q" => 2}, "zz"),
+        ks:    keys({"p" => 1, "q" => 2}),
+        n:     length({"p" => 1, "q" => 2}))))
+
+  # `get` on a dict is an exact lookup, so a missing key is absence — and
+  # `keys` is definite, unlike on a document, because a dict is always a dict.
+  input:
+    - t:
+        - [1, {a: 1}]
+
+  expected_exact_output:
+    - out:
+        - [1, {hit: 1, miss: null, ks: ["p", "q"], n: 2}]
+
+- name: entries turns a dict into rows
+  source: |
+    t := input("t")
+    t :: zset(record(a: i64))
+    out := flat_map(t, function((r) -> entries({"p" => r.a, "q" => 2})))
+
+  # This is what an unnest over a dict lowers to. Entries come out sorted by
+  # key, because that is the order a dict is stored in.
+  input:
+    - t:
+        - [1, {a: 7}]
+
+  expected_exact_output:
+    - out:
+        - [1, {key: "p", value: 7}]
+        - [1, {key: "q", value: 2}]
+
+- name: entries and dict are inverses
+  source: |
+    t := input("t")
+    t :: zset(record(a: i64))
+    out := map(t, function((r) -> record(d: dict(entries({"p" => r.a, "q" => 2})))))
+
+  input:
+    - t:
+        - [1, {a: 7}]
+
+  expected_exact_output:
+    - out:
+        - [1, {d: {p: 7, q: 2}}]
+
+- name: a dict column round-trips through JSON
+  source: |
+    t := input("t")
+    t :: zset(record(byname: dict(string, i64)))
+    out := t
+
+  # Written keys come back sorted: the second row names its entries in the
+  # other order and is the same value.
+  input:
+    - t:
+        - [1, {byname: {b: 2, a: 1}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {byname: {a: 1, b: 2}}]
+
+- name: keys of every scalar type round-trip
+  source: |
+    t := input("t")
+    t :: zset(record(byint: dict(i64, string), bybool: dict(bool, i64), byfloat: dict(f64, i64)))
+    out := t
+
+  # An object's keys are strings, so a non-string key is spelled as one and read
+  # back by the type. `dict(i64, ...)` writes `1`, not `"1"`, as its *value*.
+  input:
+    - t:
+        - [1, {byint: {"2": "b", "1": "a"}, bybool: {"true": 1}, byfloat: {"1.5": 9}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {byint: {"1": "a", "2": "b"}, bybool: {"true": 1}, byfloat: {"1.5": 9}}]
+
+- name: a dict is an ordinary value, so it can key a join
+  source: |
+    l := input("l")
+    l :: zset(record(k: string, tags: dict(string, i64)))
+    r := input("r")
+    r :: zset(record(k: string, n: i64))
+
+    li  := map_index(l, function((x) -> record(key: x.k, value: record(tags: x.tags))))
+    ri  := map_index(r, function((x) -> record(key: x.k, value: record(n: x.n))))
+    out := join(li, ri, function((k, a, b) -> record(k: k, tags: a.tags, n: b.n)))
+
+  input:
+    - l:
+        - [1, {k: "x", tags: {a: 1}}]
+      r:
+        - [1, {k: "x", n: 5}]
+
+  expected_exact_output:
+    - out:
+        - [1, {k: "x", tags: {a: 1}, n: 5}]
+
+- name: a dict extracts from a document, and converts back to one
+  source: |
+    d := input("d")
+    d :: zset(record(payload: json))
+
+    out := map(d, function((r) -> record(
+        m:   cast(r.payload, optional(dict(string, i64))),
+        doc: cast({"p" => 1}, json))))
+
+  # Extraction can fail — a document need not hold that shape — so the target is
+  # `optional`, as it is for every other `cast` out of a document.
+  input:
+    - d:
+        - [1, {payload: {a: 1, b: 2}}]
+        - [1, {payload: 7}]
+
+  expected_exact_output:
+    - out:
+        - [1, {m: {a: 1, b: 2}, doc: {p: 1}}]
+        - [1, {m: null, doc: {p: 1}}]
+
+- name: a retraction of a dict-valued row cancels
+  source: |
+    t := input("t")
+    t :: zset(record(d: dict(string, i64)))
+    out := t
+
+  # Two spellings of one dict, inserted and then retracted, cancel — which they
+  # only can if both produced the same Z-set key.
+  input:
+    - t:
+        - [1, {d: {a: 1, b: 2}}]
+        - [-1, {d: {b: 2, a: 1}}]
+
+  expected_exact_output:
+    - {}
+
+- name: an empty dict takes its type from the node's typespec
+  source: |
+    t := input("t")
+    t :: zset(record(a: i64))
+
+    out :: zset(record(tags: dict(string, i64)))
+    out := map(t, function((r) -> record(tags: {})))
+
+  # `{}` is a complete value with an open type: an empty dict is one value
+  # whatever it would have been keyed by. The typespec supplies the type
+  # inference has no way to find — and only that. It never overrides one, which
+  # is why the declaration is still checked against what was inferred.
+  #
+  # `empty()` already works this way one level up, taking its type from the node
+  # its parameter feeds.
+  input:
+    - t:
+        - [1, {a: 1}]
+
+  expected_exact_output:
+    - out:
+        - [1, {tags: {}}]
+
+- name: an empty array takes its type the same way
+  source: |
+    t := input("t")
+    t :: zset(record(a: i64))
+
+    out :: zset(record(xs: array(i64), m: dict(string, array(i64))))
+    out := map(t, function((r) -> record(xs: [], m: {"k" => []})))
+
+  # Nested: the expected record gives `m` its dict type, which gives the entry
+  # its value type, which settles the inner `[]`.
+  input:
+    - t:
+        - [1, {a: 1}]
+
+  expected_exact_output:
+    - out:
+        - [1, {xs: [], m: {k: []}}]
+
+- name: a sibling settles an empty container
+  source: |
+    t := input("t")
+    t :: zset(record(a: i64, m: dict(string, i64)))
+
+    out := map(t, function((r) -> record(
+        chosen: if(r.a > 0, r.m, {}),
+        filled: coalesce(cast(r.m, optional(dict(string, i64))), {}))))
+
+  # No typespec on `out`: `if` and `coalesce` bring their two operands together
+  # under one type, and that is enough. This is the same `unify` that lets a
+  # numeric literal take its type from what it sits beside.
+  input:
+    - t:
+        - [1, {a: 1, m: {x: 7}}]
+        - [1, {a: 0, m: {y: 9}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {chosen: {x: 7}, filled: {x: 7}}]
+        - [1, {chosen: {}, filled: {y: 9}}]
+
+- name: cast ascribes a type where nothing else does
+  source: |
+    t := input("t")
+    t :: zset(record(a: i64))
+
+    out := map(t, function((r) -> record(
+        m:  cast({}, dict(string, i64)),
+        xs: cast([], array(string)))))
+
+  # The written-out route, for where neither a typespec nor a sibling reaches.
+  # `cast(NONE, optional(i64))` is the same idea for the language's other
+  # value with no type of its own.
+  input:
+    - t:
+        - [1, {a: 1}]
+
+  expected_exact_output:
+    - out:
+        - [1, {m: {}, xs: []}]
+
+- name: an empty dict is still one value, so two of them cancel
+  source: |
+    t := input("t")
+    t :: zset(record(m: dict(string, i64)))
+    out := t
+
+  input:
+    - t:
+        - [1, {m: {}}]
+        - [-1, {m: {}}]
+
+  expected_exact_output:
+    - {}

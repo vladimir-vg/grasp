@@ -11,9 +11,9 @@
 
 use crate::lower::Delta;
 use crate::value::{BatchType, DynValue, TypeDesc};
+use dbsp::ZWeight;
 use feldera_sqllib::FlatVariant;
 use serde::Deserialize;
-use dbsp::ZWeight;
 use serde_json::{Map, Value as J};
 use std::fmt;
 
@@ -46,7 +46,9 @@ pub fn encode_value(v: &DynValue, ty: &TypeDesc) -> JResult<J> {
         return if ty.is_optional() {
             Ok(J::Null)
         } else {
-            bad(format!("NONE where `{ty}` was expected; the column is not optional"))
+            bad(format!(
+                "NONE where `{ty}` was expected; the column is not optional"
+            ))
         };
     }
     let ty = ty.non_null();
@@ -81,8 +83,20 @@ pub fn encode_value(v: &DynValue, ty: &TypeDesc) -> JResult<J> {
             J::Object(obj)
         }
         (DynValue::Array(items), TypeDesc::Array(elem)) => J::Array(
-            items.iter().map(|v| encode_value(v, elem)).collect::<JResult<Vec<_>>>()?,
+            items
+                .iter()
+                .map(|v| encode_value(v, elem))
+                .collect::<JResult<Vec<_>>>()?,
         ),
+        // An object, always — a dict has one wire shape whatever its key type,
+        // and the key type is what says how to spell the key.
+        (DynValue::Dict(entries), TypeDesc::Dict(kt, vt)) => {
+            let mut obj = Map::new();
+            for (k, v) in entries {
+                obj.insert(encode_key(k, kt)?, encode_value(v, vt)?);
+            }
+            J::Object(obj)
+        }
         // `TAG_SQL_NULL` and `TAG_VARIANT_NULL` both write as `null`, so absence
         // and JSON null are indistinguishable on the wire. Round-trip is still
         // stable: a `json` column reads `null` back as JSON null.
@@ -103,7 +117,9 @@ pub fn decode_value(j: &J, ty: &TypeDesc) -> JResult<DynValue> {
         return match ty {
             _ if ty.is_optional() => Ok(DynValue::None),
             TypeDesc::Json => Ok(DynValue::Json(FlatVariant::variant_null())),
-            _ => bad(format!("null where `{ty}` was expected; the column is not optional")),
+            _ => bad(format!(
+                "null where `{ty}` was expected; the column is not optional"
+            )),
         };
     }
     let ty = ty.non_null();
@@ -166,6 +182,19 @@ pub fn decode_value(j: &J, ty: &TypeDesc) -> JResult<DynValue> {
                     .collect::<JResult<Vec<_>>>()?,
             )
         }
+        TypeDesc::Dict(kt, vt) => {
+            let Some(obj) = j.as_object() else {
+                return bad(format!("expected an object, found `{j}`"));
+            };
+            let mut entries = std::collections::BTreeMap::new();
+            for (k, v) in obj {
+                let key = decode_key(k, kt)?;
+                let value =
+                    decode_value(v, vt).map_err(|e| JsonError(format!("key `{k}`: {e}")))?;
+                entries.insert(key, value);
+            }
+            DynValue::Dict(entries)
+        }
         // `FlatVariant`'s own deserializer builds the byte encoding directly,
         // canonicalising map key order on the way in.
         TypeDesc::Json => match FlatVariant::deserialize(j) {
@@ -183,6 +212,46 @@ pub fn decode_value(j: &J, ty: &TypeDesc) -> JResult<DynValue> {
 /// Decodes one input delta in [`Format::InsertDelete`]: `{"insert": {…}}` is
 /// weight `+1`, `{"delete": {…}}` is `-1`. The format cannot express any other
 /// magnitude, so a row with weight 2 arrives as two records.
+/// A dict key as a JSON object key.
+///
+/// Object keys are strings, so every key type needs one spelling that
+/// [`decode_key`] can parse back. `TypeDesc::is_dict_key` is what restricts the
+/// key types to those that have one.
+fn encode_key(k: &DynValue, ty: &TypeDesc) -> JResult<String> {
+    if k.type_name() != type_key_name(ty) {
+        return bad(format!(
+            "cannot encode a {} as a `{ty}` dict key",
+            k.type_name()
+        ));
+    }
+    // `None` here means a non-finite float: it writes as `null` in value
+    // position, and `null` is not an object key. Refusing says so rather than
+    // inventing a spelling that would not parse back.
+    k.dict_key_string().ok_or_else(|| {
+        JsonError(format!(
+            "this {ty} cannot be a dict key: it has no JSON spelling"
+        ))
+    })
+}
+
+/// The variant name a key of this type must have, so a mismatch is reported as
+/// a type error rather than silently taking the value's own spelling.
+fn type_key_name(ty: &TypeDesc) -> &'static str {
+    match ty {
+        TypeDesc::String => "string",
+        TypeDesc::I64 => "i64",
+        TypeDesc::Bool => "bool",
+        TypeDesc::F64 => "f64",
+        _ => "",
+    }
+}
+
+/// The inverse of [`encode_key`]: the key type says what to parse.
+fn decode_key(k: &str, ty: &TypeDesc) -> JResult<DynValue> {
+    ty.parse_dict_key(k)
+        .ok_or_else(|| JsonError(format!("`{k}` is not a `{ty}` dict key")))
+}
+
 pub fn decode_delta_insert_delete(j: &J, row_type: &TypeDesc) -> JResult<(DynValue, ZWeight)> {
     let Some(obj) = j.as_object() else {
         return bad(format!("expected an insert/delete object, found `{j}`"));

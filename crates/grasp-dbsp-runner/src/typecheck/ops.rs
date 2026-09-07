@@ -78,6 +78,34 @@ struct Ctx<'a> {
     args: &'a [Arg],
     rargs: Vec<RArg<'a>>,
     funcs: &'a Functions<'a>,
+    /// The node's `::` typespec, when it has one.
+    ///
+    /// Tells a function body what its result will be used as, which is the only
+    /// way an empty container literal can learn its type. It supplies a type
+    /// where inference has none and never overrides one — `check_decl` still
+    /// checks the inferred type against this afterwards.
+    expected: Option<&'a BatchType>,
+}
+
+impl<'a> Ctx<'a> {
+    /// The expected row type, for the operators that produce a flat stream.
+    fn want_row(&self) -> Option<&'a TypeDesc> {
+        match self.expected? {
+            BatchType::ZSet(t) => Some(t),
+            BatchType::IndexedZSet(..) => Option::None,
+        }
+    }
+
+    /// The expected `record(key:, value:)` an indexing function must return.
+    fn want_kv(&self) -> Option<TypeDesc> {
+        match self.expected? {
+            BatchType::IndexedZSet(k, v) => Some(TypeDesc::record([
+                ("key".to_string(), k.clone()),
+                ("value".to_string(), v.clone()),
+            ])),
+            BatchType::ZSet(_) => Option::None,
+        }
+    }
 }
 
 /// The function an operator was given: written inline, or named elsewhere.
@@ -230,7 +258,8 @@ pub(super) fn check_op(
     for a in &call.args {
         rargs.push(resolve_arg(a, plan, env)?);
     }
-    let cx = Ctx { op, span, args: &call.args, rargs, funcs: env.funcs };
+    let cx =
+        Ctx { op, span, args: &call.args, rargs, funcs: env.funcs, expected: env.specs.get(name).map(|(t, _)| *t) };
 
     if let Some(r) = check_source(name, &cx, env)? {
         return Ok(r);
@@ -318,7 +347,7 @@ fn check_map_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pla
             let params = cx.element(plan, input);
             let (f, out) = {
                 let f = cx.fun_arg(1)?;
-                check_fun(f.params, f.body, &params, span, "the body of `map`", cx.funcs)?
+                check_fun(f.params, f.body, &params, span, "the body of `map`", cx.funcs, cx.want_row())?
             };
             // Flattening: an indexed stream mapped row-at-a-time produces a
             // plain zset, which is the only way out of an indexed shape other
@@ -332,7 +361,7 @@ fn check_map_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pla
             let params = cx.element(plan, input);
             let (f, out) = {
                 let f = cx.fun_arg(1)?;
-                check_fun(f.params, f.body, &params, span, "the body of `filter`", cx.funcs)?
+                check_fun(f.params, f.body, &params, span, "the body of `filter`", cx.funcs, Option::None)?
             };
             if out.non_null() != &TypeDesc::Bool {
                 return err(span, format!("`filter`'s function must return bool, found `{out}`"));
@@ -344,9 +373,10 @@ fn check_map_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pla
             cx.want(2)?;
             let input = cx.stream(cx.stream_arg(0)?)?;
             let params = cx.element(plan, input);
+            let want = cx.want_row().map(|t| TypeDesc::Array(Box::new(t.clone())));
             let (f, out) = {
                 let f = cx.fun_arg(1)?;
-                check_fun(f.params, f.body, &params, span, "the body of `flat_map`", cx.funcs)?
+                check_fun(f.params, f.body, &params, span, "the body of `flat_map`", cx.funcs, want.as_ref())?
             };
             // One row per element, so the fan-out follows the data.
             let TypeDesc::Array(row) = out else {
@@ -362,10 +392,12 @@ fn check_map_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pla
             cx.want(2)?;
             let input = cx.stream(cx.stream_arg(0)?)?;
             let params = cx.element(plan, input);
+            let want = cx.want_kv().map(|kv| TypeDesc::Array(Box::new(kv)));
             let (f, out) = {
                 let f = cx.fun_arg(1)?;
                 check_fun(
                     f.params, f.body, &params, span, "the body of `flat_map_index`", cx.funcs,
+                    want.as_ref(),
                 )?
             };
             let TypeDesc::Array(row) = out else {
@@ -385,9 +417,10 @@ fn check_map_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pla
             cx.want(2)?;
             let input = cx.stream(cx.stream_arg(0)?)?;
             let params = cx.element(plan, input);
+            let want = cx.want_kv();
             let (f, out) = {
                 let f = cx.fun_arg(1)?;
-                check_fun(f.params, f.body, &params, span, "the body of `map_index`", cx.funcs)?
+                check_fun(f.params, f.body, &params, span, "the body of `map_index`", cx.funcs, want.as_ref())?
             };
             let (kv, kt, vt) = key_value(&out, op, span)?;
             Ok((
@@ -419,7 +452,7 @@ fn check_join_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pl
             let (f, out) =
                 {
                 let f = cx.fun_arg(2)?;
-                check_fun(f.params, f.body, &[k1, v1, v2], span, "the body of `join`", cx.funcs)?
+                check_fun(f.params, f.body, &[k1, v1, v2], span, "the body of `join`", cx.funcs, cx.want_row())?
             };
             Ok((BatchType::ZSet(out), PlanOp::Join { left, right, f: Arc::new(f) }))
         }
@@ -434,10 +467,14 @@ fn check_join_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pl
                     format!("`join_index` needs equal key types, found `{k1}` and `{k2}`"),
                 );
             }
+            let want = cx.want_kv();
             let (f, out) =
                 {
                 let f = cx.fun_arg(2)?;
-                check_fun(f.params, f.body, &[k1, v1, v2], span, "the body of `join_index`", cx.funcs)?
+                check_fun(
+                    f.params, f.body, &[k1, v1, v2], span, "the body of `join_index`", cx.funcs,
+                    want.as_ref(),
+                )?
             };
             let (kv, kt, vt) = key_value(&out, op, span)?;
             Ok((
@@ -493,7 +530,7 @@ fn check_aggregate(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Plan
             };
             let (f, out) = {
                 let f = cx.fun_arg(2)?;
-                check_fun(f.params, f.body, &[v], span, "the body of `aggregate`", cx.funcs)?
+                check_fun(f.params, f.body, &[v], span, "the body of `aggregate`", cx.funcs, Option::None)?
             };
             let optional_in = out.is_optional();
 

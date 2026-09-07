@@ -79,12 +79,14 @@ premise, and several of the principles invert with it.
 This is the first cut, and it is narrower than the Erlang implementation the
 design comes from. What is missing is missing on purpose.
 
-- **`dict(K,V)` needs a backend.** grasp-dbsp has no dict type yet; it is listed
-  under future work there. The grasp side is specified, and blocked on it.
-
 - **Element access.** `arr[0]` and slicing have no grasp-dbsp equivalent — array
   element access is future work there too. Indexed unnest, `(i, v) := *arr`,
   follows it; plain `(v) := *arr` works today.
+
+- **Partial dict destructure with a binding.** `{k: v, **rest} := d` needs the
+  remaining entries, which means subtracting the named keys — a `without_keys`
+  builtin grasp-dbsp does not have. The exact and ignore-the-rest forms,
+  `{k: v} := d` and `{k: v, **} := d`, need only `get` and `length` and work.
 
 - **The rest of the type vocabulary.** `dynamic` — the top type, and the one
   most likely to be wanted first, since it is what an untyped subset of the
