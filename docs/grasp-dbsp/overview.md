@@ -128,9 +128,22 @@ become an output — by declared name, or by content id for a node that has none
   still free to settle — which stops being true after the first stored batch.
   That freedom is what let `SqlString` be removed rather than deprecated.
 
+- **`dict(K,V)`** — a typed key-value map, alongside `record` and `array`.
+  Needed by [grasp](../grasp/language.md#value-types), whose dict type, dict
+  literals, `{k: v} := d` destructure and `(k, v) := **d` unnest all lower onto
+  it; there is nothing to lower them to today. Like the value types above it
+  needs a `DynValue` variant, a `TypeDesc` variant, a parser name and a JSON
+  coding — and, particular to this one, a canonical key order, since the
+  invariants in [`mapping.md`](mapping.md) require that equal values compare and
+  hash equal however they were built. `record` already canonicalises its fields
+  by name for the same reason.
+
 - **Element access** — `e[0]` on an `array(T)`. Arrays are values and
   `flat_map` turns one into rows, but nothing reads an element by index. `get`
-  does this for a document; a typed array has no equivalent.
+  does this for a document; a typed array has no equivalent. This is what blocks
+  grasp's subscript and slice syntax, and its indexed unnest `(i, v) := *arr` —
+  which needs an element's position, so it follows from the same addition. Plain
+  `(v) := *arr` is `flat_map` and works today.
 
 - **Document odds and ends.** A `shape(doc)` builtin — a program that must
   branch on what a document holds attempts casts in order today, which works and

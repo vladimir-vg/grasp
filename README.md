@@ -8,8 +8,9 @@ runner parses it, builds a `dbsp` circuit at startup with no code generation,
 and streams input changes through it, emitting output changes as they are
 produced.
 
-**grasp** is a Datalog dialect that compiles to grasp-dbsp. It has no runtime of
-its own. Not yet designed.
+**grasp** is a Datalog dialect that compiles to grasp-dbsp: rules, stratified
+negation and aggregation, and recursion found by the compiler rather than
+declared. It has no runtime of its own.
 
 ## Crates
 
@@ -25,7 +26,8 @@ at the workspace root rather than inside either crate. They are in
 
 - [`docs/grasp-dbsp/`](docs/grasp-dbsp/) — the target language: its goals and
   principles, the spec as implemented, and how it maps onto `dbsp`
-- [`docs/grasp/`](docs/grasp/) — the Datalog dialect. Placeholders for now
+- [`docs/grasp/`](docs/grasp/) — the Datalog dialect: its principles, the
+  language, how it is compiled, and how it is emitted as grasp-dbsp
 
 ## Building
 

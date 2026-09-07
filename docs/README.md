@@ -16,11 +16,13 @@ the circuit at startup with no code generation.
 ## [`grasp/`](grasp/) — the source language
 
 A Datalog dialect that compiles to grasp-dbsp. Implemented by
-[`grasp-compiler`](../crates/grasp-compiler). It has no runtime of its own.
-Both documents are placeholders; the design is not yet written.
+[`grasp-compiler`](../crates/grasp-compiler). It has no runtime of its own —
+rules become grasp-dbsp, and grasp-dbsp is what runs.
 
-- [`overview.md`](grasp/overview.md)
-- [`language.md`](grasp/language.md)
+- [`overview.md`](grasp/overview.md) — goals, design principles, scope, future work
+- [`language.md`](grasp/language.md) — rules, body statements, expressions, types
+- [`compilation.md`](grasp/compilation.md) — join graph, optimizer, computation DAG, strata
+- [`mapping.md`](grasp/mapping.md) — how grasp is emitted as grasp-dbsp
 
 ## Where the two meet
 
