@@ -83,7 +83,7 @@
 - name: string and numeric builtins
   source: |
     a := input("a")
-    a :: zset(record(name: String, n: i64))
+    a :: zset(record(name: string, n: i64))
     out := map(a, function((r) -> record(
         shout: upper(r.name),
         size: length(r.name),
@@ -256,7 +256,7 @@
 - name: the string builtins
   source: |
     a := input("a")
-    a :: zset(record(s: String))
+    a :: zset(record(s: string))
     out := map(a, function((r) -> record(
         lo: lower(r.s), up: upper(r.s), tr: trim(r.s),
         both: concat(trim(r.s), "!"), n: length(r.s))))
@@ -322,13 +322,13 @@
 - name: cast converts between known types
   source: |
     a := input("a")
-    a :: zset(record(n: i64, x: f64, s: String, b: bool))
+    a :: zset(record(n: i64, x: f64, s: string, b: bool))
     out := map(a, function((r) -> record(
         widened:  cast(r.n, f64) * 1.5,
         narrowed: cast(r.x, optional(i64)),
-        text:     cast(r.n, String),
+        text:     cast(r.n, string),
         parsed:   cast(r.s, optional(i64)),
-        shown:    cast(r.b, String))))
+        shown:    cast(r.b, string))))
 
   # Deleting implicit promotion left no path from i64 to f64; `cast` is that
   # path, and it is explicit at the point of use rather than a lattice an

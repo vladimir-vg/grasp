@@ -83,7 +83,7 @@ language's. [`mapping.md`](mapping.md) records which Rust types these become.
 ```
 value_type := scalar | record_type | array_type
 
-scalar      := bool | i64 | f64 | String | optional "(" value_type ")"
+scalar      := bool | i64 | f64 | string | optional "(" value_type ")"
 
 record_type := "record" "(" field ("," field)* ")"
 field       := FIELD_NAME ":" value_type
@@ -96,7 +96,7 @@ widths, `f32`, and the Feldera `sql.*` types are listed under future work in
 [`overview.md`](overview.md).
 
 **There is exactly one way to write each type.** An earlier cut had a second
-string type, `sql.SqlString`, alongside `String`; it was withdrawn. Two
+string type, `sql.SqlString`, alongside `string`; it was withdrawn. Two
 spellings of one thing is a choice an emitter must make with no information, and
 these two were not even disjoint in practice — every string builtin returned one
 of them whatever it was given. The `sql` namespace stays reserved, for types
@@ -112,7 +112,7 @@ Note that `record` is spelled the same way in type position and in expression
 position — the type names the fields, and the literal fills them:
 
 ```
-r :: zset(record(id: i64, name: String))                        # the type
+r :: zset(record(id: i64, name: string))                        # the type
 map(s, function((row) -> record(id: row.id, name: row.name)))   # a value
 ```
 
@@ -183,10 +183,10 @@ stuck there. There is no `left_join` operator, because there need not be one:
 
 ```
 matched   := join(emp_idx, dept_idx, function((k, e, d) ->
-                 record(name: e.name, dname: cast(d.dname, optional(String)))))
+                 record(name: e.name, dname: cast(d.dname, optional(string)))))
 unmatched := antijoin(emp_idx, dept_idx)
 nulled    := map(unmatched, function((k, e) ->
-                 record(name: e.name, dname: cast(NONE, optional(String)))))
+                 record(name: e.name, dname: cast(NONE, optional(string)))))
 out       := plus(matched, nulled)
 ```
 
@@ -368,7 +368,7 @@ The payoff shows in `flat_map`, whose function returns an `array(T)`: it emits
 one row per element, so **fan-out follows the data** rather than the source text.
 
 ```
-posts :: zset(record(id: i64, tags: array(String)))
+posts :: zset(record(id: i64, tags: array(string)))
 tags  := flat_map(posts, function((r) -> r.tags))
 ```
 
@@ -382,9 +382,9 @@ above and with each other.
 | `coalesce` | `optional(T) × T → T` | `x` if present, else `y` |
 | `if` | `bool × T × T → T` | the taken arm |
 | `abs` / `floor` / `ceil` / `round` | `T → T`, `T` numeric | type-preserving |
-| `length` | `String → i64`, `array(T) → i64` | element or character count |
-| `concat` | `String × String → String` | concatenation |
-| `lower` / `upper` / `trim` | `String → String` | |
+| `length` | `string → i64`, `array(T) → i64` | element or character count |
+| `concat` | `string × string → string` | concatenation |
+| `lower` / `upper` / `trim` | `string → string` | |
 
 Every builtin but `coalesce` rejects an `optional` argument, for the reason
 under [Absence](#absence). `coalesce` is the one that inspects absence rather
@@ -418,12 +418,12 @@ cast(r.x, optional(i64))   # optional(i64)
 
 That keeps a declared type a promise, and follows the rule division already set.
 
-| from → to | `bool` | `i64` | `f64` | `String` |
+| from → to | `bool` | `i64` | `f64` | `string` |
 |---|---|---|---|---|
 | `bool`   | — | — | — | total |
 | `i64`    | — | — | total | total |
 | `f64`    | — | fallible | — | total |
-| `String` | fallible | fallible | fallible | — |
+| `string` | fallible | fallible | fallible | — |
 
 A conversion to the same type is the identity. `NONE → optional(T)` is total for
 any `T`: that is how a definite value's absent counterpart is written, and a
@@ -632,7 +632,7 @@ Anywhere else it is an error saying so, rather than guessing.
 
 These may not name a node, a function or a parameter: the 20 operator names,
 the 5 aggregator names, the builtin names, the type constructors (`bool`,
-`i64`, `f64`, `String`, `optional`, `record`, `array`, `sql`, `zset`,
+`i64`, `f64`, `string`, `optional`, `record`, `array`, `sql`, `zset`,
 `indexed_zset`), `cast`, and `true`, `false`, `NONE`, `null`, `function`,
 `return`, `and`, `or`, `not`, `circuit`, `fixpoint`.
 
@@ -651,10 +651,10 @@ unrestricted — they are their own namespace and can be quoted.
 
 ```
 emp := input("emp")
-emp :: zset(record(id: i64, name: String, dept_id: i64, salary: i64))
+emp :: zset(record(id: i64, name: string, dept_id: i64, salary: i64))
 
 dept := input("dept")
-dept :: zset(record(id: i64, dname: String))
+dept :: zset(record(id: i64, dname: string))
 
 high_paid := filter(emp, function((row) -> row.salary > 100000))
 

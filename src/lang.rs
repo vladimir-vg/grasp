@@ -200,7 +200,7 @@ fn parse_error<T>(span: Span, message: impl Into<String>) -> PResult<T> {
 
 /// Type constructors and namespaces.
 const TYPE_NAMES: &[&str] = &[
-    "bool", "i64", "f64", "String", "optional", "record", "array", "sql", "zset", "indexed_zset",
+    "bool", "i64", "f64", "string", "optional", "record", "array", "sql", "zset", "indexed_zset",
 ];
 
 /// Literals and keywords. `if` is not here: it is a builtin, so it is reserved
@@ -848,7 +848,7 @@ impl Parser {
         if name == "sql" {
             return self.err(
                 "the `sql.*` namespace is reserved but has no types in this build; \
-                 write `String` for text",
+                 write `string` for text",
             );
         }
 
@@ -856,7 +856,7 @@ impl Parser {
             "bool" => Ok(TypeDesc::Bool),
             "i64" => Ok(TypeDesc::I64),
             "f64" => Ok(TypeDesc::F64),
-            "String" => Ok(TypeDesc::String),
+            "string" => Ok(TypeDesc::String),
             "array" => {
                 self.expect(&Tok::LParen, "`(` after array")?;
                 let elem = self.value_type()?;

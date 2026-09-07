@@ -33,7 +33,7 @@
     a := input("a")
     a :: zset(record(id: i64))
     b := input("b")
-    b :: zset(record(name: String))
+    b :: zset(record(name: string))
     ai := map_index(a, function((r) -> record(key: r.id, value: r)))
     bi := map_index(b, function((r) -> record(key: r.name, value: r)))
     j  := join(ai, bi, function((k, x, y) -> k))
@@ -73,7 +73,7 @@
 - name: comparing incompatible types
   source: |
     a := input("a")
-    a :: zset(record(id: i64, name: String))
+    a :: zset(record(id: i64, name: string))
     b := filter(a, function((r) -> r.id == r.name))
 
   expected_diagnostics:
@@ -95,7 +95,7 @@
     a := input("a")
     a :: zset(record(id: i64))
     b := map(a, function((r) -> r.id))
-    b :: zset(String)
+    b :: zset(string)
 
   expected_diagnostics:
     - pass: typecheck
@@ -186,7 +186,7 @@
 - name: an array has one element type
   source: |
     a := input("a")
-    a :: zset(record(id: i64, name: String))
+    a :: zset(record(id: i64, name: string))
     b := flat_map(a, function((r) -> [record(x: r.id), record(y: r.name)]))
 
   # An array is an ordinary value now, so this is the array's own rule rather
@@ -231,7 +231,7 @@
 - name: sum needs a numeric projection
   source: |
     a := input("a")
-    a :: zset(record(k: i64, name: String))
+    a :: zset(record(k: i64, name: string))
     idx := map_index(a, function((r) -> record(key: r.k, value: r)))
     b := aggregate(idx, sum, function((v) -> v.name))
 
@@ -529,7 +529,7 @@
     a := input("t")
     a :: zset(record(v: i64))
     b := input("t")
-    b :: zset(record(w: String))
+    b :: zset(record(w: string))
 
   expected_diagnostics:
     - pass: typecheck
@@ -556,7 +556,7 @@
 - name: concat rejects an optional operand
   source: |
     a := input("a")
-    a :: zset(record(v: optional(String)))
+    a :: zset(record(v: optional(string)))
     out := map(a, function((r) -> concat(r.v, r.v)))
 
   expected_diagnostics:
@@ -617,7 +617,7 @@
     a := input("a")
     a :: zset(record(v: sql.SqlString))
 
-  # `sql.SqlString` and `String` were two ways to write one thing, with silent
+  # `sql.SqlString` and `string` were two ways to write one thing, with silent
   # coercion between them: every string builtin returned `sql.SqlString`
   # whatever it was given. The namespace stays reserved so it can come back with
   # types that are genuinely distinct.
@@ -628,7 +628,7 @@
 - name: plus is arithmetic, not concatenation
   source: |
     a := input("a")
-    a :: zset(record(v: String))
+    a :: zset(record(v: string))
     out := map(a, function((r) -> r.v + r.v))
 
   # `+` used to double as string concatenation and return the *other* string
@@ -711,7 +711,7 @@
     function scale(x) { return x * 2 }
 
     a := input("a")
-    a :: zset(record(s: String))
+    a :: zset(record(s: string))
     out := map(a, function((r) -> scale(r.s)))
 
   # The body is fine at every numeric type and wrong at this one, so pointing
@@ -762,7 +762,7 @@
 - name: parsing a string is fallible too
   source: |
     a := input("a")
-    a :: zset(record(s: String))
+    a :: zset(record(s: string))
     out := map(a, function((r) -> record(n: cast(r.s, i64))))
 
   expected_diagnostics:

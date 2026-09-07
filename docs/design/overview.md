@@ -73,7 +73,7 @@ implicit numeric promotion deleted, both to satisfy the third and fifth.
   `record(...)` and `[…]` construction, arithmetic, comparison and logic,
   `if(cond, a, b)`, `cast(x, T)`, and a small builtin library.
 - The type system described in [`language.md`](language.md) (batch types and
-  value types). The value vocabulary is `bool`, `i64`, `f64`, `String`,
+  value types). The value vocabulary is `bool`, `i64`, `f64`, `string`,
   `optional(T)`, `record(...)` and `array(T)`.
 - The value model described in [`mapping.md`](mapping.md).
 - Feldera-native JSON input and output, emitting deltas — `weighted` by default

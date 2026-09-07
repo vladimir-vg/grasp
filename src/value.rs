@@ -120,7 +120,7 @@ impl DynValue {
             DynValue::Bool(_) => "bool",
             DynValue::I64(_) => "i64",
             DynValue::F64(_) => "f64",
-            DynValue::String(_) => "String",
+            DynValue::String(_) => "string",
             DynValue::Record(_) => "record",
             DynValue::Array(_) => "array",
         }
@@ -287,7 +287,7 @@ impl std::fmt::Display for TypeDesc {
             TypeDesc::Bool => write!(f, "bool"),
             TypeDesc::I64 => write!(f, "i64"),
             TypeDesc::F64 => write!(f, "f64"),
-            TypeDesc::String => write!(f, "String"),
+            TypeDesc::String => write!(f, "string"),
             TypeDesc::Optional(inner) => write!(f, "optional({inner})"),
             TypeDesc::Array(elem) => write!(f, "array({elem})"),
             TypeDesc::Record(fields) => {

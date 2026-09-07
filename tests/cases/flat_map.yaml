@@ -84,7 +84,7 @@
     emp := input("emp")
     emp :: zset(record(id: i64, dept_id: i64, mgr_id: i64))
     dept := input("dept")
-    dept :: zset(record(id: i64, dname: String))
+    dept :: zset(record(id: i64, dname: string))
     ei := flat_map_index(emp, function((r) ->
         [record(key: r.dept_id, value: record(id: r.id)), record(key: r.mgr_id, value: record(id: r.id))]))
     di := map_index(dept, function((r) -> record(key: r.id, value: record(dname: r.dname))))
@@ -107,7 +107,7 @@
 - name: fan-out follows the data, not the source
   source: |
     posts := input("posts")
-    posts :: zset(record(id: i64, tags: array(String)))
+    posts :: zset(record(id: i64, tags: array(string)))
     tags := flat_map(posts, function((r) -> r.tags))
 
   # The array comes out of the row, so one input row emits as many rows as it
@@ -129,7 +129,7 @@
 - name: an array survives a round trip, and length measures it
   source: |
     posts := input("posts")
-    posts :: zset(record(id: i64, tags: array(String)))
+    posts :: zset(record(id: i64, tags: array(string)))
     out := map(posts, function((r) -> record(tags: r.tags, n: length(r.tags))))
 
   input:
@@ -143,7 +143,7 @@
 - name: the whole mapping family takes either stream shape
   source: |
     a := input("a")
-    a :: zset(record(k: i64, tags: array(String)))
+    a :: zset(record(k: i64, tags: array(string)))
     idx := map_index(a, function((r) -> record(key: r.k, value: r)))
 
     flattened := map(idx, function((k, v) -> record(k: k, n: length(v.tags))))

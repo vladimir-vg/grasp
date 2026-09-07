@@ -34,7 +34,7 @@
 - name: map projects a record
   source: |
     emp := input("emp")
-    emp :: zset(record(id: i64, name: String, salary: i64))
+    emp :: zset(record(id: i64, name: string, salary: i64))
     small := map(emp, function((r) -> record(id: r.id, name: r.name)))
 
   input:

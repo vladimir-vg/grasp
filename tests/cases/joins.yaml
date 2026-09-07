@@ -3,9 +3,9 @@
 - name: join two tables on a shared key
   source: |
     emp := input("emp")
-    emp :: zset(record(id: i64, name: String, dept_id: i64))
+    emp :: zset(record(id: i64, name: string, dept_id: i64))
     dept := input("dept")
-    dept :: zset(record(id: i64, dname: String))
+    dept :: zset(record(id: i64, dname: string))
 
     emp_idx  := map_index(emp,  function((r) -> record(key: r.dept_id, value: record(name: r.name))))
     dept_idx := map_index(dept, function((r) -> record(key: r.id, value: record(dname: r.dname))))
@@ -96,7 +96,7 @@
     dept := input("dept")
     dept :: zset(record(id: i64, region_id: i64))
     region := input("region")
-    region :: zset(record(id: i64, rname: String))
+    region :: zset(record(id: i64, rname: string))
 
     ei := map_index(emp,  function((r) -> record(key: r.dept_id, value: record(id: r.id))))
     di := map_index(dept, function((r) -> record(key: r.id, value: record(region_id: r.region_id))))
@@ -152,23 +152,23 @@
 - name: a left join, written the way a frontend would emit it
   source: |
     emp := input("emp")
-    emp :: zset(record(name: String, dept_id: i64))
+    emp :: zset(record(name: string, dept_id: i64))
 
     dept := input("dept")
-    dept :: zset(record(id: i64, dname: String))
+    dept :: zset(record(id: i64, dname: string))
 
     emp_idx  := map_index(emp,  function((r) -> record(key: r.dept_id, value: r)))
     dept_idx := map_index(dept, function((r) -> record(key: r.id, value: r)))
 
     matched   := join(emp_idx, dept_idx, function((k, e, d) ->
-                     record(name: e.name, dname: cast(d.dname, optional(String)))))
+                     record(name: e.name, dname: cast(d.dname, optional(string)))))
     unmatched := antijoin(emp_idx, dept_idx)
     nulled    := map(unmatched, function((k, e) ->
-                     record(name: e.name, dname: cast(NONE, optional(String)))))
+                     record(name: e.name, dname: cast(NONE, optional(string)))))
     out       := plus(matched, nulled)
 
-  # `cast(d.dname, optional(String))` widens the matched side so both halves
-  # share one batch type, and `cast(NONE, optional(String))` is how the absent
+  # `cast(d.dname, optional(string))` widens the matched side so both halves
+  # share one batch type, and `cast(NONE, optional(string))` is how the absent
   # counterpart is written — a bare `NONE` in a record field has no type to
   # infer.
   input:

@@ -22,9 +22,9 @@
 - name: both sides of a join nested
   source: |
     emp := input("emp")
-    emp :: zset(record(id: i64, name: String, dept_id: i64))
+    emp :: zset(record(id: i64, name: string, dept_id: i64))
     dept := input("dept")
-    dept :: zset(record(id: i64, dname: String))
+    dept :: zset(record(id: i64, dname: string))
 
     joined := join(
         map_index(emp,  function((r) -> record(key: r.dept_id, value: record(name: r.name)))),
