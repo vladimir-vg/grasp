@@ -20,7 +20,10 @@ A Datalog dialect that compiles to grasp-dbsp. Implemented by
 rules become grasp-dbsp, and grasp-dbsp is what runs.
 
 - [`overview.md`](grasp/overview.md) — goals, design principles, scope, future work
-- [`language.md`](grasp/language.md) — rules, body statements, expressions, types
+- [`syntax.md`](grasp/syntax.md) — lexical structure, the grammar, the AST
+- [`types.md`](grasp/types.md) — the type catalog, assignability, runtime filters
+- [`inference.md`](grasp/inference.md) — how every type is found
+- [`semantics.md`](grasp/semantics.md) — what a program means: rules, recursion, negation, aggregation, safety, stratification
 - [`compilation.md`](grasp/compilation.md) — join graph, optimizer, computation DAG, strata
 - [`mapping.md`](grasp/mapping.md) — how grasp is emitted as grasp-dbsp
 

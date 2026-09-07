@@ -73,11 +73,19 @@ correspond directly, with one spelling difference:
 | `and`, `or`, `not` | same |
 | `++` | `concat(a, b)` |
 | `s.field` | `s.field` |
+| `[a, b]` | `[a, b]` |
+| `{k => v}` | `{k => v}` |
+| `record(f: e)` | `record(f: e)` |
+| `NONE` | `NONE` |
+
+The three literal forms are identical in both languages, which is not an
+accident — they were named that way so an expression survives lowering as
+itself, and only `=` needs rewriting.
 
 Builtins pass through under the same names — `abs`, `floor`, `ceil`, `round`,
-`length`, `concat`, `lower`, `upper`, `trim`, `coalesce`, `if`, `get`, `keys` —
-which is why [`language.md`](language.md#builtins) offers exactly that set and no
-more.
+`length`, `concat`, `lower`, `upper`, `trim`, `coalesce`, `if`, `get`, `keys`,
+`entries` — which is why [`semantics.md`](semantics.md#builtins) offers exactly
+that set and no more.
 
 ## Computation DAG nodes
 
@@ -108,17 +116,17 @@ the DAG in terms of `join` and `map_index` alone.
 
 ## Dicts
 
-A dict literal is a dict literal — grasp's `{k: v}` is grasp-dbsp's
-`{k => v}`, and the entry sorting and deduplication both languages promise
-is one mechanism, not two.
+A dict literal survives lowering **unchanged**: grasp and grasp-dbsp spell it
+the same, `{k => v}`, and the entry sorting and deduplication both languages
+promise is one mechanism rather than two.
 
 | grasp | grasp-dbsp |
 |---|---|
-| `{k: v, …}` | `{k => v, …}` |
+| `{k => v, …}` | `{k => v, …}` — identical |
 | `d[k]` lookup | `get(d, k)` → `optional(V)` |
 | `keys(d)` | `keys(d)` → `array(K)` |
 | `length(d)` | `length(d)` |
-| `{k: v} := d` destructure | `get` per key, guarded by `length(d) = N` |
+| `{a: x} := d` destructure | `get(d, "a")` per key, guarded by `length(d) = N` |
 | `(k, v) := **d` unnest | `flat_map` over `entries(d)` |
 
 `entries(d)` yields `array(record(key: K, value: V))`, sorted by key, which is
@@ -128,6 +136,29 @@ literal, `dict(a)`, for building a dict whose size follows the data.
 `{k: v, **rest} := d` has no lowering yet: subtracting the named keys needs a
 `without_keys` builtin grasp-dbsp does not have. See
 [`overview.md`](overview.md#future-work).
+
+## Body statements, end to end
+
+Every form a rule body can take, and the grasp-dbsp it becomes. The middle
+column is the computation DAG node
+[`compilation.md`](compilation.md#what-each-body-statement-becomes) produces; the
+right is what this pass emits for it.
+
+| grasp | DAG node | grasp-dbsp |
+|---|---|---|
+| `r(col: x)` as a leaf | `map_index` | `map_index(r, function((row) -> record(key: …, value: …)))` |
+| `r(col: x)` joined | `join` | `join(l, r, function((k, a, b) -> …))` |
+| `not r(col: x)` | `antijoin` | `antijoin(l, r)` then `map` to flatten |
+| `a > 20` | `filter` | `filter(s, function((row) -> row.a > 20))` |
+| `v := e` | `map` | `map(s, function((row) -> record(…, v: e)))` |
+| `s := sum<r>` | `aggregate` | `map_index`, `aggregate(s, sum, f)`, `map` |
+| `(v) := *arr` | `flat_map` | `flat_map(s, function((row) -> row.arr))` |
+| `(k, v) := **d` | `flat_map` | `flat_map(s, function((row) -> entries(row.d)))` |
+| `v :: T` | `filter` | `filter` on the runtime check |
+| the head | `map` | `map(s, function((row) -> record(…)))` |
+
+Nothing in that table is a special case: each is the operator its DAG node named,
+which is why the node vocabulary was renamed to grasp-dbsp's in the first place.
 
 ## Rules and unions
 
@@ -223,7 +254,7 @@ grasp-dbsp's five, under the same names.
 
 ## Worked example
 
-The transitive closure from [`language.md`](language.md#example):
+The transitive closure from [`semantics.md`](semantics.md#example):
 
 ```grasp
 edge :: relation(src: i64, dst: i64)

@@ -1,0 +1,227 @@
+# grasp — Type inference
+
+Every variable in every rule, and every column of every relation, gets a type.
+Almost none of them are written down.
+
+This is the one part of grasp where inference is **load-bearing** rather than a
+convenience: a rule body names variables, not types, and requiring an annotation
+per variable would make the language unusable for what it is for. Where
+inference genuinely cannot reach, an annotation resolves it — but that is the
+exception, and each one below says what it is.
+
+The rules being applied are in [`types.md`](types.md). This document is the
+algorithm.
+
+## Shape
+
+Four phases, run inside a fixpoint over the program:
+
+```
+1. per rule      constraints on each variable, composed
+2. across rules  one relation, several rules, one column type
+3. literals      untyped numbers take a type from context
+4. resolution    builtin overloads; runtime filters inserted
+```
+
+Phases 1–2 iterate: typing a relation's columns may unlock a rule that mentions
+it. Phases 3–4 run once the shapes have settled.
+
+**Types are erased afterwards.** Nothing downstream carries a grasp type; the
+only trace is the record shapes the emitted program declares.
+
+## The fixpoint
+
+Relations are typed in dependency order, which the program does not give
+directly — a rule may mention a relation defined later, and recursive relations
+mention each other.
+
+```
+known = { r : columns(r) for each r with a `:: relation(...)` spec }
+
+repeat
+    for each rule whose body atoms all reference relations in `known`
+        run phases 1 and 2 for it
+        add or refine its head relation in `known`
+until no relation's type changed
+```
+
+**A relation declared `<- input` starts known**, from its required spec. That is
+what seeds the loop; a program with no input relations and no specs has nothing
+to start from, and every relation in it is reported unknown.
+
+**Recursive relations settle in this loop like any other.** A recursive rule's
+body mentions the very relation being defined, so it cannot be processed first —
+but a recursive relation always has at least one non-recursive rule, or it is
+empty and useless. That rule types the head, and the recursive rules are then
+checked against it. Mutual recursion works the same way, one member at a time.
+
+> ``relation `r` has no non-recursive rule and no typespec, so nothing gives it
+> a type``
+
+## Phase 1: per rule
+
+For each variable in a rule, collect every constraint on it, then compose them.
+
+### Where a constraint comes from
+
+| source | the constraint |
+|---|---|
+| positive atom `rel(col: v)` | `v` is the column's type |
+| literal in an atom `rel(col: 3)` | the column's type must accept the literal |
+| match `v := expr` | `v` is `expr`'s type |
+| unnest `(v) := *arr` | `arr` is `array(E)`; `v` is `E` |
+| unnest `(k, v) := **d` | `d` is `dict(K,V)`; `k` is `K`, `v` is `V` |
+| destructure `[x, y] := arr` | `arr` is `array(E)`; `x` and `y` are `E` |
+| destructure `{a: x} := d` | `d` is `dict(string, V)`; `x` is `V` |
+| destructure `record(a: x) := s` | `s` is a record with field `a`; `x` is its type |
+| aggregate `v := sum<e>` | `v` is the aggregator's result for `e`'s type |
+| field access `e.f` | `e` is a record with field `f` |
+| assertion `v :: T` | `v` is `T`, or is filtered to `T` — see phase 4 |
+| head `r(col: v)` | `v` must be assignable to the column, if `r` is declared |
+| filter `expr` | `expr` is `boolean` |
+
+An atom is the only thing that gives a variable a type *from outside* the rule.
+Everything else relates variables to each other.
+
+### Composing constraints
+
+Given several constraints on one variable:
+
+- **Identical types** compose to that type.
+- **`T` and `optional(T)`** compose to `optional(T)`. A variable that some path
+  leaves absent is optional everywhere.
+- **Same constructor** — two `array`, two `dict`, two `record` — compose
+  covariantly, recursing on element, key/value, and same-named field types. Two
+  records with different field *names* do not compose.
+- **An untyped literal** composes with anything it can inhabit, and defers; see
+  phase 3.
+- **Anything else** is a conflict.
+
+Composition is **not** widening. Two distinct concrete types do not meet in some
+third type — there is no numeric tower here for them to meet in, which is what
+makes this rule short.
+
+> ``variable `x` is used as `i64` here and as `string` at line N``
+
+### Safety, checked here
+
+Every variable in the head, and every variable a negated atom, filter or
+assertion mentions, must be **bound** — produced by a positive atom or a match
+somewhere in the body. This is Datalog's safety condition, and
+[`semantics.md`](semantics.md#safety) says why it is what makes a rule finite.
+
+> ``variable `x` appears in the head but nothing in the body binds it``
+
+## Phase 2: across rules
+
+A relation defined by several rules gets one column type per column.
+
+- **With a `:: relation(...)` spec**, each rule's inferred column type must be
+  assignable to the declared one. The spec is the answer; a rule that disagrees
+  is the error.
+- **Without one**, the column type is composed across rules by the phase 1
+  rules. `T` in one rule and `optional(T)` in another gives `optional(T)`; two
+  incompatible types are an error naming both rules.
+
+A spec never *overrides* what a rule infers — it constrains it. A rule producing
+`string` for a column declared `i64` is rejected, not coerced.
+
+> ``relation `r` column `c` is `i64` at line N and `string` at line M``
+> ``rule at line N gives `r.c` type `string`, but it is declared `i64` ``
+
+A rule head must name **every** column of a declared relation. Omitting one is
+an error rather than an implicit absence, because a column that is sometimes
+absent should say so in its type.
+
+> ``rule head is missing column `c` of relation `r` ``
+
+## Phase 3: literals take their type from context
+
+An integer literal is not an `i64` until something says so. `42` can be `i64` or
+`f64`; `[]` can be an `array(T)` for any `T`. Both wait.
+
+- A literal used with a typed value takes that type: in `x + 1` where `x` is
+  `f64`, the `1` is `f64`.
+- A literal in an atom's argument takes the column's type.
+- A literal with nothing to take from **is an error naming the variable**, not a
+  silent default to `i64`. A default here would put a type nobody chose into a
+  relation's schema, where every later rule would then have to agree with it.
+
+An empty `[]` or `{}` is the same case one level up: a complete value with an
+open type, resolved by context or reported.
+
+> ``the literal at line N has no type here; nothing determines whether it is
+> `i64` or `f64` ``
+
+## Phase 4: overloads and filters
+
+**Builtin overloads** resolve against the now-concrete operand types. Each
+builtin has a fixed set of signatures — see
+[`semantics.md`](semantics.md#builtins) — and exactly one must match.
+
+> ``no version of `length` takes `i64` ``
+
+**Runtime filters** are inserted where an assertion or a head column requires a
+type the value is not assignable to, but a check could settle it — the table in
+[`types.md`](types.md#runtime-filters). The filter becomes an ordinary body
+statement, placed where the variable is bound, and narrows the variable for
+everything after it.
+
+This is the one place the compiler adds a statement the program did not write.
+It is worth the exception: the alternative is rejecting `n :: string` on an
+`optional(string)`, which is the most common thing a program wants to say.
+
+Where no filter applies, it is an error — and specifically an error saying the
+filter would be empty, since a check that can never pass is a relation that is
+always empty and a bug that would otherwise be silent.
+
+## Worked example
+
+```grasp
+edge :: relation(src: i64, dst: i64)
+edge(src:, dst:) <- input
+
+heavy(src: x, total: t) <-
+    edge(src: x, dst: y)
+    weight(edge: y, w: w)
+    w > 10
+    t := sum<w>
+```
+
+**Fixpoint.** `edge` is known from its spec. `weight` must be known too — from
+its own spec or its own rules — or this rule waits, and is reported if it never
+becomes known.
+
+**Phase 1.** `edge(src: x, dst: y)` gives `x : i64` and `y : i64`.
+`weight(edge: y, w: w)` gives `y : i64` again — composing identically, which is
+also the join — and `w` its column type, say `i64`. The filter `w > 10` requires
+`w` comparable and `10` to inhabit `w`'s type. `t := sum<w>` gives `t` the
+result of `sum` over `i64`.
+
+**Safety.** `x` and `t` appear in the head; `x` comes from an atom, `t` from a
+match. Both bound.
+
+**Phase 2.** `heavy` has no spec, so its columns are what this rule inferred:
+`src: i64`, `total: i64`.
+
+**Phase 3.** `10` takes `i64` from `w`.
+
+**Phase 4.** `>` resolves at `i64`. No filter needed.
+
+## Diagnostics
+
+Every rejection this pass can produce, in the phase that produces it.
+
+| rejection | phase |
+|---|---|
+| ``variable `x` is used as A here and as B at line N`` | 1 |
+| ``variable `x` appears in the head but nothing in the body binds it`` | 1 |
+| ```e` is not a record, so it has no field `f` `` | 1 |
+| ``relation `r` is not defined and has no typespec`` | 2 |
+| ``relation `r` column `c` is A at line N and B at line M`` | 2 |
+| ``rule at line N gives `r.c` type B, but it is declared A`` | 2 |
+| ``rule head is missing column `c` of relation `r` `` | 2 |
+| ``relation `r` has no non-recursive rule and no typespec`` | 2 |
+| ``the literal at line N has no type here`` | 3 |
+| ``no version of `f` takes A`` | 4 |
+| ``this assertion would discard every row`` | 4 |

@@ -5,43 +5,24 @@ point where grasp-dbsp is emitted; emission itself is
 [`mapping.md`](mapping.md).
 
 ```
-text → AST → typed AST → join graph → computation DAG → SCC graph → grasp-dbsp
-                            (per rule)     (per rule)     (whole program)
+text → AST → core → typed core → join graph → computation DAG → SCC graph → grasp-dbsp
+             desugar  infer       (per rule)     (per rule)      (whole program)
 ```
 
 The middle three stages are where the interesting decisions are made, and none
 of them knows what the backend is.
 
-## Type checking
+## Before the graph
 
-Inference runs before anything else, and produces column types for every
-relation and a type for every variable in every rule. Four phases.
+Two passes run first, and neither is described here.
 
-**1. Per-rule unification.** Within one rule, types flow from atoms to
-variables, from variables through expressions, and from the result back to the
-head's columns. An atom binds its variables to its relation's column types; a
-match binds its variable to its expression's type; a filter requires `boolean`.
-
-**2. Cross-rule unification.** A relation defined by several rules takes the
-type each rule gives it, and they must agree. Where a column is produced at two
-types that are both valid, it widens to accept either.
-
-**3. Concrete assignment.** Untyped numeric literals resolve against their
-context. A variable still unconstrained after this is an error naming the
-variable, not a silently-defaulted `i64`.
-
-**4. Overload resolution and filter insertion.** Builtin calls resolve to one
-signature. Where a type is not assignable but a runtime check could rescue it —
-`optional(T)` used as `T` — the compiler inserts a filter that drops the rows
-that do not match and narrows the variable, rather than rejecting the program.
-
-Iteration is a bottom-up fixpoint: relations whose bodies are fully known give
-types to their heads, which unlocks the next round. Recursive relations settle
-in this loop like any other — a recursive rule's head type is constrained by its
-non-recursive rules first.
-
-Types are erased after this. Nothing downstream carries them except as the
-record shapes the emitted program declares.
+- **Desugaring** rewrites the surface forms that stand for others — `x:`, `.f`,
+  `++`, and the destructure patterns with their size checks. See
+  [`semantics.md`](semantics.md#desugaring). Everything below sees the smaller
+  core.
+- **Type inference** gives every variable and every relation column a type, and
+  performs the safety check. See [`inference.md`](inference.md). Types are
+  erased afterwards, so nothing below carries one.
 
 ## Join graph
 
@@ -150,18 +131,71 @@ is deterministic, which means a program compiles to the same circuit every time.
 
 ### Placing dependent nodes
 
-Filters, matches, negated atoms and aggregates are placed at the **earliest**
-point where all their inputs are in scope. Early filtering shrinks everything
-downstream, and there is never a reason to wait.
+Filters, matches, negated atoms and aggregates are not in the spanning tree —
+only positive atoms are. Each is placed at the **earliest** point where all its
+inputs are bound:
 
-Aggregates are the exception to "earliest": an aggregate consumes a whole group,
-so it goes after everything contributing to its group.
+```
+for each dependent node N:
+    k = the last position in the post-order that produces any input of N
+    insert N immediately after k
+```
+
+Early is always right: a filter that runs sooner shrinks everything downstream,
+and there is never a reason to carry a row that is going to be discarded.
+
+When several become ready at the same point, they are ordered **negated atoms,
+then filters, then matches, then aggregates** — most selective first, and
+aggregates last because an aggregate consumes a whole group and must come after
+everything contributing to it.
+
+### Resolving competing producers
+
+The join graph recorded every producer of a variable and chose none
+([above](#competing-producers)). The optimizer picks one:
+
+- The **primary** producer is whichever comes first in the post-order.
+- Every other producer becomes an **equality filter** — `x = b + 1` for a
+  secondary `x := b + 1` — placed where `x` and that expression's inputs are all
+  available.
+
+This is what those rules already meant. Writing `x` twice says both computations
+agree; one of them supplies the value and the rest check it.
+
+```grasp
+head(val: x) <-
+    r1(a: a, b: b)
+    x := a * 2
+    x := b + 1
+```
+
+becomes `r1` → `x := a * 2` → `filter x = b + 1` → project.
 
 ### Projection
 
 Once a variable is needed by no remaining node and is not in the head, it is
-dropped. These points are computed from the live-variable analysis, so a
-projection costs nothing extra to find.
+dropped. These points fall out of the live-variable analysis the cost model
+already runs, so finding them costs nothing extra.
+
+### The whole algorithm
+
+```
+optimize(join_graph):
+    best = none
+    for each positive atom R:
+        T = maximum spanning tree of the weighted graph, rooted at R
+        order = post-order traversal of T
+        if order violates the dependency partial order: skip
+        place dependent nodes into order
+        resolve competing producers
+        insert projections
+        if cost(order) < cost(best): best = order
+    return best as a computation DAG
+```
+
+Every candidate is scored and the cheapest wins. With no valid rooting — which
+takes a rule whose dependencies genuinely contradict each other — the rule is
+rejected rather than evaluated in some order that happens to work.
 
 ## Computation DAG
 
@@ -196,6 +230,63 @@ where the data comes from, depends on stratum and is resolved during emission.
 Several `map_index` nodes may read the same relation with different keys. That
 is what a self-join needs, and what a recursive rule mentioning `path` twice on
 different columns needs.
+
+### What each body statement becomes
+
+Every form in a rule body becomes DAG nodes. Desugaring has already run, so the
+patterns arrive as the bindings and filters
+[`semantics.md`](semantics.md#desugaring) expands them into — the rows below are
+what those, and the forms that do not desugar, compile to.
+
+| body statement | nodes |
+|---|---|
+| positive atom, a leaf of the tree | `map_index` |
+| positive atom, joined to its parent | `map_index` then `join` |
+| negated atom | `map_index` on each side, then `antijoin`, then `map` to flatten |
+| filter | `filter` |
+| `v := expr` | `map` binding `v` |
+| `v := agg<e>` | `map_index` on the group, `aggregate`, `map` to flatten |
+| `(v) := *arr` | `flat_map` over the array |
+| `(k, v) := **d` | `flat_map` over `entries(d)` |
+| `v :: T` | `filter` — the runtime check, where one was inserted |
+| head | `map` projecting the head's columns |
+
+Two of these are worth spelling out.
+
+**An aggregate is three nodes, not one.** Grouping is the index key, so the
+group columns are indexed first, folded, then flattened back:
+
+```grasp
+payroll(dept: d, total: s) <-
+    emp(dept: d, sal: r)
+    s := sum<r>
+```
+
+```
+n1: map_index(emp, key=[d], val=[r])
+n2: aggregate(sum, col=r, group=[d], out=s)
+n3: map(→ [d, s])
+```
+
+**A dict unnest is a `flat_map` over its entries**, which is why entries come
+out in key order — a relation is a set, and the rows produced must not depend on
+how the dict was built:
+
+```grasp
+tagged(name: n, tag: k) <-
+    person(name: n, tags: d)
+    (k, _v) := **d
+```
+
+```
+n1: map_index(person, key=[], val=[n, d])
+n2: flat_map(entries(d), in=[d], out=[k, _v])
+n3: map(→ [n, k])
+```
+
+A dict lookup — from a `{a: x} := d` pattern, or written directly — is an
+ordinary `map` computing `get(d, "a")`, followed by the `filter` its
+`x :: V` assertion became.
 
 ### Invariants
 

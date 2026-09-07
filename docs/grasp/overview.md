@@ -65,7 +65,7 @@ premise, and several of the principles invert with it.
   expressions, and destructuring and unnest patterns.
 - Expressions: arithmetic, comparison, logic, concatenation, function calls,
   array and dict literals, field access and subscript.
-- The value types listed in [`language.md`](language.md) — `boolean`, `i64`,
+- The value types listed in [`types.md`](types.md) — `boolean`, `i64`,
   `f64`, `string`, `optional(T)`, `record(...)`, `array(T)`, `dict(K,V)` and
   `json` — and `relation(...)` over them.
 - External relations, declared `r(cols:) <- input`.
@@ -73,6 +73,11 @@ premise, and several of the principles invert with it.
   computation DAG and SCC stratification, described in
   [`compilation.md`](compilation.md), and emission described in
   [`mapping.md`](mapping.md).
+
+These documents are meant to be **sufficient on their own**: the grammar is
+complete, the type rules are stated as rules, and each pass says what it rejects
+and why. Nothing here requires reading the Erlang implementation's documents,
+which are referenced below only as history.
 
 ## Future work
 
@@ -119,7 +124,7 @@ design comes from. What is missing is missing on purpose.
   eval against a shared cache. Here `f64` arithmetic is just arithmetic.
 
 - **A wider standard library.** The builtins available are the ones grasp-dbsp
-  provides, listed in [`language.md`](language.md). The namespaces for types that
+  provides, listed in [`semantics.md`](semantics.md#builtins). The namespaces for types that
   do not exist yet — temporal, bytes, bits, cryptographic hashing — arrive with
   those types.
 
@@ -157,15 +162,21 @@ design comes from. What is missing is missing on purpose.
 [`compilation.md`](compilation.md) except the last, which is
 [`mapping.md`](mapping.md).
 
-| stage | produces |
-|---|---|
-| parse | an AST of rules and specs |
-| typecheck | column types for every relation, variable types for every rule |
-| join graph | one unordered graph per rule — atoms as nodes, variables as wires |
-| optimizer | an evaluation order, chosen against a cost model |
-| computation DAG | one ordered, column-level DAG per rule |
-| SCC analysis | rules grouped into strata; recursive components identified |
-| emission | a grasp-dbsp program |
+| stage | produces | described in |
+|---|---|---|
+| parse | an AST of rules and specs | [`syntax.md`](syntax.md) |
+| desugar | the core forms | [`semantics.md`](semantics.md#desugaring) |
+| infer | a type for every variable and column | [`inference.md`](inference.md) |
+| join graph | one unordered graph per rule — atoms as nodes, variables as wires | [`compilation.md`](compilation.md) |
+| optimizer | an evaluation order, chosen against a cost model | [`compilation.md`](compilation.md) |
+| computation DAG | one ordered, column-level DAG per rule | [`compilation.md`](compilation.md) |
+| SCC analysis | rules grouped into strata; recursive components identified | [`compilation.md`](compilation.md) |
+| emission | a grasp-dbsp program | [`mapping.md`](mapping.md) |
 
-The layering is: grasp text → AST → typed AST → join graph → computation DAG →
-grasp-dbsp text → (grasp-dbsp's own pipeline) → a `dbsp` circuit.
+The rules each stage enforces are stated where the stage is, with the
+diagnostic each produces — a safety error in `semantics.md`, a type error in
+`types.md`, and so on. There is no separate error catalogue to drift from them.
+
+The layering is: grasp text → AST → core → typed core → join graph →
+computation DAG → grasp-dbsp text → (grasp-dbsp's own pipeline) → a `dbsp`
+circuit.
