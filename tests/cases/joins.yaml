@@ -137,3 +137,56 @@
         - [1, 7, {k: 7, v: 1}]
       reversed:
         - [1, 7, {k: 7, v: 1}]
+
+# --- Outer joins ------------------------------------------------------------
+#
+# There is no `left_join` operator. `dbsp` has one, but its right-hand input is
+# `OrdIndexedZSet<K, Option<V2>>` — a second Rust batch type, in a design whose
+# leverage is that there is exactly one. It does not need one: a left join is
+# `join ∪ (antijoin × null)`, which is three operators that already exist.
+#
+# What was missing was a way out of an indexed stream. `antijoin` produces one,
+# and until `map` accepted either shape its rows could be observed but never
+# transformed, so this query could not be written at all.
+
+- name: a left join, written the way a frontend would emit it
+  source: |
+    emp := input("emp")
+    emp :: zset(record(name: String, dept_id: i64))
+
+    dept := input("dept")
+    dept :: zset(record(id: i64, dname: String))
+
+    emp_idx  := map_index(emp,  function((r) -> record(key: r.dept_id, value: r)))
+    dept_idx := map_index(dept, function((r) -> record(key: r.id, value: r)))
+
+    matched   := join(emp_idx, dept_idx, function((k, e, d) ->
+                     record(name: e.name, dname: cast(d.dname, optional(String)))))
+    unmatched := antijoin(emp_idx, dept_idx)
+    nulled    := map(unmatched, function((k, e) ->
+                     record(name: e.name, dname: cast(NONE, optional(String)))))
+    out       := plus(matched, nulled)
+
+  # `cast(d.dname, optional(String))` widens the matched side so both halves
+  # share one batch type, and `cast(NONE, optional(String))` is how the absent
+  # counterpart is written — a bare `NONE` in a record field has no type to
+  # infer.
+  input:
+    - emp:
+        - [1, {name: "ana", dept_id: 1}]
+        - [1, {name: "bo", dept_id: 99}]
+      dept:
+        - [1, {id: 1, dname: "sales"}]
+    # The missing department arrives: the null-extended row must retract and the
+    # matched row take its place, which is the incremental behaviour that makes
+    # this worth expressing as a dataflow rather than a re-query.
+    - dept:
+        - [1, {id: 99, dname: "ops"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {name: "ana", dname: "sales"}]
+        - [1, {name: "bo", dname: null}]
+    - out:
+        - [-1, {name: "bo", dname: null}]
+        - [1, {name: "bo", dname: "ops"}]

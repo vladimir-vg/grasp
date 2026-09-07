@@ -141,6 +141,18 @@ impl<'a> Ctx<'a> {
         Ok(i)
     }
 
+    /// The parameters an operator's function is fed for one element of `i`.
+    ///
+    /// A flat stream feeds the row; an indexed one feeds `(key, value)`,
+    /// matching `dbsp`'s `ItemRef` for each shape. Every row-at-a-time operator
+    /// follows this rule, so none of them cares which shape it was given.
+    fn element(&self, plan: &Plan, i: usize) -> Vec<TypeDesc> {
+        match &plan.nodes[i].ty {
+            BatchType::ZSet(t) => vec![t.clone()],
+            BatchType::IndexedZSet(k, v) => vec![k.clone(), v.clone()],
+        }
+    }
+
     fn zset(&self, plan: &Plan, i: usize) -> TResult<(usize, TypeDesc)> {
         let node = &plan.nodes[i];
         match &node.ty {
@@ -287,31 +299,37 @@ fn check_source(name: &str, cx: &Ctx<'_>, env: Env<'_>) -> TResult<Option<(Batch
     out.map(Some)
 }
 
-/// Row-at-a-time operators. Each takes a `fun(...)`, and the shape of the
-/// result follows from that function's return type.
+/// Row-at-a-time operators.
+///
+/// Every one of these takes either stream shape, feeding the function one row
+/// for a flat stream and `(key, value)` for an indexed one — see
+/// [`Ctx::element`]. The *result* shape follows from what the function returns,
+/// not from what it was given, so `map` over an indexed stream flattens it.
+/// That is the only route out of an indexed shape other than a join, and it is
+/// what makes an outer join expressible: `antijoin` yields an indexed stream
+/// whose rows would otherwise be stuck there.
 fn check_map_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, PlanOp)>> {
     let (op, span) = (cx.op, cx.span);
     let out = match op {
 
         "map" => {
             cx.want(2)?;
-            let (input, elem) = cx.zset(plan, cx.stream_arg(0)?)?;
+            let input = cx.stream(cx.stream_arg(0)?)?;
+            let params = cx.element(plan, input);
             let (f, out) = {
                 let f = cx.fun_arg(1)?;
-                check_fun(f.params, f.body, &[elem], span, "the body of `map`", cx.funcs)?
+                check_fun(f.params, f.body, &params, span, "the body of `map`", cx.funcs)?
             };
+            // Flattening: an indexed stream mapped row-at-a-time produces a
+            // plain zset, which is the only way out of an indexed shape other
+            // than a join.
             Ok((BatchType::ZSet(out), PlanOp::Map { input, f: Arc::new(f) }))
         }
 
         "filter" => {
             cx.want(2)?;
             let input = cx.stream(cx.stream_arg(0)?)?;
-            // A flat stream feeds the row; an indexed one feeds (key, value),
-            // matching `dbsp`'s `ItemRef` for each shape.
-            let params: Vec<TypeDesc> = match &plan.nodes[input].ty {
-                BatchType::ZSet(t) => vec![t.clone()],
-                BatchType::IndexedZSet(k, v) => vec![k.clone(), v.clone()],
-            };
+            let params = cx.element(plan, input);
             let (f, out) = {
                 let f = cx.fun_arg(1)?;
                 check_fun(f.params, f.body, &params, span, "the body of `filter`", cx.funcs)?
@@ -324,11 +342,11 @@ fn check_map_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pla
 
         "flat_map" => {
             cx.want(2)?;
-            let (input, elem) = cx.zset(plan, cx.stream_arg(0)?)?;
-            let (f, out) =
-                {
+            let input = cx.stream(cx.stream_arg(0)?)?;
+            let params = cx.element(plan, input);
+            let (f, out) = {
                 let f = cx.fun_arg(1)?;
-                check_fun(f.params, f.body, &[elem], span, "the body of `flat_map`", cx.funcs)?
+                check_fun(f.params, f.body, &params, span, "the body of `flat_map`", cx.funcs)?
             };
             // One row per element, so the fan-out follows the data.
             let TypeDesc::Array(row) = out else {
@@ -342,11 +360,13 @@ fn check_map_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pla
 
         "flat_map_index" => {
             cx.want(2)?;
-            let (input, elem) = cx.zset(plan, cx.stream_arg(0)?)?;
-            let (f, out) =
-                {
+            let input = cx.stream(cx.stream_arg(0)?)?;
+            let params = cx.element(plan, input);
+            let (f, out) = {
                 let f = cx.fun_arg(1)?;
-                check_fun(f.params, f.body, &[elem], span, "the body of `flat_map_index`", cx.funcs)?
+                check_fun(
+                    f.params, f.body, &params, span, "the body of `flat_map_index`", cx.funcs,
+                )?
             };
             let TypeDesc::Array(row) = out else {
                 return err(
@@ -363,10 +383,11 @@ fn check_map_family(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Pla
 
         "map_index" => {
             cx.want(2)?;
-            let (input, elem) = cx.zset(plan, cx.stream_arg(0)?)?;
+            let input = cx.stream(cx.stream_arg(0)?)?;
+            let params = cx.element(plan, input);
             let (f, out) = {
                 let f = cx.fun_arg(1)?;
-                check_fun(f.params, f.body, &[elem], span, "the body of `map_index`", cx.funcs)?
+                check_fun(f.params, f.body, &params, span, "the body of `map_index`", cx.funcs)?
             };
             let (kv, kt, vt) = key_value(&out, op, span)?;
             Ok((

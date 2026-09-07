@@ -147,6 +147,11 @@ pub enum ExprKind {
     Field(Box<Expr>, String),
     /// `record(a: x, b: y)`
     Record(Vec<(String, Expr)>),
+    /// `cast(x, T)` — the one place a *type* appears in expression position.
+    ///
+    /// The type checker resolves this to a concrete conversion, so no
+    /// `TypeDesc` reaches the evaluator.
+    Cast(Box<Expr>, TypeDesc),
     /// `[a, b, ...]` — an array. Every element has the array's one element
     /// type, and the array is an ordinary value: `flat_map` emits one row per
     /// element, so fan-out follows the data rather than the source.
@@ -198,11 +203,12 @@ const TYPE_NAMES: &[&str] = &[
     "bool", "i64", "f64", "String", "optional", "record", "array", "sql", "zset", "indexed_zset",
 ];
 
-/// Literals and keywords. `if`/`then`/`else` are reserved although the language
-/// has no conditionals yet, so adding them later is not a breaking change.
+/// Literals and keywords. `if` is not here: it is a builtin, so it is reserved
+/// through `Builtin::ALL` like every other one, and the list below is assembled
+/// from the real names rather than duplicating them.
 const KEYWORDS: &[&str] = &[
-    "true", "false", "NONE", "null", "function", "return", "and", "or", "not", "if", "then",
-    "else", "circuit", "fixpoint",
+    "true", "false", "NONE", "null", "function", "return", "and", "or", "not", "cast", "circuit",
+    "fixpoint",
 ];
 
 /// Whether `name` is reserved, and so may not name a node or a parameter.
@@ -1021,6 +1027,16 @@ impl Parser {
                     "`null` is reserved for the JSON null value inside `sql.Variant`, \
                      which is not implemented; write `NONE` for a missing value",
                 );
+            }
+            // `cast(x, T)` is parsed here rather than as a builtin call because
+            // its second argument is a type, and a type is not an expression.
+            "cast" => {
+                self.expect(&Tok::LParen, "`(` after cast")?;
+                let value = self.expr()?;
+                self.expect(&Tok::Comma, "`,` before the target type of a cast")?;
+                let ty = self.value_type()?;
+                self.expect(&Tok::RParen, "`)` closing cast")?;
+                return Ok(self.mk(start, ExprKind::Cast(Box::new(value), ty)));
             }
             "record" => {
                 self.expect(&Tok::LParen, "`(` after record")?;

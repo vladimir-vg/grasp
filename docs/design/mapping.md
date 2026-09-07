@@ -288,6 +288,12 @@ Each language operator lowers to one typed `dbsp` method.
 | `flat_map(s, f)` | `flat_map` | `f` returns an `array`, so fan-out follows the data |
 | `map_index(s, f)` | `map_index` | `f` returns `record(key:, value:)`, split by the lowering |
 | `flat_map_index(s, f)` | `flat_map_index` | as both of the above |
+
+Every method in the mapping family exists on an indexed stream too, taking the
+element as one `(&K, &V)` tuple — the shape `filter` already used. So each of
+those five arms matches on the operand's shape rather than requiring a flat one,
+and `map` on an indexed stream returns an `OrdZSet`: the only route out of an
+indexed shape that is not a join.
 | `join(l, r, f)` | `join` | `f` maps `(K,V₁,V₂)` to an output row |
 | `join_index(l, r, f)` | `join_index` | keeps the result indexed |
 | `antijoin(l, r)` | `antijoin` | |
@@ -318,12 +324,17 @@ Two operators that look like they belong in this table but do not:
   different thing: it merges per-worker output batches on the read side, and the
   runner uses it there.
 - **`left_join`.** Its right-hand input must be
-  `OrdIndexedZSet<K, Option<V2>>` and must not actually contain any `None`
-  (`dbsp/src/mono.rs:200-215`) — the `Option` is there to avoid an internal
-  transformation, not to express outer-join semantics. Exposing it would mean
-  either constraining the right side's value type in the language or having the
-  lowering wrap values in `Some`. Deferred rather than shipped on the strength of
-  its name.
+  `OrdIndexedZSet<K, Option<V2>>` (`dbsp/src/mono.rs:200-215`) — the `Option` is
+  there to avoid an internal transformation, not to express outer-join
+  semantics. That is a *second Rust batch type*, in a design whose leverage is
+  that there is exactly one, so exposing it would cost a fourth `Node` variant
+  and a second instantiation of everything downstream.
+
+  It is not needed. A left join is `join ∪ (antijoin × null)`, three operators
+  that already exist, now that the mapping family accepts an indexed stream and
+  `cast` can widen the matched side to `optional`. See
+  [`language.md`](language.md); `tests/cases/joins.yaml` has it end to end,
+  including the retraction when a missing match later arrives.
 
 ## Aggregation
 

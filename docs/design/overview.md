@@ -66,9 +66,12 @@ implicit numeric promotion deleted, both to satisfy the third and fifth.
   `join_index`, `antijoin`); `distinct`; `aggregate` over
   `min`/`max`/`sum`/`avg`/`count`; `weighted_count`; the algebraic operators
   (`neg`, `plus`, `minus`, `sum`); and `integrate`, `differentiate`, `delay`.
+  Every operator in the mapping family takes either stream shape, so `map`
+  flattens an indexed stream and an outer join is a pattern rather than an
+  operator.
 - Expressions in function bodies: literals, parameters, record field access,
-  `record(...)` and `[…]` construction, arithmetic, comparison and logic, and a
-  small builtin library.
+  `record(...)` and `[…]` construction, arithmetic, comparison and logic,
+  `if(cond, a, b)`, `cast(x, T)`, and a small builtin library.
 - The type system described in [`language.md`](language.md) (batch types and
   value types). The value vocabulary is `bool`, `i64`, `f64`, `String`,
   `optional(T)`, `record(...)` and `array(T)`.
@@ -100,9 +103,11 @@ lists here.
 - **Multi-worker execution.** `Runtime::init_circuit` is called with one worker.
   Sharding is by key hash, so this depends on the hashing invariants in
   [`mapping.md`](mapping.md).
-- **`left_join`.** `dbsp` has one, but its right-hand input must be
-  `Option`-valued, so exposing it needs either a language-level constraint or a
-  wrapping step in the lowering. See [`mapping.md`](mapping.md).
+- **`left_join` is *not* planned.** `dbsp` has one, but its right-hand input is
+  `OrdIndexedZSet<K, Option<V2>>` — a second Rust batch type, in a design whose
+  leverage is that there is exactly one. It is not needed: a left join is
+  `join ∪ (antijoin × null)`, three operators that already exist, now that the
+  mapping family accepts an indexed stream. See [`language.md`](language.md).
 - **`consolidate`.** Applies to trace-carrying streams. Recursion has landed
   and this still does not apply, because no operator in the language produces a
   stream carrying a trace rather than a batch. See [`mapping.md`](mapping.md).
@@ -132,16 +137,6 @@ lists here.
 - **The `raw` JSON format** (a bare object meaning insert) and the `update`
   operation for keyed partial updates, which needs primary keys the language
   does not have. Both are Feldera-native; neither is implemented.
-
-- **A conditional.** There is none: `coalesce` is the only branching in the
-  language, so a SQL `CASE` has nowhere to lower. The assumption is that
-  [`json.md`](json.md)'s `match` covers it when that lands; if a frontend needs
-  one sooner, an `if(cond, a, b)` builtin is the smaller answer.
-
-- **Conversion between two known types.** Nothing turns an `f64` into an `i64`;
-  `floor`/`ceil`/`round` are type-preserving. [`json.md`](json.md) makes type
-  patterns the conversion mechanism, so a separate `cast` is *not* planned —
-  the two designs disagreed about this and `match` won.
 
 - **A richer builtin set** — a fuller arithmetic/string/temporal library.
 - **The CLI / HTTP surface** — the current `validate` / `run` / `serve`

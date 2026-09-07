@@ -193,7 +193,7 @@ fn a_numeric_literal_is_pinned_to_its_context() {
                 TypedExpr::Call(_, args)
                 | TypedExpr::Record(args)
                 | TypedExpr::Array(args) => args.iter().for_each(|a| walk(a, out)),
-                TypedExpr::Field(b, _) => walk(b, out),
+                TypedExpr::Field(b, _) | TypedExpr::Cast(b, _) => walk(b, out),
                 TypedExpr::Var(_) => {}
             }
         }

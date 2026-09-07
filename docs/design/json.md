@@ -12,8 +12,9 @@
 > replacing `fun`, `record(key:, value:)` instead of `(key, value)` pairs, and
 > arrays instead of list syntax. What is left here is what only `json` needs —
 > `match`, type patterns, structural patterns, open records, `dict`, and
-> exhaustiveness. Converting a document *is* pattern matching, which is why
-> there is no `cast` in the plan.
+> exhaustiveness. Converting a document *is* pattern matching — which is what
+> patterns are for here, alongside `cast`, which converts between two *known*
+> types and has since landed. The two domains are disjoint.
 >
 > Two things below need revisiting before this is built, both raised by the
 > review that produced the split. `dict(K, V)` is described as a refinement of
@@ -153,9 +154,9 @@ are real and worth stating rather than burying:
 - **Integers above 2^53 lose exactness.** `9007199254740993` becomes
   `9007199254740992`. Snowflake IDs, 64-bit database keys and nanosecond
   timestamps all live up there, and as join keys they collide.
-- **There is no repair.** The language has no conversion between two known
-  types at all — `floor`/`ceil`/`round` are type-preserving and there is no
-  `cast` — so an `f64` that came out of a document stays one.
+- **There is no repair.** `cast(x, optional(i64))` will narrow the `f64`, but
+  it cannot recover a value that was already rounded on the way in — the
+  precision is gone before the cast sees it.
 
 Integrality remains checkable with what exists (`x - floor(x) == 0.0`), which
 tells you whether a value was written without a decimal point, but does not
@@ -256,7 +257,7 @@ becoming interchangeable: `get` cannot be used to walk a document without first
 establishing that each level *is* an object, which is exactly the check a
 structural pattern does in one step.
 
-`keys(d) : array(string)` becomes expressible once arrays are values, which is
+`keys(d) : array(string)` is expressible now that arrays are values, which is
 what makes enumerating a document's keys possible at all.
 
 ## Ingestion
@@ -355,9 +356,16 @@ the first case:
 match(v, NONE -> 0, x::f64 -> x)
 ```
 
-There is no conversion between two *known* types. `floor`/`ceil`/`round` are
-type-preserving, and nothing turns an `f64` into an `i64`. See
-[`json.md`](json.md) for what that means for numbers coming out of documents.
+**Type patterns and `cast` split the work, and the split is what keeps them
+from being two ways to write one thing.** `cast(x, T)` converts between two
+*known* types — see [`language.md`](language.md) — and it landed because
+deleting implicit promotion left no path from `i64` to `f64` at all. Type
+patterns do what `cast` cannot: they convert out of a `json`, whose shape is
+not known until the value is inspected. The two domains are disjoint.
+
+When this was written the plan was for patterns to be the *only* conversion
+mechanism. That was decided for documents and turned out not to hold for
+scalars.
 
 ##### Open records
 

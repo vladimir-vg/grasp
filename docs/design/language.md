@@ -133,18 +133,26 @@ in a record, in a column and in a stream, and `flat_map` turns one into rows.
 ## Operators
 
 Operators are `dbsp` primitives exposed as-is. The reference below gives each
-operator's input batch shape(s) and its result batch shape; `X` means the shape
-is preserved. Which `dbsp` method each lowers to is in
-[`mapping.md`](mapping.md), which is where that mapping is maintained.
+operator's input batch shape(s) and its result batch shape. Two conventions:
+
+- **`X`** is either batch shape. `X → X` means the shape is preserved; `X` on
+  the left with a named shape on the right means the operator accepts either and
+  always produces that one.
+- **`E`** is the stream's *element*: the row of a `zset(T)`, or the `(key,
+  value)` pair of an `indexed_zset(K,V)` — which is why a function over an
+  indexed stream takes two parameters. See the note below the table.
+
+Which `dbsp` method each lowers to is in [`mapping.md`](mapping.md), which is
+where that mapping is maintained.
 
 | operator | signature |
 |---|---|
 | `input("t")` | → `zset(T)` |
-| `map(s, f)` | `zset(T) → zset(U)`, `f : T → U` |
-| `filter(s, f)` | `X → X`, `f : T → bool` |
-| `flat_map(s, f)` | `zset(T) → zset(U)`, `f : T → array(U)` |
-| `map_index(s, f)` | `zset(T) → indexed_zset(K,V)`, `f : T → record(key: K, value: V)` |
-| `flat_map_index(s, f)` | `zset(T) → indexed_zset(K,V)`, `f : T → array(record(key: K, value: V))` |
+| `map(s, f)` | `X → zset(U)`, `f : E → U` |
+| `filter(s, f)` | `X → X`, `f : E → bool` |
+| `flat_map(s, f)` | `X → zset(U)`, `f : E → array(U)` |
+| `map_index(s, f)` | `X → indexed_zset(K,V)`, `f : E → record(key: K, value: V)` |
+| `flat_map_index(s, f)` | `X → indexed_zset(K,V)`, `f : E → array(record(key: K, value: V))` |
 | `join(l, r, f)` | `indexed_zset(K,V₁) × indexed_zset(K,V₂) → zset(OV)`, `f : (K,V₁,V₂) → OV` |
 | `join_index(l, r, f)` | as `join`, but `f : (K,V₁,V₂) → record(key: OK, value: OV)` → `indexed_zset(OK,OV)` |
 | `antijoin(l, r)` | `indexed_zset(K,V) × indexed_zset(K,V₂) → indexed_zset(K,V)` |
@@ -161,10 +169,26 @@ is preserved. Which `dbsp` method each lowers to is in
 
 Operator arity follows `dbsp`: `plus` and `minus` are binary, `sum` is n-ary.
 
-**`filter`'s function takes the stream's element.** For a flat stream that is
-one row; for an indexed stream it is the `(key, value)` pair, so the function
-takes two parameters — `function((k, v) -> …)` — matching `dbsp`'s `ItemRef` for
-each shape.
+**A row-at-a-time function takes the stream's element**, written `E` above. For
+a flat stream that is one row; for an indexed stream it is the `(key, value)`
+pair, so the function takes two parameters — `function((k, v) -> …)` — matching
+`dbsp`'s `ItemRef` for each shape. Every operator in the mapping family follows
+this rule, so none of them cares which shape it was given.
+
+The *result* shape comes from what the function returns, not from what it was
+given. **So `map` over an indexed stream flattens it**, and that is the only
+route out of an indexed shape other than a join. It is what makes an outer join
+expressible: `antijoin` yields an indexed stream whose rows would otherwise be
+stuck there. There is no `left_join` operator, because there need not be one:
+
+```
+matched   := join(emp_idx, dept_idx, function((k, e, d) ->
+                 record(name: e.name, dname: cast(d.dname, optional(String)))))
+unmatched := antijoin(emp_idx, dept_idx)
+nulled    := map(unmatched, function((k, e) ->
+                 record(name: e.name, dname: cast(NONE, optional(String)))))
+out       := plus(matched, nulled)
+```
 
 **Operator calls nest.** A stream argument may be another operator call rather
 than a name, so `weighted_count(map(emp, f))` is one declaration. A named node
@@ -356,6 +380,7 @@ above and with each other.
 | builtin | signature | result |
 |---|---|---|
 | `coalesce` | `optional(T) × T → T` | `x` if present, else `y` |
+| `if` | `bool × T × T → T` | the taken arm |
 | `abs` / `floor` / `ceil` / `round` | `T → T`, `T` numeric | type-preserving |
 | `length` | `String → i64`, `array(T) → i64` | element or character count |
 | `concat` | `String × String → String` | concatenation |
@@ -367,6 +392,69 @@ than being rejected for it.
 
 There is no `+` on strings. `concat` is the one way to join them, and `+` is
 arithmetic only.
+
+`if` is the only branching construct, and the only builtin that does not
+evaluate all of its arguments — the untaken arm does not run. Because every
+expression here is total, that is a cost property and never a semantic one: an
+untaken branch could not have produced an error to avoid. Its two arms meet
+under the same rule everything else does, so `if(c, x, NONE)` widens to
+`optional(T)` and `if(c, i64_val, f64_val)` is rejected like any other
+mixed-type expression. Nested, it is how a SQL `CASE` lowers.
+
+### `cast`
+
+`cast(x, T)` converts between two known types. It is the one place a *type*
+appears in expression position, which is why it is a construct rather than a
+builtin.
+
+**`cast(x, T)` yields exactly `T`.** Where a conversion has inputs the target
+cannot hold, that is an error naming the fix rather than a silently optional
+result:
+
+```
+cast(r.x, i64)             # error: can fail (NaN, infinity, or out of range)
+cast(r.x, optional(i64))   # optional(i64)
+```
+
+That keeps a declared type a promise, and follows the rule division already set.
+
+| from → to | `bool` | `i64` | `f64` | `String` |
+|---|---|---|---|---|
+| `bool`   | — | — | — | total |
+| `i64`    | — | — | total | total |
+| `f64`    | — | fallible | — | total |
+| `String` | fallible | fallible | fallible | — |
+
+A conversion to the same type is the identity. `NONE → optional(T)` is total for
+any `T`: that is how a definite value's absent counterpart is written, and a
+bare `NONE` in a record field has no type to infer without it.
+
+An `optional` **target** is what admits an absent input, so absence needs no
+propagation rule of its own — the written type says whether it is allowed
+through. `optional(T) → optional(U)` is allowed whenever `T → U` is, and maps
+absence to absence.
+
+Records and arrays have no conversions.
+
+`cast` exists because there is no implicit conversion: without it there would be
+no path at all from `i64` to `f64`, and a query as ordinary as `a * 1.5` on an
+integer column could not be written.
+
+### SQL null semantics
+
+SQL's `a + b` is `NULL` when either side is. This language's arithmetic rejects
+an optional operand instead, because propagating silently is the thing `NONE`
+exists to avoid — see [Absence](#absence). A frontend that wants SQL's behaviour
+writes it out, once:
+
+```
+function add_null(a, b) {
+    return if(a == NONE or b == NONE, NONE, coalesce(a, 0) + coalesce(b, 0))
+}
+```
+
+That serves every numeric type, because `0` takes the type of whatever it is
+coalesced against — which is the case named functions exist for.
 
 ### Numbers
 
@@ -545,8 +633,12 @@ Anywhere else it is an error saying so, rather than guessing.
 These may not name a node, a function or a parameter: the 20 operator names,
 the 5 aggregator names, the builtin names, the type constructors (`bool`,
 `i64`, `f64`, `String`, `optional`, `record`, `array`, `sql`, `zset`,
-`indexed_zset`), and `true`, `false`, `NONE`, `null`, `function`, `return`,
-`and`, `or`, `not`, `if`, `then`, `else`, `circuit`, `fixpoint`.
+`indexed_zset`), `cast`, and `true`, `false`, `NONE`, `null`, `function`,
+`return`, `and`, `or`, `not`, `circuit`, `fixpoint`.
+
+`if` is reserved by being a builtin, like every other builtin name. `then` and
+`else` were held for a syntactic conditional and are not reserved: the
+conditional is `if(cond, a, b)`, so those words are free.
 
 `sql` is reserved although the namespace is empty, so the Feldera value types
 can arrive later without breaking a program that used the name meanwhile.

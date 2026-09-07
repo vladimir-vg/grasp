@@ -6,7 +6,7 @@
 use super::{Functions, TResult, err};
 use std::fmt;
 use crate::diag::Span;
-use crate::expr::{Builtin, TypedExpr};
+use crate::expr::{Builtin, Conv, TypedExpr};
 use crate::lang::{BinOp, Expr, ExprKind, UnOp};
 use crate::value::{DynValue, TypeDesc};
 
@@ -73,7 +73,8 @@ fn pin(e: &mut TypedExpr, ty: &TypeDesc) {
         | TypedExpr::Var(_)
         | TypedExpr::Field(..)
         | TypedExpr::Record(_)
-        | TypedExpr::Array(_) => {}
+        | TypedExpr::Array(_)
+        | TypedExpr::Cast(..) => {}
     }
 }
 
@@ -211,6 +212,7 @@ fn substitute(e: &TypedExpr, args: &[TypedExpr]) -> TypedExpr {
         TypedExpr::Call(f, a) => {
             TypedExpr::Call(*f, a.iter().map(|x| substitute(x, args)).collect())
         }
+        TypedExpr::Cast(i, c) => TypedExpr::Cast(Box::new(substitute(i, args)), *c),
         leaf @ (TypedExpr::Const(_) | TypedExpr::IntLit(_) | TypedExpr::FloatLit(_)) => leaf.clone(),
     }
 }
@@ -247,6 +249,18 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)], funcs: &Functions<'_>) -> TResult<
             // value.
             let fty = if bt.is_optional() { optional(fty) } else { fty };
             (TypedExpr::Field(Box::new(be), index), Ty::Known(fty))
+        }
+
+        ExprKind::Cast(inner, to) => {
+            let (mut ie, it) = infer(inner, env, funcs)?;
+            let conv = conversion(&it, to, span)?;
+            // A literal operand settles before converting, so `cast(1, f64)`
+            // goes i64 -> f64 rather than the literal simply being an f64.
+            // Predictable, and it keeps one rule for what a literal does.
+            if !matches!(it, Ty::None) {
+                commit(&mut ie, it, span, "the value being cast")?;
+            }
+            (TypedExpr::Cast(Box::new(ie), conv), Ty::Known(to.clone()))
         }
 
         ExprKind::Record(fields) => {
@@ -364,6 +378,77 @@ fn infer(e: &Expr, env: &[(&str, &TypeDesc)], funcs: &Functions<'_>) -> TResult<
             (TypedExpr::Call(builtin, exprs), ty)
         }
     })
+}
+
+/// The conversion `cast(x, to)` means, or why there is none.
+///
+/// **`cast(x, T)` yields exactly `T`.** Where the conversion has inputs the
+/// target cannot hold, that is an error naming the fix rather than a silently
+/// optional result — which is what keeps a declared type a promise, and follows
+/// the rule division already set.
+///
+/// An `optional` *target* is what admits an absent input, so absence needs no
+/// propagation rule of its own: the written type says whether it is allowed
+/// through.
+fn conversion(from: &Ty, to: &TypeDesc, span: Span) -> TResult<Conv> {
+    use TypeDesc::*;
+    let target = to.non_null();
+    let optional_target = to.is_optional();
+
+    // `NONE` has no type of its own; the target gives it one, exactly as it
+    // does for a numeric literal. This is how a definite value's absent
+    // counterpart is written.
+    let from = match from {
+        Ty::None => {
+            return if optional_target {
+                Ok(Conv::Identity)
+            } else {
+                err(span, format!("`NONE` is not a `{to}`; write `cast(NONE, optional({target}))`"))
+            };
+        }
+        other => other.settle().expect("Ty::None handled above"),
+    };
+
+    if from.is_optional() && !optional_target {
+        return err(
+            span,
+            format!(
+                "`{from}` may be absent, so it cannot become `{to}`; \
+                 write `cast(..., optional({target}))`"
+            ),
+        );
+    }
+
+    let source = from.non_null();
+    let conv = match (source, target) {
+        (a, b) if a == b => Conv::Identity,
+        (I64, F64) => Conv::IntToFloat,
+        (F64, I64) => Conv::FloatToInt,
+        (Bool, String) => Conv::BoolToString,
+        (I64, String) => Conv::IntToString,
+        (F64, String) => Conv::FloatToString,
+        (String, Bool) => Conv::StringToBool,
+        (String, I64) => Conv::StringToInt,
+        (String, F64) => Conv::StringToFloat,
+        _ => {
+            return err(span, format!("there is no conversion from `{source}` to `{target}`"));
+        }
+    };
+
+    if conv.is_fallible() && !optional_target {
+        let why = match conv {
+            Conv::FloatToInt => "NaN, infinity, or a value outside `i64`",
+            _ => "the text may not parse",
+        };
+        return err(
+            span,
+            format!(
+                "converting `{source}` to `{target}` can fail ({why}); \
+                 write `cast(..., optional({target}))`"
+            ),
+        );
+    }
+    Ok(conv)
 }
 
 /// Instantiates a named function at one call site.
@@ -529,6 +614,29 @@ fn infer_builtin(
     span: Span,
 ) -> TResult<Ty> {
     Ok(match b {
+        // The condition is an ordinary definite `bool` — comparisons already
+        // yield one even when an operand is optional. The arms meet under the
+        // same `unify` as everything else, so `if(c, x, NONE)` widens to
+        // `optional(T)` and `if(c, i64_val, f64_val)` is rejected like any
+        // other mixed-type expression.
+        Builtin::If => {
+            definite(&args[0], name, span)?;
+            let cond = args[0].settle().expect("definite() rejected the none case");
+            if cond != TypeDesc::Bool {
+                return err(span, format!("`if` needs a bool condition, found `{cond}`"));
+            }
+            let out = unify(args[1].clone(), args[2].clone(), span).map_err(|mut d| {
+                d.message = format!("`if`'s two arms must agree: {}", d.message);
+                d
+            })?;
+            if let Some(t) = out.settle() {
+                for e in exprs.iter_mut().skip(1) {
+                    pin(e, t.non_null());
+                }
+            }
+            out
+        }
+
         Builtin::Coalesce => {
             // The result is non-null when the fallback is, so the first
             // argument contributes its type without its optionality.

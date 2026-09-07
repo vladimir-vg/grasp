@@ -282,9 +282,20 @@ impl Runner {
 macro_rules! operator_arms {
     ($node:expr, $dep:expr, $op:expr) => {
         match $op {
+            // Row-at-a-time over either shape. `dbsp` hands an indexed stream's
+            // element as one `(&K, &V)` tuple, which is the same closure shape
+            // `filter` already uses.
             PlanOp::Map { input, f } => {
                 let f = f.clone();
-                Node::Flat($dep(*input).flat($node)?.map(move |r: &DynValue| eval(&f, &[r])))
+                match $dep(*input) {
+                    Node::Flat(s) => Node::Flat(s.map(move |r: &DynValue| eval(&f, &[r]))),
+                    // Mapping an indexed stream flattens it — the way out of an
+                    // indexed shape that is not a join.
+                    Node::Indexed(s) => Node::Flat(
+                        s.map(move |(k, v): (&DynValue, &DynValue)| eval(&f, &[k, v])),
+                    ),
+                    Node::Group(_) => return Err(shape_error($node, "a stream").into()),
+                }
             }
 
             PlanOp::Filter { input, f } => {
@@ -306,11 +317,15 @@ macro_rules! operator_arms {
             // either order means the same thing.
             PlanOp::MapIndex { input, f, kv } => {
                 let (f, kv) = (f.clone(), *kv);
-                Node::Indexed(
-                    $dep(*input)
-                        .flat($node)?
-                        .map_index(move |r: &DynValue| split_kv(eval(&f, &[r]), kv)),
-                )
+                match $dep(*input) {
+                    Node::Flat(s) => Node::Indexed(
+                        s.map_index(move |r: &DynValue| split_kv(eval(&f, &[r]), kv)),
+                    ),
+                    Node::Indexed(s) => Node::Indexed(s.map_index(
+                        move |(k, v): (&DynValue, &DynValue)| split_kv(eval(&f, &[k, v]), kv),
+                    )),
+                    Node::Group(_) => return Err(shape_error($node, "a stream").into()),
+                }
             }
 
             PlanOp::Join { left, right, f } => {
@@ -418,16 +433,31 @@ macro_rules! operator_arms {
             // fan-out is whatever the data says.
             PlanOp::FlatMap { input, f } => {
                 let f = f.clone();
-                Node::Flat(
-                    $dep(*input).flat($node)?.flat_map(move |r: &DynValue| rows(eval(&f, &[r]))),
-                )
+                match $dep(*input) {
+                    Node::Flat(s) => {
+                        Node::Flat(s.flat_map(move |r: &DynValue| rows(eval(&f, &[r]))))
+                    }
+                    Node::Indexed(s) => Node::Flat(
+                        s.flat_map(move |(k, v): (&DynValue, &DynValue)| rows(eval(&f, &[k, v]))),
+                    ),
+                    Node::Group(_) => return Err(shape_error($node, "a stream").into()),
+                }
             }
 
             PlanOp::FlatMapIndex { input, f, kv } => {
                 let (f, kv) = (f.clone(), *kv);
-                Node::Indexed($dep(*input).flat($node)?.flat_map_index(move |r: &DynValue| {
-                    rows(eval(&f, &[r])).into_iter().map(move |row| split_kv(row, kv)).collect::<Vec<_>>()
-                }))
+                let split = move |v: DynValue| {
+                    rows(v).into_iter().map(move |row| split_kv(row, kv)).collect::<Vec<_>>()
+                };
+                match $dep(*input) {
+                    Node::Flat(s) => Node::Indexed(
+                        s.flat_map_index(move |r: &DynValue| split(eval(&f, &[r]))),
+                    ),
+                    Node::Indexed(s) => Node::Indexed(s.flat_map_index(
+                        move |(k, v): (&DynValue, &DynValue)| split(eval(&f, &[k, v])),
+                    )),
+                    Node::Group(_) => return Err(shape_error($node, "a stream").into()),
+                }
             }
 
             PlanOp::JoinIndex { left, right, f, kv } => {

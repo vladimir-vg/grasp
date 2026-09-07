@@ -743,3 +743,82 @@
   expected_diagnostics:
     - pass: typecheck
       message: "`add` takes 2 argument(s), found 1"
+
+# --- Branching and conversion -----------------------------------------------
+
+- name: a fallible cast needs an optional target
+  source: |
+    a := input("a")
+    a :: zset(record(x: f64))
+    out := map(a, function((r) -> record(n: cast(r.x, i64))))
+
+  # `cast(x, T)` yields exactly `T`. Where the conversion has inputs the target
+  # cannot hold, that is an error naming the fix rather than a silently optional
+  # result — the same rule division follows.
+  expected_diagnostics:
+    - pass: typecheck
+      message: "can fail (NaN, infinity, or a value outside `i64`); write `cast(..., optional(i64))`"
+
+- name: parsing a string is fallible too
+  source: |
+    a := input("a")
+    a :: zset(record(s: String))
+    out := map(a, function((r) -> record(n: cast(r.s, i64))))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "the text may not parse"
+
+- name: an absent value needs an optional target
+  source: |
+    a := input("a")
+    a :: zset(record(x: optional(i64)))
+    out := map(a, function((r) -> record(n: cast(r.x, f64))))
+
+  # An optional *target* is what admits an absent input, so absence needs no
+  # propagation rule of its own: the written type says whether it is allowed.
+  expected_diagnostics:
+    - pass: typecheck
+      message: "may be absent, so it cannot become `f64`"
+
+- name: NONE needs an optional target
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    out := map(a, function((r) -> record(n: cast(NONE, i64))))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "`NONE` is not a `i64`; write `cast(NONE, optional(i64))`"
+
+- name: some pairs of types have no conversion
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    out := map(a, function((r) -> record(b: cast(r.v, bool))))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "there is no conversion from `i64` to `bool`"
+
+- name: if needs a bool condition
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    out := map(a, function((r) -> if(r.v, 1, 2)))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "`if` needs a bool condition, found `i64`"
+
+- name: if's arms must agree on a type
+  source: |
+    a := input("a")
+    a :: zset(record(i: i64, f: f64))
+    out := map(a, function((r) -> if(r.i > 0, r.i, r.f)))
+
+  # The arms meet under the same `unify` as arithmetic and comparison, so there
+  # is one answer in the language to "can these two types come together".
+  expected_diagnostics:
+    - pass: typecheck
+      message: "`if`'s two arms must agree"

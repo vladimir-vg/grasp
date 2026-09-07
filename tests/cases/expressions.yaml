@@ -268,3 +268,78 @@
   expected_exact_output:
     - out:
         - [1, {lo: "  mixed  ", up: "  MIXED  ", tr: "MiXeD", both: "MiXeD!", n: 9}]
+
+# --- Branching and conversion -----------------------------------------------
+
+- name: if branches on a bool
+  source: |
+    a := input("a")
+    a :: zset(record(v: i64))
+    out := map(a, function((r) -> record(
+        sign: if(r.v > 0, "positive", if(r.v < 0, "negative", "zero")))))
+
+  # Nested `if` is how a SQL `CASE` lowers. `if` is evaluated lazily, but every
+  # expression in this language is total, so that is a cost property and never
+  # a semantic one — an untaken branch could not have produced an error to
+  # avoid.
+  input:
+    - a:
+        - [1, {v: 7}]
+        - [1, {v: -7}]
+        - [1, {v: 0}]
+
+  expected_exact_output:
+    - out:
+        - [1, {sign: "positive"}]
+        - [1, {sign: "negative"}]
+        - [1, {sign: "zero"}]
+
+- name: SQL null propagation, at two numeric types
+  source: |
+    function add_null(a, b) {
+        return if(a == NONE or b == NONE, NONE, coalesce(a, 0) + coalesce(b, 0))
+    }
+
+    a := input("a")
+    a :: zset(record(i: optional(i64), j: optional(i64), x: optional(f64), y: optional(f64)))
+    out := map(a, function((r) -> record(ints: add_null(r.i, r.j), floats: add_null(r.x, r.y))))
+
+  # SQL's `a + b` is NULL when either side is; this language's arithmetic
+  # rejects an optional operand instead, because propagating silently is what
+  # `NONE` exists to avoid. The propagation a frontend needs is therefore
+  # written out — once, in a function that serves every numeric type, since
+  # `0` takes the type of whatever it is coalesced against.
+  input:
+    - a:
+        - [1, {i: 2, j: 3, x: 1.5, y: 2.5}]
+        - [1, {i: 2, j: null, x: 1.5, y: null}]
+
+  expected_exact_output:
+    - out:
+        - [1, {ints: 5, floats: 4.0}]
+        - [1, {ints: null, floats: null}]
+
+- name: cast converts between known types
+  source: |
+    a := input("a")
+    a :: zset(record(n: i64, x: f64, s: String, b: bool))
+    out := map(a, function((r) -> record(
+        widened:  cast(r.n, f64) * 1.5,
+        narrowed: cast(r.x, optional(i64)),
+        text:     cast(r.n, String),
+        parsed:   cast(r.s, optional(i64)),
+        shown:    cast(r.b, String))))
+
+  # Deleting implicit promotion left no path from i64 to f64; `cast` is that
+  # path, and it is explicit at the point of use rather than a lattice an
+  # emitter has to model. `narrowed` and `parsed` need an optional target
+  # because those conversions have inputs the target cannot hold.
+  input:
+    - a:
+        - [1, {n: 4, x: 2.9, s: "17", b: true}]
+        - [1, {n: 4, x: 2.9, s: "nope", b: true}]
+
+  expected_exact_output:
+    - out:
+        - [1, {widened: 6.0, narrowed: 2, text: "4", parsed: 17, shown: "true"}]
+        - [1, {widened: 6.0, narrowed: 2, text: "4", parsed: null, shown: "true"}]

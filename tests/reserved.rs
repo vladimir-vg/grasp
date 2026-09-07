@@ -61,7 +61,7 @@ fn every_builtin_name_resolves() {
 fn the_reserved_set_has_the_right_shape() {
     for name in [
         "zset", "indexed_zset", "optional", "record", "array", "sql", "NONE", "null", "function",
-        "return", "if",
+        "return", "if", "cast",
     ] {
         assert!(is_reserved(name), "`{name}` should be reserved");
     }
@@ -105,6 +105,13 @@ fn every_construct_appears_in_a_fixture() {
     for b in Builtin::ALL {
         if !corpus.contains(&format!("{b}(")) {
             missing.push(format!("builtin `{b}`"));
+        }
+    }
+    // `cast` is not a `Builtin` — its second argument is a type, not an
+    // expression — so it has to be named here rather than coming from a list.
+    for other in ["cast", "record", "array"] {
+        if !corpus.contains(&format!("{other}(")) {
+            missing.push(format!("`{other}`"));
         }
     }
     assert!(missing.is_empty(), "not exercised by any fixture: {}", missing.join(", "));

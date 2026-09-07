@@ -211,6 +211,11 @@ fn hash_expr(h: &mut Xxh3Default, e: &TypedExpr) {
             hash_expr(h, l);
             hash_expr(h, r);
         }
+        TypedExpr::Cast(inner, conv) => {
+            10u8.hash(h);
+            (*conv as u8).hash(h);
+            hash_expr(h, inner);
+        }
         TypedExpr::Call(f, args) => {
             9u8.hash(h);
             (*f as u8).hash(h);

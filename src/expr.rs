@@ -18,6 +18,9 @@ use dbsp::algebra::F64 as Flt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Builtin {
     Coalesce,
+    /// `if(cond, a, b)`. The only branching construct in the language, and the
+    /// only builtin that does not evaluate all of its arguments.
+    If,
     Abs,
     Floor,
     Ceil,
@@ -33,6 +36,7 @@ impl Builtin {
     pub fn from_name(name: &str) -> Option<Builtin> {
         Some(match name {
             "coalesce" => Builtin::Coalesce,
+            "if" => Builtin::If,
             "abs" => Builtin::Abs,
             "floor" => Builtin::Floor,
             "ceil" => Builtin::Ceil,
@@ -48,16 +52,54 @@ impl Builtin {
 
     /// Every builtin name, so the reserved-word list cannot drift from it.
     pub const ALL: &'static [&'static str] = &[
-        "coalesce", "abs", "floor", "ceil", "round", "length", "concat", "lower", "upper", "trim",
+        "coalesce", "if", "abs", "floor", "ceil", "round", "length", "concat", "lower", "upper",
+        "trim",
     ];
 
     /// Number of arguments, or `None` if variadic.
     pub fn arity(self) -> Option<usize> {
         Some(match self {
+            Builtin::If => 3,
             Builtin::Coalesce => 2,
             Builtin::Concat => 2,
             _ => 1,
         })
+    }
+}
+
+/// A resolved conversion — what a `cast(x, T)` turned out to mean.
+///
+/// One variant per source/target pair rather than one per target, so a `Conv`
+/// names a computation exactly. That matters because it is part of a node's
+/// content id.
+///
+/// A conversion is **fallible** when the target type cannot hold every source
+/// value. Those are exactly the ones the checker requires an `optional` target
+/// for, which is what keeps a declared type a promise: nothing here returns
+/// absence into a column that forbids it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Conv {
+    /// The value already has the target type; only its optionality changed.
+    Identity,
+    IntToFloat,
+    /// Fallible: NaN, the infinities and anything outside `i64` have no value.
+    FloatToInt,
+    BoolToString,
+    IntToString,
+    FloatToString,
+    /// Fallible: parsing.
+    StringToBool,
+    /// Fallible: parsing.
+    StringToInt,
+    /// Fallible: parsing, and a parsed infinity or NaN has no JSON form.
+    StringToFloat,
+}
+
+impl Conv {
+    /// Whether the target type must be `optional`, because the conversion has
+    /// inputs it cannot represent.
+    pub fn is_fallible(self) -> bool {
+        matches!(self, Conv::FloatToInt | Conv::StringToBool | Conv::StringToInt | Conv::StringToFloat)
     }
 }
 
@@ -79,6 +121,8 @@ pub enum TypedExpr {
     Record(Vec<TypedExpr>),
     /// An array literal. Every element has the array's one element type.
     Array(Vec<TypedExpr>),
+    /// `cast(x, T)`, resolved to the conversion it means.
+    Cast(Box<TypedExpr>, Conv),
     Unary(UnOp, Box<TypedExpr>),
     Binary(BinOp, Box<TypedExpr>, Box<TypedExpr>),
     Call(Builtin, Vec<TypedExpr>),
@@ -109,6 +153,12 @@ pub fn eval(e: &TypedExpr, args: &[&DynValue]) -> DynValue {
         TypedExpr::Array(items) => {
             DynValue::Array(items.iter().map(|i| eval(i, args)).collect())
         }
+        // Absence converts to absence. The checker only admits an absent input
+        // where the target type is optional, so this cannot contradict a type.
+        TypedExpr::Cast(inner, conv) => match eval(inner, args) {
+            DynValue::None => DynValue::None,
+            v => convert(*conv, v),
+        },
         TypedExpr::Unary(op, inner) => eval_unary(*op, eval(inner, args)),
         TypedExpr::Binary(op, l, r) => eval_binary(*op, l, r, args),
         TypedExpr::Call(f, call_args) => eval_call(*f, call_args, args),
@@ -249,6 +299,45 @@ fn arith(op: BinOp, l: &DynValue, r: &DynValue) -> DynValue {
     }
 }
 
+/// Applies a resolved conversion to a definite value.
+///
+/// A fallible conversion yields `NONE`, which is legal because the checker
+/// required an `optional` target for exactly these.
+fn convert(conv: Conv, v: DynValue) -> DynValue {
+    use DynValue::*;
+    // `i64` has values `f64` cannot name and vice versa, so the bound is
+    // written as 2^63 rather than `i64::MAX as f64`, which rounds *up* to it.
+    const TWO_63: f64 = 9223372036854775808.0;
+    match (conv, v) {
+        (Conv::Identity, v) => v,
+        (Conv::IntToFloat, I64(n)) => F64(Flt::new(n as f64)),
+        (Conv::FloatToInt, F64(f)) => {
+            let x = f.into_inner();
+            if x.is_finite() && x >= -TWO_63 && x < TWO_63 { I64(x as i64) } else { None }
+        }
+        (Conv::BoolToString, Bool(b)) => String(b.to_string()),
+        (Conv::IntToString, I64(n)) => String(n.to_string()),
+        // `{:?}` rather than `{}` so a whole number keeps its point and the
+        // text parses back as the same float.
+        (Conv::FloatToString, F64(f)) => String(format!("{:?}", f.into_inner())),
+        (Conv::StringToBool, String(s)) => match s.as_str() {
+            "true" => Bool(true),
+            "false" => Bool(false),
+            _ => None,
+        },
+        (Conv::StringToInt, String(s)) => s.parse::<i64>().map(I64).unwrap_or(None),
+        (Conv::StringToFloat, String(s)) => match s.parse::<f64>() {
+            // An infinity or NaN has no JSON form, so it is not a value this
+            // conversion may produce.
+            Ok(f) if f.is_finite() => F64(Flt::new(f)),
+            _ => None,
+        },
+        // The checker chose the conversion from the operand's type, so a
+        // mismatch means the two passes disagree.
+        _ => None,
+    }
+}
+
 fn as_f64(v: &DynValue) -> Option<f64> {
     match v {
         DynValue::I64(n) => Some(*n as f64),
@@ -265,6 +354,14 @@ fn as_str(v: &DynValue) -> Option<&str> {
 }
 
 fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValue {
+    // `if` is the one builtin that must not evaluate all of its arguments: a
+    // branch is only worth having if the untaken side does not run. Handled
+    // before the arguments are computed, for exactly that reason.
+    if f == Builtin::If {
+        let taken = if is_true(&eval(&call_args[0], args)) { 1 } else { 2 };
+        return eval(&call_args[taken], args);
+    }
+
     let vals: Vec<DynValue> = call_args.iter().map(|a| eval(a, args)).collect();
 
     // `coalesce` is the one builtin that inspects absence rather than being
@@ -315,6 +412,6 @@ fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValu
             }
             None => DynValue::None,
         },
-        Builtin::Coalesce => unreachable!("handled above"),
+        Builtin::Coalesce | Builtin::If => unreachable!("handled above"),
     }
 }

@@ -139,3 +139,31 @@
   expected_exact_output:
     - out:
         - [1, {tags: ["a", "b"], n: 2}]
+
+- name: the whole mapping family takes either stream shape
+  source: |
+    a := input("a")
+    a :: zset(record(k: i64, tags: array(String)))
+    idx := map_index(a, function((r) -> record(key: r.k, value: r)))
+
+    flattened := map(idx, function((k, v) -> record(k: k, n: length(v.tags))))
+    rekeyed   := map_index(idx, function((k, v) -> record(key: length(v.tags), value: v)))
+    exploded  := flat_map(idx, function((k, v) -> v.tags))
+
+  # `filter` always took either shape, feeding one row for a flat stream and
+  # `(key, value)` for an indexed one. The rest of the family now follows the
+  # same rule, and the *result* shape comes from what the function returns
+  # rather than from what it was given — which is why `map` over an indexed
+  # stream flattens it.
+  input:
+    - a:
+        - [1, {k: 7, tags: ["x", "y"]}]
+
+  expected_exact_output:
+    - flattened:
+        - [1, {k: 7, n: 2}]
+      rekeyed:
+        - [1, 2, {k: 7, tags: ["x", "y"]}]
+      exploded:
+        - [1, "x"]
+        - [1, "y"]
