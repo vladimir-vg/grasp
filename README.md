@@ -1,4 +1,4 @@
-# dbsp-runner
+# grasp
 
 A runtime for declarative dataflow programs, executed incrementally as DBSP
 circuits via the [Feldera `dbsp` crate](https://github.com/feldera/feldera).
@@ -6,6 +6,16 @@ circuits via the [Feldera `dbsp` crate](https://github.com/feldera/feldera).
 A program is a flat list of stream declarations; the runner parses it, builds a
 `dbsp` circuit at startup with no code generation, and streams input changes
 through it, emitting output changes as they are produced.
+
+## Crates
+
+| crate | |
+|---|---|
+| [`grasp-dbsp-runner`](crates/grasp-dbsp-runner) | parses the language and executes it as a `dbsp` circuit |
+| [`grasp-compiler`](crates/grasp-compiler) | the frontend that will emit that language — empty so far |
+
+The language is the contract between them, which is why the design documents
+live at the workspace root rather than inside either crate.
 
 Design documents live in [`docs/design/`](docs/design/):
 

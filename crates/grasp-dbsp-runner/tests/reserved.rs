@@ -2,9 +2,9 @@
 //! builtin names. A list that drifts from the real ones is worse than none, so
 //! these tests pin the correspondence.
 
-use dbsp_runner::expr::Builtin;
-use dbsp_runner::lang::is_reserved;
-use dbsp_runner::typecheck::{AGGREGATORS, OPERATORS};
+use grasp_dbsp_runner::expr::Builtin;
+use grasp_dbsp_runner::lang::is_reserved;
+use grasp_dbsp_runner::typecheck::{AGGREGATORS, OPERATORS};
 
 /// Every name in `OPERATORS` must be one `check_op` actually knows.
 ///
@@ -15,7 +15,7 @@ use dbsp_runner::typecheck::{AGGREGATORS, OPERATORS};
 fn every_listed_operator_is_recognised() {
     for op in OPERATORS {
         let src = format!("x := {op}()");
-        let diags = dbsp_runner::compile(&src).expect_err("no operator accepts zero arguments");
+        let diags = grasp_dbsp_runner::compile(&src).expect_err("no operator accepts zero arguments");
         let text = diags.iter().map(|d| d.message.as_str()).collect::<Vec<_>>().join("; ");
         assert!(
             !text.contains("unknown operator"),
@@ -30,7 +30,7 @@ fn every_listed_operator_is_recognised() {
 fn unlisted_names_are_unknown_operators() {
     for name in ["frobnicate", "zip", "explode"] {
         assert!(!OPERATORS.contains(&name), "test needs a name that is not an operator");
-        let diags = dbsp_runner::compile(&format!("x := {name}()")).expect_err("not an operator");
+        let diags = grasp_dbsp_runner::compile(&format!("x := {name}()")).expect_err("not an operator");
         assert!(
             diags.iter().any(|d| d.message.contains("unknown operator")),
             "`{name}` should be an unknown operator"
@@ -81,7 +81,8 @@ fn the_reserved_set_has_the_right_shape() {
 #[test]
 fn every_construct_appears_in_a_fixture() {
     let mut corpus = String::new();
-    for entry in std::fs::read_dir("tests/cases").expect("tests/cases") {
+    let cases = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/cases");
+    for entry in std::fs::read_dir(&cases).expect("tests/cases") {
         let path = entry.expect("entry").path();
         if path.extension().is_some_and(|e| e == "yaml") {
             corpus.push_str(&std::fs::read_to_string(&path).expect("read"));
@@ -125,7 +126,11 @@ fn every_construct_appears_in_a_fixture() {
 /// cannot drift.
 #[test]
 fn the_language_example_compiles() {
-    let doc = std::fs::read_to_string("docs/design/language.md").expect("language.md");
+    // The design documents live at the workspace root, not in this crate: the
+    // language is the contract between the runner and the compiler frontend.
+    let doc = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/design/language.md");
+    let doc = std::fs::read_to_string(&doc).expect("language.md");
     // Splitting on the fence gives prose at even indices and code at odd ones;
     // the prose around the example mentions the same names, so parity is what
     // distinguishes them.
@@ -136,7 +141,7 @@ fn the_language_example_compiles() {
         .map(|(_, b)| b)
         .find(|b| b.contains("input(\"emp\")") && b.contains("aggregate("))
         .expect("the worked example");
-    if let Err(diags) = dbsp_runner::compile(block.trim_start_matches('\n')) {
+    if let Err(diags) = grasp_dbsp_runner::compile(block.trim_start_matches('\n')) {
         panic!(
             "the example in language.md does not compile: {}",
             diags.iter().map(|d| d.message.as_str()).collect::<Vec<_>>().join("; ")

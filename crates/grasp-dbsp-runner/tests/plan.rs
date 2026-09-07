@@ -1,8 +1,8 @@
 //! Structural properties of a checked `Plan` that the fixtures cannot express.
 
-use dbsp_runner::compile;
-use dbsp_runner::lower::Runner;
-use dbsp_runner::typecheck::PlanOp;
+use grasp_dbsp_runner::compile;
+use grasp_dbsp_runner::lower::Runner;
+use grasp_dbsp_runner::typecheck::PlanOp;
 
 const NESTED: &str = "\
 a := input(\"a\")
@@ -173,8 +173,8 @@ fn operands(op: &PlanOp) -> Vec<usize> {
 /// `f64` and only diverge once the vocabulary grows past these two types.
 #[test]
 fn a_numeric_literal_is_pinned_to_its_context() {
-    use dbsp_runner::expr::TypedExpr;
-    use dbsp_runner::value::DynValue;
+    use grasp_dbsp_runner::expr::TypedExpr;
+    use grasp_dbsp_runner::value::DynValue;
 
     let consts = |src: &str| -> Vec<DynValue> {
         let plan = compile(src).expect("compiles");
@@ -231,7 +231,7 @@ fn a_numeric_literal_is_pinned_to_its_context() {
 /// wants: derive them "from the program … rather than from anything positional".
 #[test]
 fn content_ids_survive_regeneration() {
-    use dbsp_runner::typecheck::content_ids;
+    use grasp_dbsp_runner::typecheck::content_ids;
     use std::collections::BTreeSet;
 
     let a = "\
@@ -272,7 +272,7 @@ src := input(\"emp\")\n\
 /// `filter@3:12` — a source position, which is exactly what must not be used.
 #[test]
 fn a_nested_node_is_observable_by_content_id() {
-    use dbsp_runner::typecheck::content_ids;
+    use grasp_dbsp_runner::typecheck::content_ids;
 
     let plan = compile(NESTED).expect("compiles");
     let ids = content_ids(&plan);

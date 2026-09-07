@@ -8,8 +8,10 @@ the circuit and output changes are emitted as they are produced.
 
 ## What it is
 
-- A **single Rust crate** (`dbsp-runner`) linking against `dbsp` and
+- One Rust crate, `grasp-dbsp-runner`, linking against `dbsp` and
   `feldera-macros`, for the `IsNone` derive `dbsp`'s `DBData` bound requires.
+  It shares a workspace with `grasp-compiler`, the frontend that will emit this
+  language; the two meet at [`language.md`](language.md) and nowhere else.
 - A **runtime interpreter**: the program is parsed at startup and the circuit
   is assembled at startup, through `dbsp`'s ordinary operator API instantiated
   at a single universal value type. There is **no code generation and no Rust
@@ -165,7 +167,7 @@ become an output — by declared name, or by content id for a node that has none
 
 ## Architecture
 
-A single crate with these logical layers:
+`grasp-dbsp-runner` has these logical layers:
 
 | module | responsibility |
 |---|---|
@@ -176,7 +178,7 @@ A single crate with these logical layers:
 | `expr` | type-checked expressions and their tree-walking evaluator |
 | `json` | the Feldera JSON codec (`weighted`, `insert_delete`) |
 | `lower` | mapping the program onto `dbsp` operators; also circuit construction, input/output handles and transactions (`Runner`) |
-| `serve` / CLI | *not implemented* — `src/main.rs` is a placeholder. YAML fixtures are the surface for now |
+| `serve` / CLI | *not implemented* — the crate's `main.rs` is a placeholder. YAML fixtures are the surface for now |
 
 The layered mapping is: source text → AST → typed AST (`TypeDesc`) → `dbsp`
 circuit, with values flowing through a single runtime value type.

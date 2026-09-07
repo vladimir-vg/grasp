@@ -4,8 +4,8 @@
 //! or rows that never consolidate, rather than a panic — which is why they are
 //! tested rather than merely documented.
 
-use dbsp_runner::json::{decode_value, encode_value};
-use dbsp_runner::value::{DynValue, TypeDesc};
+use grasp_dbsp_runner::json::{decode_value, encode_value};
+use grasp_dbsp_runner::value::{DynValue, TypeDesc};
 use proptest::prelude::*;
 use rkyv::Deserialize;
 use std::cmp::Ordering;

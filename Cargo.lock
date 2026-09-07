@@ -1113,24 +1113,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dbsp-runner"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dbsp",
- "feldera-macros",
- "feldera-size-of",
- "feldera-sqllib",
- "libtest-mimic",
- "proptest",
- "rkyv",
- "serde",
- "serde_json",
- "serde_yaml",
- "xxhash-rust",
-]
-
-[[package]]
 name = "deflate64"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1747,6 +1729,28 @@ dependencies = [
  "r-efi 6.0.0",
  "rand_core 0.10.1",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "grasp-compiler"
+version = "0.1.0"
+
+[[package]]
+name = "grasp-dbsp-runner"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dbsp",
+ "feldera-macros",
+ "feldera-size-of",
+ "feldera-sqllib",
+ "libtest-mimic",
+ "proptest",
+ "rkyv",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "xxhash-rust",
 ]
 
 [[package]]

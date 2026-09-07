@@ -1,0 +1,26 @@
+[package]
+name = "grasp-dbsp-runner"
+version = "0.1.0"
+edition = "2024"
+
+# Every dependency is declared once at the workspace root, where the comments
+# explaining the awkward ones live.
+[dependencies]
+dbsp = { workspace = true }
+feldera-sqllib = { workspace = true }
+feldera-macros = { workspace = true }
+rkyv = { workspace = true }
+size-of = { workspace = true }
+xxhash-rust = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+libtest-mimic = { workspace = true }
+serde_yaml = { workspace = true }
+
+[[test]]
+name = "yaml"
+harness = false

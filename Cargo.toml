@@ -1,17 +1,30 @@
-[package]
-name = "dbsp-runner"
-version = "0.1.0"
-edition = "2024"
+# Grasp: a compiler frontend and the runtime that executes what it emits.
+#
+# The language the two agree on is specified in `docs/design/language.md`, which
+# is why the design documents live at the workspace root rather than inside
+# either crate.
+[workspace]
+# Edition 2024 implies resolver 3 for a package, but a virtual manifest has to
+# say so itself.
+resolver = "3"
+members = ["crates/*"]
+# The Feldera crates are path dependencies *inside* this directory, through the
+# `vendor` symlink, so an explicit workspace would otherwise claim them as
+# members — and they inherit `rust-version` from their own workspace root, which
+# is not this one.
+exclude = ["vendor"]
 
+# Shared so the two crates cannot drift apart on a version, and so the Feldera
+# path dependencies stay relative to this file rather than to each member.
+[workspace.dependencies]
 # Feldera crates, resolved through `vendor/feldera` — a gitignored symlink to a
 # local checkout of https://github.com/feldera/feldera. See README.md.
 #
 # These are path dependencies rather than git or crates.io dependencies because
-# `dbsp-runner` is developed against a Feldera working tree, and because a git
+# the runner is developed against a Feldera working tree, and because a git
 # dependency cannot be resolved offline even when `[patch]` redirects it to a
 # local path. Do not write a machine-specific absolute path here: it makes the
-# crate unbuildable for anyone else.
-[dependencies]
+# workspace unbuildable for anyone else.
 dbsp = { path = "vendor/feldera/crates/dbsp" }
 # `FlatVariant`, the byte-encoded document behind the `json` type. Chosen for
 # its invariants rather than convenience: see docs/design/mapping.md.
@@ -39,14 +52,9 @@ serde_json = "1"
 # `Runtime::init_circuit`'s constructor closure returns `anyhow::Result`.
 anyhow = "1"
 
-[dev-dependencies]
 proptest = "1"
 # Per-case test names for the YAML fixtures, which `libtest` cannot express.
 libtest-mimic = "0.8"
 # Matches the version the Feldera workspace pins. Formally deprecated, but
 # 0.9.34 is its final stable release and is what this ecosystem uses.
 serde_yaml = "0.9.34"
-
-[[test]]
-name = "yaml"
-harness = false
