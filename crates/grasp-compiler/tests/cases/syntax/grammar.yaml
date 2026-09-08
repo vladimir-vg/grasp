@@ -68,14 +68,41 @@
   expected_ok: true
 
 # kv_arg ::= name ":" expr | name ":" | name ":" "_"
+#
+# All three forms in an atom, which is the only place all three are legal — a
+# head must produce a value for every column, so the wildcard has no meaning
+# there and is rejected below.
 - name: the three kv_arg forms
   source: |
-    s :: relation(shorthand: i64)
-    r :: relation(explicit: i64, shorthand: i64, ignored: i64)
+    s :: relation(explicit: i64, shorthand: i64, ignored: i64)
 
-    r(explicit: 1, shorthand:, ignored: _) <-
-        s(shorthand: shorthand)
+    r(v: shorthand) <-
+        s(explicit: 1, shorthand:, ignored: _)
   expected_ok: true
+
+# "It is legal only in an atom's argument position, where 'there is a column
+#  here I do not care about' is the whole meaning."
+- name: the wildcard is not a head argument
+  source: |
+    s :: relation(x: i64)
+
+    r(x: _) <-
+        s(x: x)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "wildcard"
+      line: 3
+
+- name: the wildcard is not a fact argument
+  source: |
+    r :: relation(x: i64)
+    r(x: _)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "wildcard"
+      line: 2
 
 - name: trailing commas are allowed
   source: |

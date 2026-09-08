@@ -189,7 +189,8 @@ impl<'a> Parser<'a> {
         }
 
         self.expect(&Tok::LParen, "`(` or `::`")?;
-        let args = self.kv_args(&Tok::RParen)?;
+        // A head or a fact — neither may hold a wildcard.
+        let args = self.kv_args(&Tok::RParen, Wildcard::Rejected)?;
         let close = self.expect(&Tok::RParen, "`)` or `,`")?;
         check_duplicate_columns(&args)?;
 
@@ -555,14 +556,14 @@ impl<'a> Parser<'a> {
 
     fn atom_args(&mut self) -> Result<(Vec<KvArg>, Span), Diagnostic> {
         self.expect(&Tok::LParen, "`(`")?;
-        let args = self.kv_args(&Tok::RParen)?;
+        let args = self.kv_args(&Tok::RParen, Wildcard::Allowed)?;
         let close = self.expect(&Tok::RParen, "`)` or `,`")?;
         check_duplicate_columns(&args)?;
         Ok((args, close.span))
     }
 
     /// `kv_arg ::= name ":" expr | name ":" | name ":" "_"`
-    fn kv_args(&mut self, terminator: &Tok) -> Result<Vec<KvArg>, Diagnostic> {
+    fn kv_args(&mut self, terminator: &Tok, wildcard: Wildcard) -> Result<Vec<KvArg>, Diagnostic> {
         let mut args = Vec::new();
         while !self.at(terminator) {
             let start = self.here();
@@ -571,11 +572,19 @@ impl<'a> Parser<'a> {
             self.expect(&Tok::Colon, "`:`")?;
 
             let value = if self.at(&Tok::Underscore) {
-                // "legal only in an atom's argument position" — which is here.
+                // "It is legal only in an atom's argument position, where
+                //  'there is a column here I do not care about' is the whole
+                //  meaning." A head has to produce a value for every column and
+                //  a fact has to assert one, so neither has that meaning
+                //  available — which is why this list has to know which it is.
+                if wildcard == Wildcard::Rejected {
+                    return Err(self.error(self.here(), WILDCARD_MISUSE));
+                }
                 Arg::Wildcard(self.bump().span)
             } else if self.at(&Tok::Comma) || self.at(terminator) {
-                // The shorthand `x:` means `x: x`. Desugaring makes that
-                // explicit; the AST records what was written.
+                // The shorthand `x:` means `x: x`, and this is where it becomes
+                // that — one row of `semantics.md`'s desugaring table performed
+                // by the parser, so desugaring does not do it again.
                 self.check_variable_name(&column, col_span)?;
                 Arg::Expr(Expr::Var {
                     name: column.clone(),
@@ -1288,6 +1297,14 @@ fn permits(outer: Group, inner: Group) -> bool {
                 | (Group::Comparison, Group::Concatenation)
                 | (Group::Boolean, Group::Comparison)
         )
+}
+
+/// Whether `_` may appear in an argument list — an atom's may, a head's and a
+/// fact's may not.
+#[derive(PartialEq, Eq)]
+enum Wildcard {
+    Allowed,
+    Rejected,
 }
 
 const WILDCARD_MISUSE: &str = "the wildcard `_` binds nothing and cannot be used here; it is legal only \

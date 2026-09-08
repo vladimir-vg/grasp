@@ -125,14 +125,18 @@
         s(x: x, y: _, z: _)
   expected_ok: true
 
-- name: the wildcard in a head argument
+- name: the wildcard is rejected in a head argument
   source: |
     s :: relation(x: i64)
     r :: relation(x: i64)
 
     r(x: _) <-
         s(x: x)
-  expected_ok: true
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "wildcard"
+      line: 4
 
 - name: the wildcard is not an expression
   source: |
