@@ -48,6 +48,12 @@ premise, and several of the principles invert with it.
   thing with its own variable bindings. A self-join is two occurrences of one
   relation and needs no special syntax. This starts as a compiler representation
   and surfaces as a language property.
+- **Sugar belongs here, not below.** grasp-dbsp holds itself to *exactly one
+  way to write each thing*, because a machine emitting it already knows what it
+  means and a second spelling is a choice made with no information. People
+  write grasp, so it may offer two where two read better — the dict literal's
+  `{a: v}` beside `{k => v}` — provided the extra one desugars away before
+  emission, leaving the target's rule intact.
 - **One name per concept, shared with grasp-dbsp.** Where both languages have the
   same thing, they spell it the same way: `record`, `array`, `optional`, `json`,
   `NONE`, and the aggregator names. A concept that needs two spellings across the

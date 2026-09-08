@@ -73,6 +73,8 @@ For each variable in a rule, collect every constraint on it, then compose them.
 | unnest `(k, v) := **d` | `d` is `dict(K,V)`; `k` is `K`, `v` is `V` |
 | destructure `[x, y] := arr` | `arr` is `array(E)`; `x` and `y` are `E` |
 | destructure `{a: x} := d` | `d` is `dict(string, V)`; `x` is `V` |
+| dict literal `{k => v}` | one `K` over the keys, one `V` over the values |
+| dict literal `{a: v}` | `K` is `string`; `v` contributes to `V` |
 | destructure `record(a: x) := s` | `s` is a record with field `a`; `x` is its type |
 | aggregate `v := sum<e>` | `v` is the aggregator's result for `e`'s type |
 | field access `e.f` | `e` is a record with field `f` |

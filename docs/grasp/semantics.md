@@ -140,9 +140,12 @@ Expressions compute values from bound variables. They appear on the right of a
 match, inside a filter, and as an atom's argument.
 
 - **Literals** are values: `42`, `"text"`, `true`, `NONE`.
-- **`[a, b]`** builds an array; **`{k => v}`** builds a dict; **`record(f: e)`**
-  builds a record. All three are ordinary values — a column can hold one, and
-  `flat_map` turns an array or a dict's entries into rows.
+- **`[a, b]`** builds an array; **`record(f: e)`** builds a record. Both are
+  ordinary values — a column can hold one, and `flat_map` turns an array into
+  rows.
+- **A dict** is built either way: `{k => v}` takes expression keys, so any key
+  type, and `{name: v}` takes a bare string key. The second is sugar for the
+  first, and the two may be mixed.
 - **`e.f`** reads a record field, and chains.
 - **Operators and calls** compute; the set is in [Builtins](#builtins), and
   their precedence in [`syntax.md`](syntax.md#operator-groups).
@@ -154,7 +157,7 @@ context, exactly as `NONE`'s does. See
 
 A dict literal's entries are **sorted by key and deduplicated**, so two literals
 naming the same entries in different orders build one value, and a key written
-twice keeps the last.
+twice keeps the last — whichever spelling wrote it.
 
 ## Safety
 
@@ -267,6 +270,8 @@ before the join graph, so everything downstream sees the smaller core.
 |---|---|
 | `x:` in an atom or head | `x: x` |
 | `a ++ b` | `concat(a, b)` |
+| `{a: v}` | `{"a" => v}` |
+| `{"a": v}` | `{"a" => v}` |
 | `s.f` | `record:get(s, "f")` |
 | `s.a.b` | `record:get(record:get(s, "a"), "b")` |
 | `not e` in an expression | `boolean:not(e)` |
@@ -358,7 +363,11 @@ payroll(title: t, total: s) <-
     not terminated(emp: n)
     s := sum<r>
 
-# A dict, and an unnest over it.
+# A dict built with the string-key form, and an unnest over another.
+profile(name: n, info: i) <-
+    person(name: n, age: a, city: c)
+    i := {age: a, city: c}
+
 tagged(name: n, tag: k) <-
     person(name: n, tags: d)
     (k, _v) := **d

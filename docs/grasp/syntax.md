@@ -116,7 +116,9 @@ array_pattern  ::= "[" [pat_elems] ["," rest] "]"
 dict_pattern   ::= "{" [pat_fields] ["," dict_rest] "}"
 record_pattern ::= "record" "(" [pat_fields] ["," dict_rest] ")"
 pat_elems      ::= variable ("," variable)*
-pat_fields     ::= name ":" variable ("," name ":" variable)*
+pat_fields     ::= pat_field ("," pat_field)*
+pat_field      ::= dict_key ":" variable
+dict_key       ::= name | STRING        -- quoted only when not an identifier
 rest           ::= "*" [variable]       -- ignore, or bind, the remainder
 dict_rest      ::= "**" [variable]
 
@@ -172,8 +174,11 @@ args           ::= expr ("," expr)* ("," name ":" expr)*
                  | name ":" expr ("," name ":" expr)*
 
 array_literal  ::= "[" [expr ("," expr)*] [","] "]"
-dict_literal   ::= "{" [expr "=>" expr ("," expr "=>" expr)*] [","] "}"
-record_literal ::= "record" "(" [name ":" expr ("," name ":" expr)*] [","] ")"
+dict_literal   ::= "{" [dict_entry ("," dict_entry)*] [","] "}"
+dict_entry     ::= expr "=>" expr       -- any key type
+                 | dict_key ":" expr    -- a string key
+record_literal ::= "record" "(" [rec_field ("," rec_field)*] [","] ")"
+rec_field      ::= dict_key ":" expr
 ```
 
 ### Operator groups
@@ -201,20 +206,51 @@ that make it earn its keep — bitwise and shift — are not in this cut because
 grasp-dbsp has nothing to lower them to, and when they arrive they arrive as
 further incomparable groups, changing no existing program's meaning.
 
-### Dict literals use `=>`, patterns use `:`
+### The two dict forms
 
-A dict literal's keys are **expressions**; a dict pattern's keys are **field
-names**. They need different spellings, because with one spelling `{name: n}`
-would mean "the key that variable `name` holds" in an expression and "the key
-`\"name\"`" in a pattern — the same text meaning two things by position.
+A dict literal has two spellings, and they do different jobs:
 
 ```grasp
-d := {"name" => n, k => 1}   # literal: keys are expressions
-{name: n} := d               # pattern: `name` is the key
+d := {"name" => n, 1 => x}   # `=>` : keys are expressions, so any key type
+d := {name: n, age: 30}      # `:`  : a string key, written bare
+d := {"key with spaces": v}  #        quoted when it is not an identifier
 ```
 
-`=>` is also what grasp-dbsp spells a dict entry with, so the literal survives
-lowering unchanged.
+`{a: v}` **is** `{"a" => v}` — the `:` form is sugar for the common case, and
+[`semantics.md`](semantics.md#desugaring) desugars it away before anything
+downstream sees it. The two may be mixed in one literal; a `:` entry simply
+constrains the dict's key type to `string`, like any other entry.
+
+grasp-dbsp has only `{k => v}`, and deliberately: *"exactly one way to write
+each thing"* is one of [its principles](../grasp-dbsp/overview.md#design-principles),
+because it is written by a machine that already knows what it means. grasp is
+written by people. That is the whole of why the sugar lives on this side of the
+boundary and not the other.
+
+### Patterns and literals share the `:` spelling
+
+A dict **pattern** — the left of `:=` — uses `:` with the same meaning: the key
+is the name written there.
+
+```grasp
+d := {name: n}      # literal:  builds a dict with key "name"
+{name: n} := d      # pattern:  extracts the key "name"
+```
+
+The key means `"name"` in both. What differs is the right-hand side: a literal
+evaluates it, a pattern binds it — the ordinary duality of any language with
+destructuring.
+
+`=>` is **not** allowed in a pattern. A pattern names the key it extracts, so
+its keys are literal; looking one up by a computed key is `get(d, k)`, which is
+an expression and already exists.
+
+A brace form at body-statement level is parsed once and then read as a pattern
+if `:=` follows it. That is also where a pattern's extra requirement is
+enforced: its values must be variables, so `{a: f(1)} := d` is rejected there
+rather than by the grammar.
+
+> ``a pattern binds variables; `f(1)` is not one``
 
 ### Where a call is, and is not, a call
 

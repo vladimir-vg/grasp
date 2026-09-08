@@ -82,6 +82,12 @@ The three literal forms are identical in both languages, which is not an
 accident — they were named that way so an expression survives lowering as
 itself, and only `=` needs rewriting.
 
+grasp's second dict spelling, `{a: v}`, does not appear here because it is gone
+by this point: [desugaring](semantics.md#desugaring) rewrites it to
+`{"a" => v}`. Both grasp spellings therefore arrive as the one grasp-dbsp form,
+which is the point of putting the sugar on the grasp side — grasp-dbsp keeps
+*exactly one way to write each thing*, and grasp is what people write.
+
 Builtins pass through under the same names — `abs`, `floor`, `ceil`, `round`,
 `length`, `concat`, `lower`, `upper`, `trim`, `coalesce`, `if`, `get`, `keys`,
 `entries` — which is why [`semantics.md`](semantics.md#builtins) offers exactly

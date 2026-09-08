@@ -65,6 +65,12 @@ must have one string spelling its own type reads back. No composite type does.
 
 > ``a dict key must be `boolean`, `i64`, `f64` or `string`, found `record(...)` ``
 
+A dict literal written with `:` — `{name: v}` — has a string key by
+construction, so it constrains `K` to `string`. Mixing that with a non-string
+`=>` key in one literal is the ordinary key-type conflict, and reported as one.
+
+> ``this dict is keyed by `string`, but `1` is an `i64` ``
+
 ## Assignability
 
 `S` is **assignable** to `T` — written `S → T` — when a value of type `S` may
