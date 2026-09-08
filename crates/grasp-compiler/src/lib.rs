@@ -16,6 +16,8 @@
 //! properties it is held to, which are worth reading before emitting it.
 
 pub mod ast;
+pub mod core;
+pub mod desugar;
 pub mod diag;
 pub mod lex;
 pub mod parse;
@@ -35,10 +37,11 @@ use crate::diag::{Diagnostic, Pass};
 /// to tell a fixture waiting on unwritten code from a fixture the compiler gets
 /// wrong.
 pub fn compile(source: &str) -> Result<String, Vec<Diagnostic>> {
-    let _program = parse::parse(source).map_err(|d| vec![d])?;
+    let program = parse::parse(source).map_err(|d| vec![d])?;
+    let _core = desugar::desugar(&program)?;
     Err(vec![Diagnostic::unimplemented(
-        Pass::Desugar,
+        Pass::Infer,
         None,
-        "the stages after parsing",
+        "the stages after desugaring",
     )])
 }

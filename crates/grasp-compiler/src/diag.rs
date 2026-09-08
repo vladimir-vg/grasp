@@ -188,7 +188,11 @@ impl Diagnostic {
     /// list is scaffolding — an entry appears when a stage starts reporting it
     /// and goes when that stage implements it, and when the list is empty this
     /// and [`Diagnostic::unimplemented`] go with it.
-    pub const UNIMPLEMENTED: &[&str] = &["the stages after parsing"];
+    pub const UNIMPLEMENTED: &[&str] = &[
+        "the stages after desugaring",
+        "destructuring patterns",
+        "keyword arguments",
+    ];
 
     /// A construct this compiler has not implemented yet.
     ///

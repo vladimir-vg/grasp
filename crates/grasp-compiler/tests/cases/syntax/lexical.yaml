@@ -74,14 +74,23 @@
   expected_ok: true
 
 # "Colon-separated segments qualify a name with a namespace: `string:length`."
-- name: a namespace-qualified callable
+#
+# It lexes and parses as one identifier, which is what this case is for. It then
+# resolves to nothing: `semantics.md` holds the namespaces "for when the library
+# outgrows bare names", so `string:` is reserved and empty. The rejection is the
+# other half of the same fact, and asserting it keeps both.
+- name: a namespace-qualified callable parses, and resolves to nothing
   source: |
     r :: relation(s: string)
 
     lens(v: n) <-
         r(s: s)
         n := string:length(s)
-  expected_ok: true
+  expected_diagnostics:
+    - severity: error
+      pass: desugar
+      message: "no callable"
+      line: 5
 
 - name: a leading underscore is an ordinary identifier character
   source: |

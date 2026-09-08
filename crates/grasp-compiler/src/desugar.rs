@@ -1,0 +1,252 @@
+//! Desugaring — `docs/grasp/semantics.md`, "Desugaring".
+//!
+//! Several surface forms stand for others. This rewrites them, so everything
+//! below sees the smaller [`crate::core`] language and no pass has to remember
+//! that `a ++ b` and `concat(a, b)` are the same thing.
+//!
+//! Two rows of that table are performed by the parser and must not be done
+//! again here: `x:` becomes `x: x` as the argument list is read, and both dict
+//! spellings arrive as `(key, value)` pairs because the AST has only one dict
+//! form. What is left is `++`, field access, `not` in expression position, and
+//! the destructuring patterns.
+//!
+//! **The destructures are not implemented yet.** They expand into a binding
+//! plus the filters that make the pattern exact, which needs `length`,
+//! `dict:get` and `record:get` — all present — but they are the next widening
+//! rather than this one.
+
+use crate::ast;
+use crate::core;
+use crate::diag::{Diagnostic, Pass};
+
+pub fn desugar(program: &ast::Program) -> Result<core::Program, Vec<Diagnostic>> {
+    let mut out = Vec::with_capacity(program.len());
+    for decl in program {
+        out.push(decl_of(decl).map_err(|d| vec![d])?);
+    }
+    Ok(out)
+}
+
+fn decl_of(decl: &ast::Decl) -> Result<core::Decl, Diagnostic> {
+    Ok(match decl {
+        ast::Decl::Spec(s) => core::Decl::Spec(core::Spec {
+            relation: s.relation.clone(),
+            columns: s.columns.clone(),
+            span: s.span,
+        }),
+        ast::Decl::Fact(f) => core::Decl::Fact(core::Fact {
+            relation: f.relation.clone(),
+            args: closed_args(&f.args)?,
+            span: f.span,
+        }),
+        ast::Decl::Rule(r) => core::Decl::Rule(core::Rule {
+            head: core::Head {
+                relation: r.head.relation.clone(),
+                args: closed_args(&r.head.args)?,
+                span: r.head.span,
+            },
+            body: r.body.iter().map(stmt_of).collect::<Result<_, _>>()?,
+            span: r.span,
+        }),
+    })
+}
+
+/// A head's or a fact's arguments, which carry no wildcard.
+///
+/// The parser rejects one there, so the arm below is unreachable — but it is
+/// written as a diagnostic rather than a panic, because a reachable internal
+/// error is worse than a redundant check.
+fn closed_args(args: &[ast::KvArg]) -> Result<Vec<(String, core::Expr)>, Diagnostic> {
+    args.iter()
+        .map(|a| match &a.value {
+            ast::Arg::Expr(e) => Ok((a.column.clone(), expr_of(e)?)),
+            ast::Arg::Wildcard(span) => Err(Diagnostic::error(
+                Pass::Desugar,
+                *span,
+                "the wildcard `_` produces no value, so it cannot stand here",
+            )),
+        })
+        .collect()
+}
+
+fn stmt_of(stmt: &ast::Stmt) -> Result<core::Stmt, Diagnostic> {
+    Ok(match stmt {
+        ast::Stmt::Atom {
+            relation,
+            args,
+            negated,
+            span,
+        } => core::Stmt::Atom {
+            relation: relation.clone(),
+            args: args
+                .iter()
+                .map(|a| {
+                    Ok((
+                        a.column.clone(),
+                        match &a.value {
+                            ast::Arg::Expr(e) => core::Arg::Expr(expr_of(e)?),
+                            ast::Arg::Wildcard(s) => core::Arg::Wildcard(*s),
+                        },
+                    ))
+                })
+                .collect::<Result<_, Diagnostic>>()?,
+            negated: *negated,
+            span: *span,
+        },
+        ast::Stmt::Match { lhs, rhs, span } => core::Stmt::Match {
+            lhs: pattern_of(lhs)?,
+            rhs: match rhs {
+                ast::Rhs::Expr(e) => core::Rhs::Expr(expr_of(e)?),
+                ast::Rhs::Aggregate {
+                    function,
+                    arg,
+                    span,
+                } => core::Rhs::Aggregate {
+                    function: *function,
+                    arg: arg.as_ref().map(expr_of).transpose()?,
+                    span: *span,
+                },
+            },
+            span: *span,
+        },
+        ast::Stmt::Filter { expr, span } => core::Stmt::Filter {
+            expr: expr_of(expr)?,
+            span: *span,
+        },
+        ast::Stmt::Assert { variable, ty, span } => core::Stmt::Assert {
+            variable: variable.clone(),
+            ty: ty.clone(),
+            span: *span,
+        },
+        ast::Stmt::Input { span } => core::Stmt::Input { span: *span },
+    })
+}
+
+fn pattern_of(p: &ast::Pattern) -> Result<core::Pattern, Diagnostic> {
+    Ok(match p {
+        ast::Pattern::Var { name, span } => core::Pattern::Var {
+            name: name.clone(),
+            span: *span,
+        },
+        // Generative rather than sugar: an unnest becomes a `flat_map`, not a
+        // binding and some filters, so it survives into the core unchanged.
+        ast::Pattern::Unnest { vars, kind, span } => core::Pattern::Unnest {
+            vars: vars.clone(),
+            kind: *kind,
+            span: *span,
+        },
+        ast::Pattern::Array { span, .. }
+        | ast::Pattern::Dict { span, .. }
+        | ast::Pattern::Record { span, .. } => {
+            return Err(Diagnostic::unimplemented(
+                Pass::Desugar,
+                *span,
+                "destructuring patterns",
+            ));
+        }
+    })
+}
+
+fn expr_of(e: &ast::Expr) -> Result<core::Expr, Diagnostic> {
+    Ok(match e {
+        ast::Expr::Lit { value, span } => core::Expr::Lit {
+            value: value.clone(),
+            span: *span,
+        },
+        ast::Expr::Var { name, span } => core::Expr::Var {
+            name: name.clone(),
+            span: *span,
+        },
+
+        // `s.f` → `record:get(s, "f")`, and `s.a.b` by recursion.
+        ast::Expr::Field { base, name, span } => core::Expr::Call {
+            callee: core::Builtin::RecordGet,
+            args: vec![
+                expr_of(base)?,
+                core::Expr::Lit {
+                    value: ast::Lit::Str(name.clone()),
+                    span: *span,
+                },
+            ],
+            span: *span,
+        },
+
+        // `not e` → `boolean:not(e)`. Unary minus is not sugar.
+        ast::Expr::Unary { op, operand, span } => match op {
+            ast::UnOp::Not => core::Expr::Call {
+                callee: core::Builtin::BooleanNot,
+                args: vec![expr_of(operand)?],
+                span: *span,
+            },
+            ast::UnOp::Neg => core::Expr::Unary {
+                op: *op,
+                operand: Box::new(expr_of(operand)?),
+                span: *span,
+            },
+        },
+
+        // `a ++ b` → `concat(a, b)`.
+        ast::Expr::Binary { op, lhs, rhs, span } => match op {
+            ast::BinOp::Concat => core::Expr::Call {
+                callee: core::Builtin::Concat,
+                args: vec![expr_of(lhs)?, expr_of(rhs)?],
+                span: *span,
+            },
+            _ => core::Expr::Binary {
+                op: *op,
+                lhs: Box::new(expr_of(lhs)?),
+                rhs: Box::new(expr_of(rhs)?),
+                span: *span,
+            },
+        },
+
+        ast::Expr::Call {
+            name,
+            positional,
+            keyword,
+            span,
+        } => {
+            // Resolving the name here is what the `Builtin` enum is for: below
+            // this point a callable is a variant, not a string two passes have
+            // to spell the same way.
+            let Some(callee) = core::Builtin::from_name(name) else {
+                return Err(Diagnostic::error(
+                    Pass::Desugar,
+                    *span,
+                    format!("there is no callable `{name}`"),
+                ));
+            };
+            if !keyword.is_empty() {
+                return Err(Diagnostic::unimplemented(
+                    Pass::Desugar,
+                    *span,
+                    "keyword arguments",
+                ));
+            }
+            core::Expr::Call {
+                callee,
+                args: positional.iter().map(expr_of).collect::<Result<_, _>>()?,
+                span: *span,
+            }
+        }
+
+        ast::Expr::ArrayLit { elems, span } => core::Expr::ArrayLit {
+            elems: elems.iter().map(expr_of).collect::<Result<_, _>>()?,
+            span: *span,
+        },
+        ast::Expr::DictLit { entries, span } => core::Expr::DictLit {
+            entries: entries
+                .iter()
+                .map(|(k, v)| Ok((expr_of(k)?, expr_of(v)?)))
+                .collect::<Result<_, Diagnostic>>()?,
+            span: *span,
+        },
+        ast::Expr::RecordLit { fields, span } => core::Expr::RecordLit {
+            fields: fields
+                .iter()
+                .map(|(n, v)| Ok((n.clone(), expr_of(v)?)))
+                .collect::<Result<_, Diagnostic>>()?,
+            span: *span,
+        },
+    })
+}
