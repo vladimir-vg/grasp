@@ -46,6 +46,8 @@
 # single_line_rule ::= head "<-" body_stmt
 - name: a single-line rule takes exactly one body statement
   source: |
+    source :: relation(x: i64)
+
     copy(x: x) <- source(x: x)
   expected_ok: true
 
@@ -64,6 +66,10 @@
 # multiline_rule ::= head "<-" NEWLINE (INDENT body_stmt NEWLINE)+
 - name: a multiline rule
   source: |
+    student :: relation(id: i64, name: string, age: i64)
+    course :: relation(id: i64, title: string)
+    enrolled :: relation(student: i64, course: i64)
+
     result(name: n, title: t) <-
         student(id: s, name: n, age: a)
         a > 20
@@ -74,6 +80,9 @@
 # kv_arg ::= name ":" expr | name ":" | name ":" "_"
 - name: the three kv_arg forms
   source: |
+    s :: relation(shorthand: i64)
+    r :: relation(explicit: i64, shorthand: i64, ignored: i64)
+
     r(explicit: 1, shorthand:, ignored: _) <-
         s(shorthand: shorthand)
   expected_ok: true
@@ -94,6 +103,8 @@
 # type_assertion ::= variable "::" type
 - name: a type assertion in a body
   source: |
+    person :: relation(name: optional(string))
+
     named(name: n) <-
         person(name: n)
         n :: string
@@ -102,6 +113,9 @@
 # negated_atom ::= "not" positive_atom
 - name: a negated atom
   source: |
+    person :: relation(id: i64)
+    enrolled :: relation(student: i64)
+
     alone(id: i) <-
         person(id: i)
         not enrolled(student: i)
@@ -110,6 +124,8 @@
 # aggregate ::= aggregator "<" [expr] ">"
 - name: every aggregator
   source: |
+    emp :: relation(dept: string, sal: i64)
+
     stats(dept: d, s: a, c: b, lo: c, hi: e, mean: f) <-
         emp(dept: d, sal: r)
         a := sum<r>
@@ -121,6 +137,8 @@
 
 - name: an aggregate over an expression
   source: |
+    sale :: relation(dept: string, price: i64, qty: i64)
+
     revenue(dept: d, total: t) <-
         sale(dept: d, price: p, qty: q)
         t := sum<p * q>
@@ -129,6 +147,8 @@
 # call ::= identifier "(" [args] ")" — only ever a subexpression
 - name: calls with positional and keyword arguments
   source: |
+    s :: relation(x: i64, y: i64)
+
     r(v: a, w: b) <-
         s(x: x, y: y)
         a := coalesce(x, 0)
@@ -137,6 +157,8 @@
 
 - name: a call inside a filter
   source: |
+    person :: relation(name: string)
+
     long(name: s) <-
         person(name: s)
         length(s) > 3
@@ -145,6 +167,9 @@
 # array_literal / record_literal
 - name: array and record literals
   source: |
+    s :: relation(x: string)
+    r :: relation(a: array(i64), b: record(k: string, n: i64))
+
     r(a: v, b: w) <-
         s(x: x)
         v := [1, 2, 3,]
@@ -153,6 +178,9 @@
 
 - name: an empty array literal
   source: |
+    s :: relation(x: i64)
+    r :: relation(a: array(i64))
+
     r(a: v) <-
         s(x: x)
         v := []
@@ -161,6 +189,8 @@
 # postfix ::= primary ("." name)*
 - name: field access, including chained
   source: |
+    s :: relation(rec: record(field: i64, a: record(b: string)))
+
     r(a: v, b: w) <-
         s(rec: rec)
         v := rec.field
@@ -169,11 +199,16 @@
 
 - name: a rule head with no arguments
   source: |
+    s :: relation(x: i64)
+
     any() <- s(x: x)
   expected_ok: true
 
 - name: several rules for one head
   source: |
+    start :: relation(node: i64)
+    edge :: relation(src: i64, dst: i64)
+
     reachable(node: n) <- start(node: n)
     reachable(node: n) <-
         reachable(node: m)
@@ -211,10 +246,12 @@
 # satisfying the case.
 - name: a bare call is a filter, and must be boolean
   source: |
+    s :: relation(x: string)
+
     r(x: x) <-
         s(x: x)
         length(x)
   expected_diagnostics:
     - severity: error
       pass: infer
-      line: 3
+      line: 5

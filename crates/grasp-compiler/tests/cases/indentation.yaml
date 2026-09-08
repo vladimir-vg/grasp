@@ -4,6 +4,9 @@
 
 - name: the first body statement sets the width
   source: |
+    s :: relation(x: i64)
+    t :: relation(y: i64)
+
     r(x: x, y: y) <-
       s(x: x)
       t(y: y)
@@ -11,6 +14,9 @@
 
 - name: any width will do, as long as it is consistent
   source: |
+    s :: relation(x: i64)
+    t :: relation(y: i64)
+
     r(x: x, y: y) <-
             s(x: x)
             t(y: y)
@@ -19,6 +25,9 @@
 # "every later statement in that body must be indented at least as far."
 - name: a later statement may be indented further
   source: |
+    s :: relation(x: i64)
+    t :: relation(y: i64)
+
     r(x: x, y: y) <-
         s(x: x)
             t(y: y)
@@ -27,6 +36,9 @@
 # "A line indented less than the first statement ends the rule."
 - name: a dedent ends the rule
   source: |
+    s :: relation(x: i64)
+    t :: relation(y: i64)
+
     r(x: x) <-
         s(x: x)
     t(y: 1)
@@ -34,6 +46,9 @@
 
 - name: a rule at the same indentation as the previous head ends it
   source: |
+    s :: relation(x: i64)
+    t :: relation(y: i64)
+
     first(x: x) <-
         s(x: x)
     second(y: y) <-
@@ -44,6 +59,9 @@
 #  end the body."
 - name: a blank line inside a body does not end it
   source: |
+    s :: relation(x: i64)
+    t :: relation(y: i64)
+
     r(x: x, y: y) <-
         s(x: x)
 
@@ -52,6 +70,9 @@
 
 - name: a comment-only line inside a body does not end it
   source: |
+    s :: relation(x: i64)
+    t :: relation(y: i64)
+
     r(x: x, y: y) <-
         s(x: x)
     # this comment is at column 1 and still does not end the body
@@ -60,6 +81,9 @@
 
 - name: a comment-only line between rules
   source: |
+    s :: relation(x: i64)
+    u :: relation(y: i64)
+
     r(x: x) <-
         s(x: x)
 
@@ -70,6 +94,8 @@
 
 - name: trailing blank lines after a body
   source: |
+    s :: relation(x: i64)
+
     r(x: x) <-
         s(x: x)
 
@@ -99,12 +125,18 @@
 # "single_line_rule ::= head '<-' body_stmt" — exactly one statement.
 - name: a single-line rule may be followed by an ordinary rule
   source: |
+    s :: relation(x: i64)
+    t :: relation(y: i64)
+
     a(x: x) <- s(x: x)
     b(y: y) <- t(y: y)
   expected_ok: true
 
 - name: a single-line rule may be followed by a multiline one
   source: |
+    s :: relation(x: i64)
+    t :: relation(y: i64)
+
     a(x: x) <- s(x: x)
     b(x: x, y: y) <-
         s(x: x)

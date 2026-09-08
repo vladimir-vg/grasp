@@ -205,9 +205,16 @@ Only positive atoms and matches bind, and a rule using nothing but matches is
 safe:
 
 ```grasp
+answer :: relation(v: i64)
+
 answer(v: n) <-
     n := 6 * 7
 ```
+
+The spec is not decoration: `6 * 7` is two literals with nothing beside them to
+take a type from, and [`inference.md`](inference.md#phase-3-literals-take-their-type-from-context)
+reports that rather than defaulting. A rule grounded on nothing has nothing to
+infer from either, so it says what it derives.
 
 Such a rule derives exactly one tuple, once — it depends on no relation, so
 there is nothing that could make it derive another. A fact is the degenerate

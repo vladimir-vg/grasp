@@ -43,6 +43,16 @@ cannot appear inside a value. There is no `array(relation(...))`.
 A `:: relation(...)` spec is required for a relation declared `<- input`, whose
 columns nothing else can determine, and optional elsewhere.
 
+"Optional" means the rules defining a relation can give it a type, not that a
+relation may go undeclared. **Every relation a program mentions must have a spec
+or a definition** — a rule with it as head, a fact, or `<- input`. A relation
+that appears only in a body is one nothing gives a type to, and
+[`inference.md`](inference.md#diagnostics) reports it rather than treating it as
+empty, because a mistyped name is far more likely than a deliberately empty
+relation.
+
+> ``relation `r` is not defined and has no typespec``
+
 ### A relation with no columns
 
 `relation()` has no columns, so it has exactly one possible tuple — the empty
@@ -201,6 +211,25 @@ help — `i64 :: string` — it is a compile error, because a filter that can ne
 pass is a silently empty relation.
 
 > ``no `i64` value is a `string`: this assertion would discard every row``
+
+## Arithmetic
+
+`+`, `-` and `*` take two operands of one numeric type and give that type.
+There is no implicit conversion, so `i64` and `f64` never meet: mixing them is
+an error naming both, and a literal beside a typed operand takes that operand's
+type.
+
+**Division is the one arithmetic that can be absent.** A zero divisor has no
+value to return, so `/` and `%` have type `optional(T)` at every numeric type:
+
+```grasp
+q := a / b          # optional(i64), whatever a and b are
+```
+
+That makes the result unusable as an operand of further arithmetic until it is
+narrowed — by `q :: i64`, which drops the rows where the divisor was zero, or by
+`coalesce(q, 0)`, which chooses a value for them. grasp-dbsp has the same rule,
+so nothing is added or lost in the crossing.
 
 ## Comparison and ordering
 

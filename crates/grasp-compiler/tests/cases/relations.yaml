@@ -27,6 +27,8 @@
 
 - name: facts and rules may define one relation together
   source: |
+    edge :: relation(src: i64, dst: i64)
+
     reachable(node: 1)
     reachable(node: n) <-
         reachable(node: m)
@@ -69,6 +71,8 @@
 
 - name: a relation with no columns, specified and derived
   source: |
+    config :: relation(mode: string)
+
     ready :: relation()
     ready() <-
         config(mode: "on")
@@ -84,6 +88,9 @@
 # its own component of the join graph and is crossed in.
 - name: a proposition guards a rule
   source: |
+    config :: relation(mode: string)
+    account :: relation(id: i64)
+
     ready :: relation()
     ready() <-
         config(mode: "on")
@@ -95,6 +102,9 @@
 
 - name: a negated proposition
   source: |
+    config :: relation(mode: string)
+    account :: relation(id: i64)
+
     paused :: relation()
     paused() <-
         config(mode: "off")
@@ -104,11 +114,14 @@
         not paused()
   expected_ok: true
 
+# The filter is over string literals rather than integers on purpose: an
+# integer literal takes its type from context, and two compared to each other
+# have none — `inference.md` reports that rather than defaulting.
 - name: a proposition derived with no atom at all
   source: |
     always :: relation()
     always() <-
-        1 = 1
+        "x" = "x"
   expected_ok: true
 
 # ---------------------------------------------------------------------------
@@ -155,3 +168,56 @@
     - severity: error
       pass: infer
       message: "has both an input rule and facts"
+
+# `inference.md` reports both of these in phase 2, and until now nothing
+# asserted either — which is how 124 of 185 cases drifted into mentioning
+# relations that exist nowhere. `tests/declared.rs` is the guard that stops it
+# happening again while `infer` is still to come.
+
+- name: a relation mentioned in a body must be declared
+  source: |
+    r(x: x) <-
+        nowhere(x: x)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "is not defined and has no typespec"
+
+# The dangerous spelling: an undefined relation under `not` matches nothing, so
+# the rule silently admits every row rather than none. It fails open, which is
+# why the rule has to cover negated atoms too.
+- name: a negated atom must name a declared relation
+  source: |
+    account :: relation(id: i64)
+
+    active(id: i) <-
+        account(id: i)
+        not nowhere(id: i)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "is not defined and has no typespec"
+
+# The mirror image, and legal: a spec is a declaration on its own. The relation
+# is empty for the life of the program, which is a fine thing for it to be.
+- name: a relation with a typespec and no rules is declared
+  source: |
+    edge :: relation(src: i64, dst: i64)
+
+    hop(dst: y) <-
+        edge(src: 1, dst: y)
+  expected_ok: true
+
+# A recursive rule cannot type its own head, so a relation defined only by one
+# has nothing to start from. This is the second of the two phase-2 diagnostics.
+- name: a relation needs a non-recursive rule or a typespec
+  source: |
+    step :: relation(a: i64, b: i64)
+
+    loop(n: n) <-
+        loop(n: m)
+        step(a: m, b: n)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "has no non-recursive rule and no typespec"

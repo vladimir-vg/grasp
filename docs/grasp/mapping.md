@@ -89,6 +89,8 @@ the unit relation, which is a `constant` holding the one empty row and is then
 its join graph's root:
 
 ```grasp
+answer :: relation(v: i64)
+
 answer(v: n) <-
     n := 6 * 7
 ```

@@ -4,6 +4,8 @@
 # unnest_pattern ":=" ("*" | "**") expr
 - name: an array unnest
   source: |
+    person :: relation(name: string, tags: array(string))
+
     item(name: n, tag: v) <-
         person(name: n, tags: arr)
         (v) := *arr
@@ -11,6 +13,8 @@
 
 - name: a dict unnest binds a key and a value
   source: |
+    person :: relation(name: string, tags: dict(string, i64))
+
     tagged(name: n, tag: k) <-
         person(name: n, tags: d)
         (k, _v) := **d
@@ -19,6 +23,8 @@
 # dict_pattern
 - name: an exact dict destructure
   source: |
+    s :: relation(d: dict(string, i64))
+
     r(v: x) <-
         s(d: d)
         {a: x} := d
@@ -26,6 +32,8 @@
 
 - name: a dict destructure ignoring the rest
   source: |
+    s :: relation(d: dict(string, i64))
+
     r(v: x) <-
         s(d: d)
         {a: x, **} := d
@@ -33,6 +41,8 @@
 
 - name: a dict destructure with several fields
   source: |
+    s :: relation(d: dict(string, i64))
+
     r(v: x, w: y) <-
         s(d: d)
         {a: x, b: y} := d
@@ -40,6 +50,8 @@
 
 - name: a quoted key in a dict pattern
   source: |
+    s :: relation(d: dict(string, i64))
+
     r(v: x) <-
         s(d: d)
         {"key with spaces": x} := d
@@ -48,6 +60,8 @@
 # record_pattern
 - name: a record destructure
   source: |
+    s :: relation(rec: record(a: i64))
+
     r(v: x) <-
         s(rec: rec)
         record(a: x) := rec
@@ -55,6 +69,8 @@
 
 - name: a record destructure allowing extra fields
   source: |
+    s :: relation(rec: record(a: i64, b: string))
+
     r(v: x) <-
         s(rec: rec)
         record(a: x, **) := rec
@@ -108,6 +124,8 @@
 # the same text is a literal on the right of one.
 - name: a brace on the right of the arrow is a literal, not a pattern
   source: |
+    s :: relation(x: i64)
+
     r(v: d) <-
         s(x: x)
         d := {a: x}

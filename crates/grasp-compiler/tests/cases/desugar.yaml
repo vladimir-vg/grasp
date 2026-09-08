@@ -11,37 +11,53 @@
 # `x:` in an atom or head  ->  `x: x`
 - name: the shorthand argument means the column's own name
   source: |
+    s :: relation(x: i64)
+
     r(x:) <-
         s(x:)
   equivalent_to: |
+    s :: relation(x: i64)
+
     r(x: x) <-
         s(x: x)
 
 - name: shorthand and explicit arguments mixed
   source: |
+    s :: relation(x: i64, y: i64)
+
     r(x:, y: v) <-
         s(x:, y: v)
   equivalent_to: |
+    s :: relation(x: i64, y: i64)
+
     r(x: x, y: v) <-
         s(x: x, y: v)
 
 # `a ++ b`  ->  `concat(a, b)`
 - name: concatenation is concat
   source: |
+    s :: relation(a: string, b: string)
+
     r(v: n) <-
         s(a: a, b: b)
         n := a ++ b
   equivalent_to: |
+    s :: relation(a: string, b: string)
+
     r(v: n) <-
         s(a: a, b: b)
         n := concat(a, b)
 
 - name: chained concatenation nests to the left
   source: |
+    s :: relation(a: string, b: string, c: string)
+
     r(v: n) <-
         s(a: a, b: b, c: c)
         n := a ++ b ++ c
   equivalent_to: |
+    s :: relation(a: string, b: string, c: string)
+
     r(v: n) <-
         s(a: a, b: b, c: c)
         n := concat(concat(a, b), c)
@@ -49,30 +65,42 @@
 # `{a: v}`  ->  `{"a" => v}`  and  `{"a": v}`  ->  `{"a" => v}`
 - name: the colon dict form is the arrow form with a string key
   source: |
+    s :: relation(x: i64)
+
     r(v: d) <-
         s(x: x)
         d := {a: x}
   equivalent_to: |
+    s :: relation(x: i64)
+
     r(v: d) <-
         s(x: x)
         d := {"a" => x}
 
 - name: a quoted colon key is the same
   source: |
+    s :: relation(x: i64)
+
     r(v: d) <-
         s(x: x)
         d := {"a": x}
   equivalent_to: |
+    s :: relation(x: i64)
+
     r(v: d) <-
         s(x: x)
         d := {"a" => x}
 
 - name: the two spellings mixed in one literal
   source: |
+    s :: relation(x: i64, y: i64)
+
     r(v: d) <-
         s(x: x, y: y)
         d := {a: x, "b" => y}
   equivalent_to: |
+    s :: relation(x: i64, y: i64)
+
     r(v: d) <-
         s(x: x, y: y)
         d := {"a" => x, "b" => y}
@@ -80,10 +108,14 @@
 # `s.f`  ->  `record:get(s, "f")`
 - name: field access is record:get
   source: |
+    s :: relation(rec: record(f: i64))
+
     r(v: n) <-
         s(rec: rec)
         n := rec.f
   equivalent_to: |
+    s :: relation(rec: record(f: i64))
+
     r(v: n) <-
         s(rec: rec)
         n := record:get(rec, "f")
@@ -91,10 +123,14 @@
 # `s.a.b`  ->  `record:get(record:get(s, "a"), "b")`
 - name: chained field access nests
   source: |
+    s :: relation(rec: record(a: record(b: i64)))
+
     r(v: n) <-
         s(rec: rec)
         n := rec.a.b
   equivalent_to: |
+    s :: relation(rec: record(a: record(b: i64)))
+
     r(v: n) <-
         s(rec: rec)
         n := record:get(record:get(rec, "a"), "b")
@@ -102,10 +138,14 @@
 # `not e` in an expression  ->  `boolean:not(e)`
 - name: not in an expression is boolean:not
   source: |
+    s :: relation(a: boolean)
+
     r(v: n) <-
         s(a: a)
         n := not a
   equivalent_to: |
+    s :: relation(a: boolean)
+
     r(v: n) <-
         s(a: a)
         n := boolean:not(a)
@@ -114,10 +154,14 @@
 # same program as its expansion.
 - name: every sugar at once
   source: |
+    s :: relation(x: i64, rec: record(f: string), a: string, b: string)
+
     r(x:, v: n) <-
         s(x:, rec: rec, a: a, b: b)
         n := {tag: rec.f, joined: a ++ b}
   equivalent_to: |
+    s :: relation(x: i64, rec: record(f: string), a: string, b: string)
+
     r(x: x, v: n) <-
         s(x: x, rec: rec, a: a, b: b)
         n := {"tag" => record:get(rec, "f"), "joined" => concat(a, b)}
@@ -126,6 +170,8 @@
 # sources here too.
 - name: the sugared forms are all legal programs
   source: |
+    s :: relation(x: i64, rec: record(f: string), a: string, b: string)
+
     r(x:, v: n, w: d) <-
         s(x:, rec: rec, a: a, b: b)
         n := not (a ++ b = "x")
@@ -134,6 +180,8 @@
 
 - name: the expanded forms are all legal programs
   source: |
+    s :: relation(x: i64, rec: record(f: string), a: string, b: string)
+
     r(x: x, v: n, w: d) <-
         s(x: x, rec: rec, a: a, b: b)
         n := boolean:not(concat(a, b) = "x")

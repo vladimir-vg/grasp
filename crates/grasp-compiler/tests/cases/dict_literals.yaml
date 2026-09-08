@@ -4,15 +4,22 @@
 # desugarer's job and lives in `desugar.yaml`. Here: that both spellings parse,
 # and what may appear in each.
 
+# A dict has one key type over all its entries, so the keys here are a variable
+# and a string rather than a string and an integer — what `=>` buys is that a
+# key may be *computed*, not that keys may disagree on their type.
 - name: the arrow form takes expression keys
   source: |
+    s :: relation(k: string, n: i64, x: i64)
+
     r(v: d) <-
-        s(n: n, x: x)
-        d := {"name" => n, 1 => x}
+        s(k: k, n: n, x: x)
+        d := {k => n, "literal" => x}
   expected_ok: true
 
 - name: the colon form writes a string key bare
   source: |
+    s :: relation(n: i64)
+
     r(v: d) <-
         s(n: n)
         d := {name: n, age: 30}
@@ -20,6 +27,8 @@
 
 - name: a key that is not an identifier is quoted
   source: |
+    s :: relation(x: i64)
+
     r(v: d) <-
         s(x: x)
         d := {"key with spaces": x}
@@ -28,6 +37,8 @@
 # "The two may be mixed in one literal."
 - name: the two forms mixed in one literal
   source: |
+    s :: relation(n: i64, x: i64)
+
     r(v: d) <-
         s(n: n, x: x)
         d := {name: n, "computed" => x}
@@ -35,6 +46,9 @@
 
 - name: an empty dict literal
   source: |
+    s :: relation(x: i64)
+    r :: relation(v: dict(string, i64))
+
     r(v: d) <-
         s(x: x)
         d := {}
@@ -42,6 +56,9 @@
 
 - name: a trailing comma
   source: |
+    s :: relation(x: i64)
+    r :: relation(v: dict(string, i64))
+
     r(v: d) <-
         s(x: x)
         d := {a: 1, b: 2,}
@@ -49,6 +66,9 @@
 
 - name: an arrow key may be an arbitrary expression
   source: |
+    s :: relation(a: i64, b: i64)
+    r :: relation(v: dict(i64, i64))
+
     r(v: d) <-
         s(a: a, b: b)
         d := {a + b => 1}
@@ -56,6 +76,8 @@
 
 - name: a dict value may be an arbitrary expression
   source: |
+    s :: relation(a: i64, b: i64)
+
     r(v: d) <-
         s(a: a, b: b)
         d := {k: a + b}
@@ -63,6 +85,9 @@
 
 - name: nested dict literals
   source: |
+    s :: relation(x: i64)
+    r :: relation(v: dict(string, dict(string, i64)))
+
     r(v: d) <-
         s(x: x)
         d := {outer: {inner: x}}
@@ -70,6 +95,8 @@
 
 - name: a dict literal in an atom argument
   source: |
+    r :: relation(v: dict(string, i64))
+
     r(v: {a: 1, b: 2})
   expected_ok: true
 

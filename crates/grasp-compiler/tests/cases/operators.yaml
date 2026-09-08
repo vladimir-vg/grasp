@@ -11,6 +11,8 @@
 
 - name: multiplication binds tighter than addition
   source: |
+    s :: relation(a: i64, b: i64, c: i64)
+
     r(v: n) <-
         s(a: a, b: b, c: c)
         n := a + b * c
@@ -18,17 +20,25 @@
 
 - name: arithmetic is left-associative
   source: |
+    s :: relation(a: i64, b: i64, c: i64)
+
     r(v: n) <-
         s(a: a, b: b, c: c)
         n := a - b - c
   expected_ok: true
 
+# `/` and `%` are the arithmetic that can be absent — a zero divisor has no
+# value to return — so each yields `optional(T)` and cannot then be an operand
+# of `+`. They stand alone here for that reason, not for readability.
 - name: every arithmetic operator
   source: |
-    r(v: n, w: m) <-
+    s :: relation(a: i64, b: i64)
+
+    r(v: n, quot: q, rem: m) <-
         s(a: a, b: b)
         n := a + b - a * b
-        m := a / b + a % b
+        q := a / b
+        m := a % b
   expected_ok: true
 
 # "A unary operator adjacent to a binary one from another group is likewise an
@@ -48,6 +58,8 @@
 
 - name: parenthesised, unary minus may meet multiplication
   source: |
+    s :: relation(a: i64, b: i64)
+
     r(v: n) <-
         s(a: a, b: b)
         n := (-a) * b
@@ -55,6 +67,8 @@
 
 - name: a unary operator alone needs no parentheses
   source: |
+    s :: relation(a: i64, b: boolean)
+
     r(v: n, w: m) <-
         s(a: a, b: b)
         n := -a
@@ -63,6 +77,8 @@
 
 - name: concatenation chains
   source: |
+    s :: relation(a: string, b: string, c: string)
+
     r(v: n) <-
         s(a: a, b: b, c: c)
         n := a ++ b ++ c
@@ -70,6 +86,8 @@
 
 - name: and binds tighter than or
   source: |
+    s :: relation(a: boolean, b: boolean, c: boolean)
+
     r(v: n) <-
         s(a: a, b: b, c: c)
         n := a or b and c
@@ -88,6 +106,8 @@
 
 - name: parenthesised, not may meet a boolean operator
   source: |
+    s :: relation(a: boolean, b: boolean)
+
     r(v: n) <-
         s(a: a, b: b)
         n := (not a) or b
@@ -95,6 +115,8 @@
 
 - name: not applies to a parenthesised expression
   source: |
+    s :: relation(a: boolean, b: boolean)
+
     r(v: n) <-
         s(a: a, b: b)
         n := not (a or b)
@@ -102,6 +124,8 @@
 
 - name: every comparison operator
   source: |
+    s :: relation(a: i64, b: i64)
+
     r(v: n) <-
         s(a: a, b: b)
         n := a = b or a != b or a < b or a <= b or a > b or a >= b
@@ -114,6 +138,8 @@
 # arithmetic < comparison:  a + b < c  ->  (a + b) < c
 - name: arithmetic below comparison
   source: |
+    s :: relation(a: i64, b: i64, c: i64)
+
     r(v: n) <-
         s(a: a, b: b, c: c)
         n := a + b < c
@@ -122,6 +148,8 @@
 # concatenation < comparison:  x ++ y = z  ->  (x ++ y) = z
 - name: concatenation below comparison
   source: |
+    s :: relation(x: string, y: string, z: string)
+
     r(v: n) <-
         s(x: x, y: y, z: z)
         n := x ++ y = z
@@ -130,6 +158,8 @@
 # comparison < boolean:  x < 3 and y  ->  (x < 3) and y
 - name: comparison below boolean
   source: |
+    s :: relation(x: i64, y: boolean)
+
     r(v: n) <-
         s(x: x, y: y)
         n := x < 3 and y
@@ -137,6 +167,8 @@
 
 - name: all three relations at once
   source: |
+    s :: relation(a: i64, b: i64, c: i64, d: boolean)
+
     r(v: n) <-
         s(a: a, b: b, c: c, d: d)
         n := a + b < c and d
@@ -158,12 +190,23 @@
       message: "cannot be mixed without parentheses"
       line: 3
 
-- name: parenthesised, concatenation and arithmetic are fine
+# The counterpart to the rejection above, and the one group pair where
+# parenthesising is not enough: `++` takes strings and `+` takes numbers, and
+# grasp has no implicit conversion, so there is no program that mixes them.
+# Parentheses settle how it parses; the types then reject it anyway. Both facts
+# are worth having, which is why this case asserts the second rather than
+# pretending the first is the whole story.
+- name: parenthesised, concatenation and arithmetic still do not typecheck
   source: |
+    s :: relation(a: string, b: i64, c: i64)
+
     r(v: n) <-
         s(a: a, b: b, c: c)
         n := a ++ (b + c)
-  expected_ok: true
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "no version of"
 
 - name: arithmetic and boolean cannot be mixed
   source: |
@@ -212,6 +255,8 @@
 
 - name: parenthesised, comparisons may nest
   source: |
+    s :: relation(a: i64, b: i64, c: boolean)
+
     r(v: n) <-
         s(a: a, b: b, c: c)
         n := (a < b) = c
@@ -232,6 +277,8 @@
 
 - name: parenthesised, not may meet arithmetic
   source: |
+    s :: relation(a: boolean, b: boolean)
+
     r(v: n) <-
         s(a: a, b: b)
         n := (not a) = b

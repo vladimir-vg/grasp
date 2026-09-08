@@ -221,6 +221,40 @@ be pending like any other. Until then, declare data with `:: relation(...)` and
 When emission does land: a fact-only program feeds nothing, so its `input` is
 `[{}]` — one transaction, no rows — and the facts arrive in it.
 
+## Every relation must be declared
+
+A relation a program mentions needs a `:: relation(...)` spec or a definition —
+a rule with it as head, a fact, or `<- input`. That is
+[`inference.md`](../../../../docs/grasp/inference.md#diagnostics)'s rule, not the
+suite's, but until `infer` exists nothing would catch a fixture breaking it, and
+124 of 185 cases had. So [`tests/declared.rs`](../declared.rs) checks it here.
+
+It exempts two kinds of case: one whose only assertion is a `pass: parse`
+diagnostic, since parse short-circuits and inference never runs on it, and one
+that *asserts* the rule's own diagnostic, since breaking the rule is its job.
+
+The scaffolding a case needs is usually one line — a spec with no rules is a
+declaration, and the relation is simply empty:
+
+```yaml
+- name: multiplication binds tighter than addition
+  source: |
+    s :: relation(a: i64, b: i64, c: i64)
+
+    r(v: n) <-
+        s(a: a, b: b, c: c)
+        n := a + b * c
+  expected_ok: true
+```
+
+Choose the column types to match how the variables are *used*, not just to fill
+the slot: `expected_ok` will demand they typecheck once `infer` lands, and grasp
+has no implicit numeric conversion.
+
+`declared.rs` is scaffolding with an end — when `infer` implements the check,
+every `expected_ok` case enforces it and the file should be deleted rather than
+kept in step.
+
 ## Always on
 
 Whatever a case asserts, if it reaches emission the text is handed to

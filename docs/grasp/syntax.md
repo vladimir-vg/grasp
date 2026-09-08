@@ -211,9 +211,10 @@ further incomparable groups, changing no existing program's meaning.
 A dict literal has two spellings, and they do different jobs:
 
 ```grasp
-d := {"name" => n, 1 => x}   # `=>` : keys are expressions, so any key type
-d := {name: n, age: 30}      # `:`  : a string key, written bare
-d := {"key with spaces": v}  #        quoted when it is not an identifier
+d := {k => n, "literal" => x}   # `=>` : the key is an expression
+e := {1 => x, 2 => y}          #        of any scalar type, one per dict
+f := {name: n, age: 30}        # `:`  : a string key, written bare
+g := {"key with spaces": v}    #        quoted when it is not an identifier
 ```
 
 `{a: v}` **is** `{"a" => v}` — the `:` form is sugar for the common case, and

@@ -32,6 +32,9 @@
 # "Numbers are unsigned tokens: `-5` is unary minus applied to `5`."
 - name: a negative number is unary minus over a literal
   source: |
+    neg :: relation(v: i64)
+    r :: relation(x: i64)
+
     neg(v: n) <-
         r(x: x)
         n := -5
@@ -39,6 +42,8 @@
 
 - name: unary minus over a variable
   source: |
+    r :: relation(x: i64)
+
     neg(v: n) <-
         r(x: x)
         n := -x
@@ -67,6 +72,8 @@
 # "Colon-separated segments qualify a name with a namespace: `string:length`."
 - name: a namespace-qualified callable
   source: |
+    r :: relation(s: string)
+
     lens(v: n) <-
         r(s: s)
         n := string:length(s)
@@ -74,6 +81,8 @@
 
 - name: a leading underscore is an ordinary identifier character
   source: |
+    s :: relation(x: i64)
+
     r(x: _x) <-
         s(x: _x)
   expected_ok: true

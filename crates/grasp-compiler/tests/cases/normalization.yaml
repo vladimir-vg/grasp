@@ -10,11 +10,17 @@
 
 - name: body statement order does not change the emission
   source: |
+    emp :: relation(name: string, dept: i64, sal: i64)
+    dept :: relation(id: i64, title: string)
+
     rich(name: n, title: t) <-
         emp(name: n, dept: d, sal: s)
         s > 100
         dept(id: d, title: t)
   equivalent_to: |
+    emp :: relation(name: string, dept: i64, sal: i64)
+    dept :: relation(id: i64, title: string)
+
     rich(name: n, title: t) <-
         dept(id: d, title: t)
         s > 100
@@ -22,19 +28,29 @@
 
 - name: a filter may be written anywhere in the body
   source: |
+    person :: relation(name: string, age: i64)
+
     adult(name: n) <-
         person(name: n, age: a)
         a > 20
   equivalent_to: |
+    person :: relation(name: string, age: i64)
+
     adult(name: n) <-
         a > 20
         person(name: n, age: a)
 
 - name: rule order does not change the emission
   source: |
+    father :: relation(child: i64, parent: i64)
+    mother :: relation(child: i64, parent: i64)
+
     parent(child: x, parent: y) <- father(child: x, parent: y)
     parent(child: x, parent: y) <- mother(child: x, parent: y)
   equivalent_to: |
+    father :: relation(child: i64, parent: i64)
+    mother :: relation(child: i64, parent: i64)
+
     parent(child: x, parent: y) <- mother(child: x, parent: y)
     parent(child: x, parent: y) <- father(child: x, parent: y)
 
@@ -42,6 +58,9 @@
 # decides nothing — the optimizer orders components structurally.
 - name: a guard may be written before or after what it guards
   source: |
+    config :: relation(mode: string)
+    account :: relation(id: i64)
+
     ready :: relation()
     ready() <-
         config(mode: "on")
@@ -50,6 +69,9 @@
         ready()
         account(id: i)
   equivalent_to: |
+    config :: relation(mode: string)
+    account :: relation(id: i64)
+
     ready :: relation()
     ready() <-
         config(mode: "on")
@@ -62,20 +84,30 @@
 # was written first must not decide which is crossed first.
 - name: the order of two independent components does not change the emission
   source: |
+    a :: relation(x: i64)
+    b :: relation(y: i64)
+
     pair(x: x, y: y) <-
         a(x: x)
         b(y: y)
   equivalent_to: |
+    a :: relation(x: i64)
+    b :: relation(y: i64)
+
     pair(x: x, y: y) <-
         b(y: y)
         a(x: x)
 
 - name: the matches of an atom-less rule may be written in any order
   source: |
+    origin :: relation(x: i64, y: i64)
+
     origin(x: a, y: b) <-
         a := 0
         b := 1
   equivalent_to: |
+    origin :: relation(x: i64, y: i64)
+
     origin(x: a, y: b) <-
         b := 1
         a := 0
@@ -84,6 +116,11 @@
 # the sources are pinned as legal programs too.
 - name: the programs above are legal
   source: |
+    config :: relation(mode: string)
+    account :: relation(id: i64)
+    a :: relation(x: i64)
+    b :: relation(y: i64)
+
     ready :: relation()
     ready() <-
         config(mode: "on")
