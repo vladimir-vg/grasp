@@ -21,6 +21,7 @@ pub mod desugar;
 pub mod diag;
 pub mod lex;
 pub mod parse;
+pub mod ty;
 
 use crate::diag::{Diagnostic, Pass};
 

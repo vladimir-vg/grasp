@@ -141,3 +141,49 @@ fn every_reserved_word_is_rejected_as_a_relation_name() {
         );
     }
 }
+
+/// `core::Builtin` and `parse::BUILTINS` are two lists of one thing.
+///
+/// `parse::BUILTINS` is what the one-name rule reserves and what
+/// `the_builtins_match_semantics_md` above pins against the specification;
+/// `core::Builtin` is what desugaring resolves a call to. Nothing connected
+/// them, so a builtin added to one and not the other would either be
+/// unreservable or unresolvable, and the fixture that caught it would blame
+/// something else.
+#[test]
+fn the_builtin_enum_and_the_reserved_list_agree() {
+    use grasp_compiler::core::Builtin;
+
+    for name in BUILTINS {
+        assert!(
+            Builtin::from_name(name).is_some(),
+            "`{name}` is reserved as a callable but `core::Builtin` cannot \
+             resolve it, so a program calling it would be told there is no \
+             such callable"
+        );
+    }
+
+    for b in Builtin::ALL {
+        let name = b.as_str();
+        // The namespaced three are what desugaring writes. They are not in
+        // `BUILTINS` because that list is what the *one-name rule* reserves —
+        // it stops a relation being called `length`, and no relation can be
+        // called `record:get` anyway, since the namespace is reserved outright.
+        if name.contains(':') {
+            let namespace = name.split_once(':').expect("checked").0;
+            assert!(
+                RESERVED_NAMESPACES.contains(&namespace),
+                "`{name}` lives in `{namespace}:`, which is not a reserved \
+                 namespace — so a program could define a relation there and \
+                 collide with what desugaring writes"
+            );
+            continue;
+        }
+        assert!(
+            BUILTINS.contains(&name),
+            "`{name}` is a callable but is not in `parse::BUILTINS`, so a \
+             relation could be given its name and the one-name rule would not \
+             notice"
+        );
+    }
+}

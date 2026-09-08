@@ -38,20 +38,32 @@
 # ---------------------------------------------------------------------------
 # Rules with no positive atom
 # ---------------------------------------------------------------------------
+#
+# Each of these declares its head, and the spec is not decoration: a body with
+# no atom has nothing beside its literals to take a type from, so `6 * 7` is two
+# untyped literals and the head column is the only thing that can settle them.
+# `semantics.md` writes its own example this way and says why. Delete a spec
+# here and the case stops being legal.
 
 - name: a body of nothing but a match
   source: |
+    answer :: relation(v: i64)
+
     answer(v: n) <-
         n := 6 * 7
   expected_ok: true
 
 - name: the same rule on one line
   source: |
+    answer :: relation(v: i64)
+
     answer(v: n) <- n := 6 * 7
   expected_ok: true
 
 - name: several matches and no atom
   source: |
+    origin :: relation(x: i64, y: i64, d: i64)
+
     origin(x: a, y: b, d: c) <-
         a := 0
         b := 0
@@ -60,6 +72,8 @@
 
 - name: a match and a filter, and no atom
   source: |
+    maybe :: relation(v: i64)
+
     maybe(v: n) <-
         n := 6 * 7
         n > 40

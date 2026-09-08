@@ -13,6 +13,7 @@
 //! a `Lit` an unresolved number. `docs/grasp/inference.md` resolves both.
 
 use crate::diag::Span;
+use std::fmt;
 
 pub type Program = Vec<Decl>;
 
@@ -371,6 +372,39 @@ impl Expr {
             Expr::Unary { op, .. } => Some(op.group()),
             Expr::Binary { op, .. } => Some(op.group()),
             _ => None,
+        }
+    }
+}
+
+impl fmt::Display for Type {
+    /// The canonical spelling of a type, which is what a diagnostic quotes.
+    ///
+    /// Record fields are sorted by name, because `types.md` says they are a set
+    /// — `record(a: i64, b: string)` and `record(b: string, a: i64)` are one
+    /// type, and a message that spelled them differently would be reporting the
+    /// order rather than the type.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Type::Boolean => f.write_str("boolean"),
+            Type::I64 => f.write_str("i64"),
+            Type::F64 => f.write_str("f64"),
+            Type::String => f.write_str("string"),
+            Type::Json => f.write_str("json"),
+            Type::Optional(t) => write!(f, "optional({t})"),
+            Type::Array(t) => write!(f, "array({t})"),
+            Type::Dict(k, v) => write!(f, "dict({k}, {v})"),
+            Type::Record(fields) => {
+                let mut sorted: Vec<&(String, Type)> = fields.iter().collect();
+                sorted.sort_by(|a, b| a.0.cmp(&b.0));
+                f.write_str("record(")?;
+                for (i, (name, ty)) in sorted.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{name}: {ty}")?;
+                }
+                f.write_str(")")
+            }
         }
     }
 }

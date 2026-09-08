@@ -294,10 +294,15 @@ by the one-name rule above, but a column may be called `length`.
 
 ### Reserved namespace prefixes
 
-`string:`, `array:`, `dict:`, `record:`, `json:`, `agg:` and `temporal:` belong
-to the language. User code may not define names under them. They are held now so
-that the standard library can grow into them without taking names a program was
-already using — see [`overview.md`](overview.md#future-work).
+`string:`, `array:`, `dict:`, `record:`, `json:`, `boolean:`, `agg:` and
+`temporal:` belong to the language. User code may not define names under them.
+Most are held so that the standard library can grow into them without taking
+names a program was already using — see [`overview.md`](overview.md#future-work).
+
+Three are not held but occupied. `record:get`, `dict:get` and `boolean:not` are
+what [desugaring](semantics.md#desugaring) writes, so those namespaces are
+reserved for the reason the others will be one day: something already lives
+there, and a relation of the same name would collide with it.
 
 ## AST
 

@@ -254,6 +254,26 @@ impl Builtin {
         })
     }
 
+    /// Every callable, for the test that pins this list against the one
+    /// `parse.rs` reserves and `semantics.md` documents.
+    pub const ALL: &'static [Builtin] = &[
+        Builtin::Abs,
+        Builtin::Floor,
+        Builtin::Ceil,
+        Builtin::Round,
+        Builtin::Length,
+        Builtin::Concat,
+        Builtin::Lower,
+        Builtin::Upper,
+        Builtin::Trim,
+        Builtin::If,
+        Builtin::Keys,
+        Builtin::Entries,
+        Builtin::RecordGet,
+        Builtin::DictGet,
+        Builtin::BooleanNot,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Builtin::Abs => "abs",

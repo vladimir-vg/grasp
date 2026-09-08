@@ -45,7 +45,7 @@ pub const BUILTINS: &[&str] = &[
 /// "They are held now so that the standard library can grow into them without
 /// taking names a program was already using."
 pub const RESERVED_NAMESPACES: &[&str] = &[
-    "string", "array", "dict", "record", "json", "agg", "temporal",
+    "string", "array", "dict", "record", "json", "boolean", "agg", "temporal",
 ];
 
 /// Reserved as a relation, variable or column name.
