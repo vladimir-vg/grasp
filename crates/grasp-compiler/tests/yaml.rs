@@ -17,7 +17,6 @@
 //!   the text to `grasp_dbsp_runner::compile`, whatever it asserts, so a
 //!   program the target rejects is caught without a fixture having to ask.
 
-use grasp_compiler::IMPLEMENTED;
 use grasp_compiler::diag::{Diagnostic, Pass};
 use grasp_dbsp_runner::json::{decode_value, encode_value};
 use grasp_dbsp_runner::lower::Runner;
@@ -30,9 +29,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
-/// Pending cases, recorded as they are skipped over, for the burn-down line.
+/// Pending cases, recorded as they are skipped over, for the burn-down line —
+/// each the construct the compiler said it had not implemented.
 /// A `Mutex` because `libtest-mimic` runs trials on several threads.
-static PENDING: LazyLock<Mutex<Vec<Pass>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+static PENDING: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
 fn main() {
     let args = Arguments::from_args();
@@ -58,16 +58,22 @@ fn report_pending() {
     if pending.is_empty() {
         return;
     }
-    let parts: Vec<String> = Pass::ALL
-        .iter()
-        .map(|p| (p, pending.iter().filter(|q| *q == p).count()))
-        .filter(|(_, n)| *n > 0)
-        .map(|(p, n)| format!("{p} {n}"))
-        .collect();
+    // Grouped by what blocked them, which is a work queue rather than a census:
+    // the largest number is the feature that would free the most fixtures.
+    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for reason in pending.iter() {
+        *counts.entry(reason.as_str()).or_default() += 1;
+    }
+    let mut parts: Vec<(usize, &str)> = counts.into_iter().map(|(r, n)| (n, r)).collect();
+    parts.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
     eprintln!(
-        "\n{} pending (the pipeline reaches `{IMPLEMENTED}`): {}",
+        "\n{} pending: {}",
         pending.len(),
-        parts.join(", ")
+        parts
+            .iter()
+            .map(|(n, r)| format!("{r} {n}"))
+            .collect::<Vec<_>>()
+            .join(", ")
     );
 }
 
@@ -238,55 +244,41 @@ fn slug(s: &str) -> String {
 // Running a case
 // ---------------------------------------------------------------------------
 
-/// The pass a case's assertion needs the pipeline to have reached.
+/// The construct a program hit that the compiler has not implemented, if any.
 ///
-/// Derived from what the case asserts rather than annotated, so there is no
-/// bookkeeping to forget. This is the other half of why `pass` is required on
-/// an expected diagnostic.
-fn required_pass(case: &Case) -> Result<Pass, String> {
-    if let Some(diags) = &case.expected_diagnostics {
-        if diags.is_empty() {
-            return Err("`expected_diagnostics` is empty; a case that expects no \
-                        diagnostic wants `expected_ok: true`"
-                .to_string());
-        }
-        let mut max = Pass::Parse;
-        for d in diags {
-            max = max.max(d.pass()?);
-        }
-        return Ok(max);
+/// This is the whole of the pending mechanism. A case blocked by unwritten code
+/// is pending; a case that fails any other way is a failure; and the compiler
+/// is the authority on which is which, because it is the only thing that knows.
+///
+/// It replaces a high-water mark that had to be bumped by hand, and with it the
+/// check that caught people forgetting: a case goes live here the moment the
+/// compiler stops saying it cannot, so there is no marker to remove and nothing
+/// to forget.
+fn unimplemented_reason(source: &str) -> Option<String> {
+    match grasp_compiler::compile(source) {
+        Ok(_) => None,
+        Err(diags) => diags.iter().find_map(|d| d.unimplemented.clone()),
     }
-    if case.expected_ok.is_some() {
-        // The floor: "this program is legal", asserted against whatever the
-        // pipeline currently checks. It demands more as stages land.
-        return Ok(Pass::Parse);
-    }
-    // `equivalent_to` compares emitted text, and the output modes execute it.
-    Ok(Pass::Emit)
 }
 
-fn run_trial(case: &Case, name: &str, where_: &str) -> Result<(), String> {
+fn run_trial(case: &Case, _name: &str, where_: &str) -> Result<(), String> {
     check_shape(case, where_)?;
-    let required = required_pass(case).map_err(|e| format!("{where_}: {e}"))?;
 
-    if required > IMPLEMENTED {
-        return match run_case(case, where_) {
-            // Expected: the pipeline does not reach this pass yet.
-            Err(_) => {
-                PENDING.lock().expect("pending").push(required);
-                Ok(())
+    // `expected_ok` claims only that nothing *rejects* the program, and an
+    // unimplemented construct does not reject it — so that mode stays live and
+    // tolerates one, which is what makes it the floor it is meant to be. Every
+    // other mode needs the compiler to produce something in particular, and
+    // cannot be judged until it can.
+    if case.expected_ok.is_none() {
+        // `equivalent_to` is a second program and blocks the case just as its
+        // own source would.
+        let sources = std::iter::once(&case.source).chain(case.equivalent_to.iter());
+        for source in sources {
+            if let Some(reason) = unimplemented_reason(source) {
+                PENDING.lock().expect("pending").push(reason);
+                return Ok(());
             }
-            // Unexpected. Either the stage landed and nobody bumped
-            // `IMPLEMENTED`, or the case asserts less than it claims to — a
-            // fixture that would otherwise sit here passing and proving
-            // nothing.
-            Ok(()) => Err(format!(
-                "{name} passes today, but needs pass `{required}` and the \
-                 pipeline reaches `{IMPLEMENTED}`.\n  \
-                 Bump `IMPLEMENTED` in src/lib.rs if the stage landed, or fix \
-                 the case if it asserts less than it should."
-            )),
-        };
+        }
     }
     run_case(case, where_)
 }
@@ -317,6 +309,21 @@ fn check_shape(case: &Case, where_: &str) -> Result<(), String> {
                 "{where_}: a case may have only one assertion; found {}",
                 present.join(" and ")
             ));
+        }
+    }
+    // `pass` is validated here rather than where it is matched, so a typo in
+    // it is "unknown pass `infr`" and not a silent failure to match anything.
+    // Deciding when a case goes live was its other job and is now the
+    // compiler's, but this one is why it is still required.
+    if let Some(diags) = &case.expected_diagnostics {
+        if diags.is_empty() {
+            return Err(format!(
+                "{where_}: `expected_diagnostics` is empty; a case that expects no \
+                 diagnostic wants `expected_ok: true`"
+            ));
+        }
+        for d in diags {
+            d.pass().map_err(|e| format!("{where_}: {e}"))?;
         }
     }
     if case.expected_ok == Some(false) {
@@ -395,15 +402,17 @@ fn check_ok(case: &Case, where_: &str) -> Result<(), String> {
             Ok(())
         }
         Err(diags) => {
-            let real: Vec<&Diagnostic> = diags.iter().filter(|d| d.pass <= IMPLEMENTED).collect();
-            if real.is_empty() {
-                // Only complaints from passes that do not exist yet.
+            let rejections: Vec<&Diagnostic> =
+                diags.iter().filter(|d| d.unimplemented.is_none()).collect();
+            if rejections.is_empty() {
+                // Only what the compiler has not got to yet, which is not a
+                // rejection and not this mode's business.
                 return Ok(());
             }
             Err(format!(
                 "{where_}: expected the program to be accepted, but:\n{}",
                 indent(
-                    &real
+                    &rejections
                         .iter()
                         .map(|d| d.to_string())
                         .collect::<Vec<_>>()

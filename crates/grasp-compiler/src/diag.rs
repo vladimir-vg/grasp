@@ -145,6 +145,20 @@ pub struct Diagnostic {
     pub pass: Pass,
     pub message: String,
     pub span: Option<Span>,
+    /// The construct this compiler recognised and has not implemented, if that
+    /// is what happened.
+    ///
+    /// This is the difference between *"grasp does not allow that"* and *"this
+    /// compiler cannot do that yet"*, and it is worth a field rather than a
+    /// turn of phrase because the test suite runs on it: a fixture that fails
+    /// because of one of these is pending, and a fixture that fails any other
+    /// way is a failure. Nothing else distinguishes the two, and reading it out
+    /// of the message would make the distinction a matter of wording.
+    ///
+    /// The string is the construct, not a sentence — `"aggregates"`, not
+    /// `"aggregates are not implemented"` — because the burn-down groups by it
+    /// and a per-site phrasing would fragment the count.
+    pub unimplemented: Option<String>,
 }
 
 impl Diagnostic {
@@ -158,6 +172,27 @@ impl Diagnostic {
             pass,
             message: message.into(),
             span: span.into(),
+            unimplemented: None,
+        }
+    }
+
+    /// A construct this compiler has not implemented yet.
+    ///
+    /// `construct` names the thing, in the words the language uses for it, and
+    /// is what the test suite's burn-down counts — so two sites blocked by the
+    /// same feature must pass the same string.
+    pub fn unimplemented(
+        pass: Pass,
+        span: impl Into<Option<Span>>,
+        construct: impl Into<String>,
+    ) -> Diagnostic {
+        let construct = construct.into();
+        Diagnostic {
+            severity: Severity::Error,
+            pass,
+            message: format!("{construct} are not implemented yet"),
+            span: span.into(),
+            unimplemented: Some(construct),
         }
     }
 }

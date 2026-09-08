@@ -22,29 +22,23 @@ pub mod parse;
 
 use crate::diag::{Diagnostic, Pass};
 
-/// The furthest pass the pipeline currently reaches.
-///
-/// The test suite runs on this. A fixture asserting something only a later pass
-/// can produce is expected to *fail*, and is reported as pending rather than as
-/// a failure; a fixture that passes anyway is an error, because it means either
-/// the stage landed and nobody bumped this constant, or the fixture asserts
-/// less than it claims to.
-///
-/// So: landing a stage means bumping this one variant, and every fixture
-/// waiting on that stage goes live at once. See `tests/cases/README.md`.
-pub const IMPLEMENTED: Pass = Pass::Parse;
-
 /// Compile a grasp program to grasp-dbsp.
 ///
 /// The one door into the pipeline, as [`grasp_dbsp_runner::compile`] is for the
 /// runner: as passes are added they go here, and every caller picks them up.
 /// Returns a vector because a pass will eventually report more than one
 /// problem — today it always holds exactly one.
+///
+/// What this compiler cannot do yet, it says so through
+/// [`Diagnostic::unimplemented`] rather than by silence or by a caller
+/// consulting a table of how far it has got. That is what the test suite reads
+/// to tell a fixture waiting on unwritten code from a fixture the compiler gets
+/// wrong.
 pub fn compile(source: &str) -> Result<String, Vec<Diagnostic>> {
     let _program = parse::parse(source).map_err(|d| vec![d])?;
-    Err(vec![Diagnostic::error(
-        Pass::Emit,
+    Err(vec![Diagnostic::unimplemented(
+        Pass::Desugar,
         None,
-        format!("not implemented: the pipeline stops at `{IMPLEMENTED}`"),
+        "the stages after parsing",
     )])
 }

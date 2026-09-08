@@ -35,34 +35,34 @@ asserting nothing.
 ## Cases outrun the compiler
 
 The pipeline is parse → desugar → infer → plan → emit, and it does not reach the
-end yet. `IMPLEMENTED` in [`src/lib.rs`](../../src/lib.rs) says how far it does
-reach.
+end yet. **The compiler says what it cannot do**, through a diagnostic carrying
+`Diagnostic::unimplemented`, and the harness reads that:
 
-A case needing a later pass than that is expected to **fail**, and is reported as
-*pending* rather than as a failure. Nothing is `#[ignore]`d, so nothing quietly
-stops being parsed, and each run ends with the debt:
+- a case that fails because the compiler said so is **pending**;
+- a case that fails any other way is a **failure**.
+
+That is the whole rule. Nothing is `#[ignore]`d, so nothing quietly stops being
+parsed, and each run ends with the debt, grouped by what is blocking it:
 
 ```
-312 pending (the pipeline reaches `parse`): desugar 12, infer 40, plan 18, emit 55
+43 pending: aggregates 9, recursion 5, negation 4, the stages after parsing 25
 ```
 
-**The pass a case needs is derived from what it asserts, not annotated** — there
-is no marker to forget, and none to leave behind:
+which is a work queue rather than a census — the largest number is the feature
+that would free the most fixtures.
 
-| assertion | needs |
-|---|---|
-| `expected_diagnostics` | the latest `pass` it lists |
-| `expected_ok` | `parse` — it means "accepted so far", so it is always live |
-| `equivalent_to`, `expected_*output` | `emit` |
+`expected_ok` is the exception, and stays live: it claims only that nothing
+*rejects* the program, and an unimplemented construct does not reject it. That is
+what makes it the floor, and why it silently demands more as the compiler grows.
 
-**A pending case that starts passing is a failure**, saying so. That is the whole
-anti-rot mechanism: the day a stage lands, bumping `IMPLEMENTED` by one variant
-turns every fixture for that stage live at once, and a fixture that passes early
-is either a stage nobody recorded or a case asserting less than it claims to.
+**There is nothing to remember.** A case goes live the moment the compiler stops
+saying it cannot — no marker to add, none to remove, and so no check needed
+against forgetting either. A pending case that starts failing is the compiler
+being wrong, and says so.
 
-So: **write fixtures before the stage that satisfies them.** Write them one stage
-ahead, though, not five — a fixture written against a pass nobody has designed is
-wrong in ways nothing detects.
+So: **write fixtures before the code that satisfies them.** Write them a little
+ahead, though, not five stages ahead — a fixture written against a pass nobody
+has designed is wrong in ways nothing detects.
 
 ### `skip` is not the same thing
 
