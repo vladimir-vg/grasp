@@ -108,7 +108,9 @@ and when several rules define one relation.
 
 **There is no implicit conversion.** Assignability never changes a value's
 representation; it only says a value already *is* an acceptable `T`. Anything
-that would change the value is a `cast` or a builtin, written out.
+that would change the value is a builtin, written out — and grasp has no general
+conversion, so a change of type that no builtin performs is one the language
+cannot express yet.
 
 ### Scalars
 
@@ -176,11 +178,15 @@ already a JSON value:
 
 `i64 → json` is refused rather than quietly widened to `f64`, because a 64-bit
 key or identifier does not survive the trip and finding that out at runtime is
-worse than being asked. `cast(x, json)` does it when that is what you meant.
+worse than being asked. There is no conversion that does it on purpose either —
+grasp-dbsp has one and grasp has not been given it, which is the sort of thing
+[`overview.md`](overview.md#future-work) collects rather than the sort inference
+can settle.
 
 Nothing is assignable **out** of `json` — a document need not hold the shape
-asked of it, so every extraction is fallible and goes through `cast` or a
-runtime filter.
+asked of it, so every extraction is fallible and goes through a
+[runtime filter](#runtime-filters), which drops the rows whose document did not
+hold what was asked.
 
 ## Runtime filters
 
@@ -219,17 +225,18 @@ There is no implicit conversion, so `i64` and `f64` never meet: mixing them is
 an error naming both, and a literal beside a typed operand takes that operand's
 type.
 
-**Division is the one arithmetic that can be absent.** A zero divisor has no
-value to return, so `/` and `%` have type `optional(T)` at every numeric type:
+`/` and `%` yield that numeric type too. A zero divisor has no answer, and a
+rule derives no row where a step of its body has none — so the rows with a zero
+divisor are simply not there, and `q` is an ordinary `i64`:
 
 ```grasp
-q := a / b          # optional(i64), whatever a and b are
+q := a / b          # i64; rows where b is zero are not derived
 ```
 
-That makes the result unusable as an operand of further arithmetic until it is
-narrowed — by `q :: i64`, which drops the rows where the divisor was zero, or by
-`coalesce(q, 0)`, which chooses a value for them. grasp-dbsp has the same rule,
-so nothing is added or lost in the crossing.
+[`semantics.md`](semantics.md#a-body-must-have-an-answer) has the rule this is
+an instance of. grasp-dbsp types division `optional(T)` instead, because a
+compilation target says what can be missing rather than dropping it;
+[`mapping.md`](mapping.md#narrowing-and-dropping) is where the two meet.
 
 ## Comparison and ordering
 

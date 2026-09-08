@@ -39,7 +39,7 @@ pub const AGGREGATORS: &[&str] = &["sum", "count", "min", "max", "avg"];
 /// the one-name rule, which is a different check.
 pub const BUILTINS: &[&str] = &[
     "abs", "floor", "ceil", "round", "length", "concat", "lower", "upper", "trim", "coalesce",
-    "if", "get", "keys", "entries", "cast",
+    "if", "keys", "entries",
 ];
 
 /// "They are held now so that the standard library can grow into them without

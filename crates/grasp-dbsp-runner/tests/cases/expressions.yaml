@@ -381,3 +381,44 @@
   expected_exact_output:
     - both:
         - [2, {id: 1, name: "ana"}]
+
+# How a frontend narrows an `optional` away — the shape emitted by a language
+# whose own rule is "a row whose division has no answer is not derived".
+# Compute at `optional(i64)`, drop the absent rows, then narrow with the one
+# narrowing this language has: `coalesce` is it, since `cast` refuses an
+# optional source and `if` widens rather than narrows.
+#
+# `out`'s typespec is the assertion. Without the `coalesce` the node infers
+# `optional(i64)` and is rejected — a `filter` cannot change a row type, which
+# is why the third operator is needed at all. The `0` is unreachable: the filter
+# removed every row that could take it, which the checker has no way to know.
+- name: dropping the absent rows narrows a division back to a definite i64
+  source: |
+    src :: zset(record(a: i64, b: i64))
+    src := input("src")
+
+    divided := map(src, function((r) -> record(a: r.a, b: r.b, q: r.a / r.b)))
+    present := filter(divided, function((r) -> r.q != NONE))
+
+    out :: zset(record(a: i64, b: i64, q: i64))
+    out := map(present, function((r) -> record(a: r.a, b: r.b, q: coalesce(r.q, 0))))
+
+  input:
+    - src:
+        - [1, {a: 7, b: 2}]
+        - [1, {a: 9, b: 3}]
+        - [1, {a: 5, b: 0}]
+    - src:
+        - [-1, {a: 5, b: 0}]
+        - [1, {a: 5, b: 1}]
+
+  # The zero divisor produces no row at all, not a row carrying NONE — and
+  # retracting it produces no delta either, because there was nothing to
+  # retract. That second transaction is what shows the drop is incremental
+  # rather than a first-batch filter.
+  expected_exact_output:
+    - out:
+        - [1, {a: 7, b: 2, q: 3}]
+        - [1, {a: 9, b: 3, q: 3}]
+    - out:
+        - [1, {a: 5, b: 1, q: 5}]

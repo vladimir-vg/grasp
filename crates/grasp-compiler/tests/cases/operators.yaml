@@ -27,18 +27,16 @@
         n := a - b - c
   expected_ok: true
 
-# `/` and `%` are the arithmetic that can be absent — a zero divisor has no
-# value to return — so each yields `optional(T)` and cannot then be an operand
-# of `+`. They stand alone here for that reason, not for readability.
+# `/` and `%` yield `i64` like the rest: a zero divisor has no answer, so the
+# row is not derived, and the result is an ordinary operand.
 - name: every arithmetic operator
   source: |
     s :: relation(a: i64, b: i64)
 
-    r(v: n, quot: q, rem: m) <-
+    r(v: n, w: m) <-
         s(a: a, b: b)
         n := a + b - a * b
-        q := a / b
-        m := a % b
+        m := a / b + a % b
   expected_ok: true
 
 # "A unary operator adjacent to a binary one from another group is likewise an

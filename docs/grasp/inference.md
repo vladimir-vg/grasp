@@ -121,6 +121,24 @@ counts as a rule here** — it constrains its relation's columns exactly as a ru
 head does, and its arguments are closed, so each contributes the type of a
 literal rather than of a variable.
 
+That closedness is also what limits it. A fact's arguments have no body to take
+a type from, so an untyped literal in one has exactly two sources: the
+relation's `:: relation(...)` spec, or another rule for the same relation. A
+relation whose only definitions are facts of untyped literals has neither, and
+is reported by [phase 3](#phase-3-literals-take-their-type-from-context) rather
+than defaulted.
+
+```grasp
+reachable(node: 1)          # `1` from the rule below, not from a spec
+reachable(node: n) <-
+    reachable(node: m)
+    edge(src: m, dst: n)
+```
+
+That is the one place a fact's literal is settled across phase 2 instead of from
+a spec, and it is why the two phases run inside one fixpoint rather than in
+sequence.
+
 - **With a `:: relation(...)` spec**, each rule's inferred column type must be
   assignable to the declared one. The spec is the answer; a rule that disagrees
   is the error.

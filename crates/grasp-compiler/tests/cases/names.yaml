@@ -58,6 +58,8 @@
 # "Builtin names are not reserved as such; a column may be called `length`."
 - name: a column may be called length
   source: |
+    r :: relation(length: i64)
+
     r(length: 3)
   expected_ok: true
 
@@ -91,6 +93,8 @@
 
 - name: a namespace-qualified relation outside the reserved prefixes
   source: |
+    mine:edges :: relation(src: i64, dst: i64)
+
     mine:edges(src: 1, dst: 2)
   expected_ok: true
 

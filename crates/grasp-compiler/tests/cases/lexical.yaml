@@ -2,6 +2,8 @@
 
 - name: every literal form
   source: |
+    lits :: relation(i: i64, z: i64, f: f64, g: f64, e: f64, s: string, t: boolean, n: optional(string))
+
     lits(i: 42, z: 0, f: 3.14, g: 1.0, e: 2.5e-3, s: "hello", t: true, n: NONE)
   expected_ok: true
 
@@ -59,6 +61,8 @@
 
 - name: comments run to the end of the line
   source: |
+    r :: relation(x: i64)
+
     # a leading comment
     r(x: 1)   # a trailing one
     # a trailing comment

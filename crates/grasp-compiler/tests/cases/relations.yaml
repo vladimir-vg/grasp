@@ -221,3 +221,52 @@
     - severity: error
       pass: infer
       message: "has no non-recursive rule and no typespec"
+
+# A fact's arguments are closed, so an untyped literal in one has two possible
+# sources and no others: the relation's spec, or another rule for the same
+# relation. `inference.md` reports it rather than defaulting to `i64`, because a
+# default would put a type nobody chose into a relation's schema.
+- name: a fact literal with nothing to take a type from
+  source: |
+    edge(src: 1, dst: 2)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "has no type here"
+
+- name: a string literal in a fact carries its own type
+  source: |
+    greeting(word: "hello")
+  expected_ok: true
+
+# Division has no answer for a zero divisor, so those rows are not derived —
+# `q` is an ordinary `i64` and nothing downstream sees an absence.
+- name: a zero divisor derives no row
+  source: |
+    pair :: relation(a: i64, b: i64)
+    pair(a:, b:) <- input
+
+    ratio(a: a, q: q) <-
+        pair(a: a, b: b)
+        q := a / b
+
+  input:
+    - pair:
+        - [1, {a: 10, b: 2}]
+        - [1, {a: 9, b: 3}]
+        - [1, {a: 7, b: 0}]
+
+  expected_exact_output:
+    - ratio:
+        - [1, {a: 10, q: 5}]
+        - [1, {a: 9, q: 3}]
+
+- name: a division result is an ordinary operand
+  source: |
+    pair :: relation(a: i64, b: i64)
+    pair(a:, b:) <- input
+
+    scaled(v: n) <-
+        pair(a: a, b: b)
+        n := a / b + a % b
+  expected_ok: true

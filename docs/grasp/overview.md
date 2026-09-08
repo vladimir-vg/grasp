@@ -129,6 +129,13 @@ design comes from. What is missing is missing on purpose.
   machine-dependence of IEEE arithmetic, resolvable only through an explicit
   eval against a shared cache. Here `f64` arithmetic is just arithmetic.
 
+- **A computed dict lookup, and conversions.** grasp-dbsp has `get(d, k)` and
+  `cast(x, T)`; grasp has neither. A dict is read by the `{a: x} := d` pattern,
+  which names its key, and a document by a runtime filter — so a *computed* key
+  and an arbitrary change of type are the two things that have no spelling. Both
+  are wanted; neither has been designed on grasp's own terms, and taking
+  grasp-dbsp's because it has one is how `optional` division briefly got in.
+
 - **A wider standard library.** The builtins available are the ones grasp-dbsp
   provides, listed in [`semantics.md`](semantics.md#builtins). The namespaces for types that
   do not exist yet — temporal, bytes, bits, cryptographic hashing — arrive with

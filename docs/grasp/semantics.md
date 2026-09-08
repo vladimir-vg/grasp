@@ -25,8 +25,14 @@ order, and nothing observes one.
 A relation name with arguments and no body asserts one tuple.
 
 ```grasp
+edge :: relation(src: i64, dst: i64)
 edge(src: 1, dst: 2)
 ```
+
+The spec is not optional here. A fact's arguments are closed, so `1` has nothing
+beside it to take a type from and [`inference.md`](inference.md#phase-2-across-rules)
+reports it rather than defaulting — unless another rule for `edge` settles the
+column instead.
 
 The arguments are **closed expressions** — usually literals, but `1 + 1` and
 `length("abc")` are facts too. They cannot be anything else: a variable there
@@ -173,6 +179,28 @@ context, exactly as `NONE`'s does. See
 A dict literal's entries are **sorted by key and deduplicated**, so two literals
 naming the same entries in different orders build one value, and a key written
 twice keeps the last — whichever spelling wrote it.
+
+## A body must have an answer
+
+A rule derives a row only where **every step of its body has an answer**. Where
+an operation has none for the values it was given, the row is not derived, and
+nothing is reported: there is no error to raise, because a rule that holds for
+some rows and not others is what a rule is.
+
+Division is the only operation that currently has none — a zero divisor — so
+`q := a / b` derives rows for the divisors that are not zero and no others.
+
+This is not a new mechanism. It is what a filter does, what
+[`v :: T`](types.md#runtime-filters) does when the value is not a `T`, and what
+the size checks a [destructure](#desugaring) expands into do. Those are written
+down and this one is not, which is the only difference between them.
+
+grasp-dbsp does the opposite, deliberately: it gives division the type
+`optional(T)` so that what can be missing says so. It is a compilation target
+and being explicit costs it nothing, while grasp is written by people and a
+Datalog rule that quietly holds for fewer rows is the ordinary case rather than
+a surprise. [`mapping.md`](mapping.md#narrowing-and-dropping) is where the two
+are reconciled.
 
 ## Safety
 
@@ -349,13 +377,13 @@ like any other.
 | `[x, y] := arr` | `length(arr) = 2`, `x := arr[0]`, `y := arr[1]` |
 | `[x, y, *] := arr` | `length(arr) >= 2`, then the two bindings |
 | `[x, y, *r] := arr` | as above, and `r := arr[2:]` |
-| `{a: x} := d` | `length(d) = 1`, `x := get(d, "a")`, `x :: V` |
-| `{a: x, **} := d` | `x := get(d, "a")`, `x :: V` — no size check |
+| `{a: x} := d` | `length(d) = 1`, `x := dict:get(d, "a")`, `x :: V` |
+| `{a: x, **} := d` | `x := dict:get(d, "a")`, `x :: V` — no size check |
 | `{a: x, **e} := d` | as above, and `e := dict:without_keys(d, ["a"])` |
 | `record(a: x) := s` | `x := record:get(s, "a")`, `s`'s type must have exactly that field |
 | `record(a: x, **) := s` | `x := record:get(s, "a")` — extra fields allowed |
 
-`get` on a dict yields `optional(V)`, so the `x :: V` assertion is what makes a
+`dict:get` yields `optional(V)`, so the `x :: V` assertion is what makes a
 missing key drop the row rather than bind absence. That is the exactness the
 pattern promises.
 
@@ -378,8 +406,9 @@ array destructure, and `**e` with a binding — are rejected until then.
 
 ## Builtins
 
-The set is exactly what grasp-dbsp provides, since every one lowers to its
-counterpart there.
+Each of these is here because grasp wants it. That every one also lowers to a
+grasp-dbsp counterpart is a property worth keeping, not the reason for the
+contents — a library chosen by reading the target's is a library nobody chose.
 
 | builtin | signature |
 |---|---|
@@ -389,14 +418,22 @@ counterpart there.
 | `lower`, `upper`, `trim` | `string → string` |
 | `coalesce` | `optional(T) × T → T` |
 | `if` | `boolean × T × T → T` |
-| `get` | `json × (string \| i64) → optional(json)`, `dict(K,V) × K → optional(V)` |
 | `keys` | `json → optional(array(string))`, `dict(K,V) → array(K)` |
 | `entries` | `dict(K,V) → array(record(key: K, value: V))` |
-| `cast` | `x × T → T` — see [`types.md`](types.md) |
+
+Two things grasp-dbsp has are deliberately not here. **A computed dict lookup**
+— `get(d, k)` — and **an explicit conversion** — `cast(x, T)` — are its
+builtins, not grasp's. Reading a dict by a key written down is what the
+`{a: x} := d` pattern is for, and extracting from a `json` is what the
+[runtime filter](types.md#runtime-filters) `v :: T` is for. Neither has a grasp
+spelling for a *computed* key or an arbitrary conversion, and neither will
+until the case for one is made on grasp's own terms.
 
 The namespaced spellings (`string:length`, `agg:sum`) are reserved for when the
 library outgrows bare names, and for the type-specific namespaces that arrive
-with their types.
+with their types. Some are already in use for what desugaring writes and a
+program cannot: `record:get`, `dict:get` and `boolean:not` appear in the table
+below and nowhere a person types.
 
 ## Example
 

@@ -153,6 +153,8 @@
 
 - name: indentation elsewhere is not significant
   source: |
+    r :: relation(x: i64, y: i64)
+
     r(
         x: 1,
         y: 2,

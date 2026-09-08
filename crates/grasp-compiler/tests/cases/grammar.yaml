@@ -34,6 +34,8 @@
 # fact ::= relation_name "(" [kv_args] ")"
 - name: facts
   source: |
+    edge :: relation(src: i64, dst: i64)
+
     edge(src: 1, dst: 2)
     edge(src: 2, dst: 3)
   expected_ok: true
@@ -89,6 +91,8 @@
 
 - name: trailing commas are allowed
   source: |
+    fact :: relation(a: i64, b: i64)
+
     spec :: relation(a: i64, b: i64,)
     fact(a: 1, b: 2,)
   expected_ok: true

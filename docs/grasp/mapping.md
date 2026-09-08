@@ -165,9 +165,10 @@ which is the point of putting the sugar on the grasp side — grasp-dbsp keeps
 *exactly one way to write each thing*, and grasp is what people write.
 
 Builtins pass through under the same names — `abs`, `floor`, `ceil`, `round`,
-`length`, `concat`, `lower`, `upper`, `trim`, `coalesce`, `if`, `get`, `keys`,
-`entries` — which is why [`semantics.md`](semantics.md#builtins) offers exactly
-that set and no more.
+`length`, `concat`, `lower`, `upper`, `trim`, `coalesce`, `if`, `keys`,
+`entries`. grasp-dbsp has two more, `get` and `cast`, which
+[`semantics.md`](semantics.md#builtins) does not offer; `dict:get`, which a dict
+pattern desugars to, is the one place grasp emits the first of them.
 
 ## Computation DAG nodes
 
@@ -241,6 +242,41 @@ right is what this pass emits for it.
 
 Nothing in that table is a special case: each is the operator its DAG node named,
 which is why the node vocabulary was renamed to grasp-dbsp's in the first place.
+
+### Narrowing and dropping
+
+**A narrowing filter is three operators, not one.** grasp-dbsp's typing is not
+flow-sensitive and its `filter` cannot change a row type, so `v :: T` emits as:
+
+1. a `map` binding `v` at the `optional(T)` the check produces — the
+   expression's own type for an `optional(T) :: T`, `cast(v, optional(T))` for a
+   `json`, `array` or `dict` one;
+2. `filter(s, function((r) -> r.v != NONE))`, dropping the rows that failed;
+3. a `map` rebinding the column as `coalesce(r.v, d)` for any definite `d : T`.
+
+`coalesce` is grasp-dbsp's **only** narrowing from `optional(T)` to `T` — `cast`
+refuses an optional source and says so, and `if` widens its arms rather than
+narrowing them. The default `d` is unreachable: the filter has already dropped
+every row that could take it. It is written because grasp-dbsp's checker cannot
+see that, not because a value was chosen — so an emitter needs some definite
+value of every type, which is `0`, `0.0`, `""`, `false`, `cast([], array(T))`,
+`cast({}, dict(K,V))`, or a record built from those.
+
+**Division needs no rule of its own.** `/` and `%` are `optional(T)` in
+grasp-dbsp and `T` in grasp, so every `q := a / b` carries an implicit `q :: T`
+and emits by exactly the rule above.
+
+Testing the divisor instead — `filter(s, function((r) -> r.b != 0))` before the
+division — would be the wrong shape twice over. It does not avoid the
+`coalesce`, because the typing is not flow-sensitive and `/` is optional
+whatever guards it; and it tests a proxy for what grasp actually said, which is
+that the *division* has no answer. That proxy happens to be exact today, but it
+is a fact about grasp-dbsp's `/` that grasp's emitter would then depend on, and
+it does not generalise to the rest of the table — a `json :: T` has no divisor
+to test.
+
+When the narrowing is the last thing before the head, the third `map` folds into
+the head's projection, the same fusion the join and index calls get above.
 
 **A cross product is a join on the unit key.** When the optimizer has to combine
 two components that share no variable
