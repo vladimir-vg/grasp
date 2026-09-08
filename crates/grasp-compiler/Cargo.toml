@@ -3,4 +3,25 @@ name = "grasp-compiler"
 version = "0.1.0"
 edition = "2024"
 
+# Deliberately empty. grasp-compiler is text in, text out: it reads grasp and
+# writes grasp-dbsp, and nothing about that needs a dependency. Anything added
+# here should have to justify itself against that.
 [dependencies]
+
+# Every dependency is declared once at the workspace root, where the comments
+# explaining the awkward ones live.
+[dev-dependencies]
+# The YAML fixtures compile a grasp program and then *run* what it emits, which
+# is the only way to assert that the output computes the right answer. It is a
+# dev-dependency and must stay one: the two crates meet at grasp-dbsp text, and
+# a normal dependency would put `dbsp`, `rkyv` and `feldera-sqllib` into the
+# graph of a crate that only manipulates strings.
+grasp-dbsp-runner = { path = "../grasp-dbsp-runner" }
+libtest-mimic = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+
+[[test]]
+name = "yaml"
+harness = false

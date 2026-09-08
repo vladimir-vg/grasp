@@ -1,0 +1,79 @@
+# Tokens and literals — `docs/grasp/syntax.md`, "Lexical structure".
+
+- name: every literal form
+  source: |
+    lits(i: 42, z: 0, f: 3.14, g: 1.0, e: 2.5e-3, s: "hello", t: true, n: NONE)
+  expected_ok: true
+
+- name: string escapes
+  source: |
+    strs(a: "say \"hi\"", b: "back\\slash", c: "line\nbreak", d: "tab\there", e: "cr\r")
+  expected_ok: true
+
+# "a backslash before anything else is an error, so a typo is reported rather
+# than silently dropped."
+- name: an unknown escape is rejected
+  source: |
+    bad(s: "nope\q")
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "unknown escape"
+      line: 1
+
+- name: an unterminated string is rejected
+  source: |
+    bad(s: "no closing quote)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "string"
+
+# "Numbers are unsigned tokens: `-5` is unary minus applied to `5`."
+- name: a negative number is unary minus over a literal
+  source: |
+    neg(v: n) <-
+        r(x: x)
+        n := -5
+  expected_ok: true
+
+- name: unary minus over a variable
+  source: |
+    neg(v: n) <-
+        r(x: x)
+        n := -x
+  expected_ok: true
+
+- name: a float needs digits on both sides of the point
+  source: |
+    bad(v: 1.)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      line: 1
+
+- name: comments run to the end of the line
+  source: |
+    # a leading comment
+    r(x: 1)   # a trailing one
+    # a trailing comment
+  expected_ok: true
+
+- name: a comment marker inside a string is not a comment
+  source: |
+    r(s: "# not a comment")   # but this is
+  expected_ok: true
+
+# "Colon-separated segments qualify a name with a namespace: `string:length`."
+- name: a namespace-qualified callable
+  source: |
+    lens(v: n) <-
+        r(s: s)
+        n := string:length(s)
+  expected_ok: true
+
+- name: a leading underscore is an ordinary identifier character
+  source: |
+    r(x: _x) <-
+        s(x: _x)
+  expected_ok: true

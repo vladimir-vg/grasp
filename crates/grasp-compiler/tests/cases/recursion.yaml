@@ -1,0 +1,138 @@
+# Recursion, end to end — the worked example of
+# `docs/grasp/compilation.md`, "Worked example", whose emission is
+# `docs/grasp/mapping.md`, "Worked example".
+#
+# "A relation that mentions itself is recursive. The compiler finds the strongly
+#  connected components. Nothing in the surface language names a fixpoint."
+
+- name: transitive closure over a chain
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src:, dst:) <- input
+
+    path(src: x, dst: y) <- edge(src: x, dst: y)
+    path(src: x, dst: y) <-
+        path(src: x, dst: z)
+        edge(src: z, dst: y)
+
+  input:
+    - edge:
+        - [1, {src: 1, dst: 2}]
+        - [1, {src: 2, dst: 3}]
+        - [1, {src: 3, dst: 4}]
+
+  expected_exact_output:
+    - path:
+        - [1, {src: 1, dst: 2}]
+        - [1, {src: 2, dst: 3}]
+        - [1, {src: 3, dst: 4}]
+        - [1, {src: 1, dst: 3}]
+        - [1, {src: 2, dst: 4}]
+        - [1, {src: 1, dst: 4}]
+
+# A relation is a set: a tuple derived two ways appears once, weight 1. The
+# diamond derives 1->4 twice.
+- name: a tuple derived twice appears once
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src:, dst:) <- input
+
+    path(src: x, dst: y) <- edge(src: x, dst: y)
+    path(src: x, dst: y) <-
+        path(src: x, dst: z)
+        edge(src: z, dst: y)
+
+  input:
+    - edge:
+        - [1, {src: 1, dst: 2}]
+        - [1, {src: 1, dst: 3}]
+        - [1, {src: 2, dst: 4}]
+        - [1, {src: 3, dst: 4}]
+
+  expected_exact_output:
+    - path:
+        - [1, {src: 1, dst: 2}]
+        - [1, {src: 1, dst: 3}]
+        - [1, {src: 2, dst: 4}]
+        - [1, {src: 3, dst: 4}]
+        - [1, {src: 1, dst: 4}]
+
+- name: retracting an edge retracts the paths that needed it
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src:, dst:) <- input
+
+    path(src: x, dst: y) <- edge(src: x, dst: y)
+    path(src: x, dst: y) <-
+        path(src: x, dst: z)
+        edge(src: z, dst: y)
+
+  input:
+    - edge:
+        - [1, {src: 1, dst: 2}]
+        - [1, {src: 2, dst: 3}]
+    - edge:
+        - [-1, {src: 2, dst: 3}]
+
+  expected_exact_output:
+    - path:
+        - [1, {src: 1, dst: 2}]
+        - [1, {src: 2, dst: 3}]
+        - [1, {src: 1, dst: 3}]
+    - path:
+        - [-1, {src: 2, dst: 3}]
+        - [-1, {src: 1, dst: 3}]
+
+- name: a cycle terminates
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src:, dst:) <- input
+
+    path(src: x, dst: y) <- edge(src: x, dst: y)
+    path(src: x, dst: y) <-
+        path(src: x, dst: z)
+        edge(src: z, dst: y)
+
+  input:
+    - edge:
+        - [1, {src: 1, dst: 2}]
+        - [1, {src: 2, dst: 1}]
+
+  expected_exact_output:
+    - path:
+        - [1, {src: 1, dst: 2}]
+        - [1, {src: 2, dst: 1}]
+        - [1, {src: 1, dst: 1}]
+        - [1, {src: 2, dst: 2}]
+
+# "a set of relations that mention each other is mutually recursive."
+- name: mutual recursion is one component
+  source: |
+    step  :: relation(a: i64, b: i64)
+    start :: relation(n: i64)
+    step(a:, b:)  <- input
+    start(n:)     <- input
+
+    even(n: n) <- start(n: n)
+    even(n: n) <-
+        odd(n: m)
+        step(a: m, b: n)
+    odd(n: n) <-
+        even(n: m)
+        step(a: m, b: n)
+
+  input:
+    - start:
+        - [1, {n: 0}]
+      step:
+        - [1, {a: 0, b: 1}]
+        - [1, {a: 1, b: 2}]
+        - [1, {a: 2, b: 3}]
+
+  expected_output:
+    - even:
+        - [1, {n: 0}]
+        - [1, {n: 2}]
+      odd:
+        - [1, {n: 1}]
+        - [1, {n: 3}]

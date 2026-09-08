@@ -1734,6 +1734,13 @@ dependencies = [
 [[package]]
 name = "grasp-compiler"
 version = "0.1.0"
+dependencies = [
+ "grasp-dbsp-runner",
+ "libtest-mimic",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+]
 
 [[package]]
 name = "grasp-dbsp-runner"

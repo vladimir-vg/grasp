@@ -1,0 +1,203 @@
+# The worked programs from the specification, end to end.
+#
+# These are copied from the documents rather than invented, so what they assert
+# is what the spec claims — a case here failing means the compiler and the
+# specification disagree, and one of them has to move.
+
+# `docs/grasp/semantics.md`, "Rules": a join, a filter and a negated atom.
+- name: join, filter and negation
+  source: |
+    student  :: relation(id: i64, name: string, age: i64)
+    course   :: relation(id: i64, title: string)
+    enrolled :: relation(student: i64, course: i64)
+    student(id:, name:, age:)   <- input
+    course(id:, title:)         <- input
+    enrolled(student:, course:) <- input
+
+    result(name: n, title: t) <-
+        student(id: s, name: n, age: a)
+        a > 20
+        course(id: c, title: t)
+        not enrolled(student: s, course: c)
+
+  input:
+    - student:
+        - [1, {id: 1, name: "ann", age: 25}]
+        - [1, {id: 2, name: "bob", age: 19}]
+      course:
+        - [1, {id: 10, title: "algebra"}]
+        - [1, {id: 11, title: "botany"}]
+      enrolled:
+        - [1, {student: 1, course: 10}]
+
+  expected_exact_output:
+    - result:
+        - [1, {name: "ann", title: "botany"}]
+
+# `docs/grasp/semantics.md`, "Aggregation": grouping is the head's
+# non-aggregate columns, so this is one row per department.
+- name: implicit grouping by the head's other columns
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    payroll(dept: d, total: s) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+
+  input:
+    - emp:
+        - [1, {dept: "eng", sal: 100}]
+        - [1, {dept: "eng", sal: 200}]
+        - [1, {dept: "ops", sal: 50}]
+
+  expected_exact_output:
+    - payroll:
+        - [1, {dept: "eng", total: 300}]
+        - [1, {dept: "ops", total: 50}]
+
+# "Several aggregates in one rule share the group."
+- name: several aggregates share one group
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    span(dept: d, lo: a, hi: b, n: c) <-
+        emp(dept: d, sal: r)
+        a := min<r>
+        b := max<r>
+        c := count<>
+
+  input:
+    - emp:
+        - [1, {dept: "eng", sal: 100}]
+        - [1, {dept: "eng", sal: 200}]
+
+  expected_exact_output:
+    - span:
+        - [1, {dept: "eng", lo: 100, hi: 200, n: 2}]
+
+# `docs/grasp/compilation.md`, "Atoms are nodes, not relations": a self-join
+# needs no special case.
+- name: a self-join is two occurrences of one relation
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src:, dst:) <- input
+
+    two_hop(src: x, dst: z) <-
+        edge(src: x, dst: y)
+        edge(src: y, dst: z)
+
+  input:
+    - edge:
+        - [1, {src: 1, dst: 2}]
+        - [1, {src: 2, dst: 3}]
+
+  expected_exact_output:
+    - two_hop:
+        - [1, {src: 1, dst: 3}]
+
+# `docs/grasp/compilation.md`, "Competing producers": one producer is primary
+# and the rest become equality filters, so this keeps only the rows where both
+# computations agree.
+- name: competing producers become an equality filter
+  source: |
+    r1 :: relation(a: i64, b: i64)
+    r1(a:, b:) <- input
+
+    head(val: x) <-
+        r1(a: a, b: b)
+        x := a * 2
+        x := b + 1
+
+  input:
+    - r1:
+        - [1, {a: 3, b: 5}]
+        - [1, {a: 3, b: 4}]
+
+  expected_exact_output:
+    - head:
+        - [1, {val: 6}]
+
+# `docs/grasp/compilation.md`, "A dict unnest is a flat_map over its entries".
+- name: a dict unnest produces one row per entry
+  source: |
+    person :: relation(name: string, tags: dict(string, i64))
+    person(name:, tags:) <- input
+
+    tagged(name: n, tag: k) <-
+        person(name: n, tags: d)
+        (k, _v) := **d
+
+  input:
+    - person:
+        - [1, {name: "ann", tags: {"x": 1, "y": 2}}]
+
+  expected_exact_output:
+    - tagged:
+        - [1, {name: "ann", tag: "x"}]
+        - [1, {name: "ann", tag: "y"}]
+
+# `docs/grasp/types.md`, "Runtime filters": `n :: string` drops the rows with no
+# name, and narrows `n` for everything downstream.
+- name: a runtime filter drops the rows it cannot narrow
+  source: |
+    person :: relation(name: optional(string))
+    person(name:) <- input
+
+    named(name: n) <-
+        person(name: n)
+        n :: string
+
+  input:
+    - person:
+        - [1, {name: "ann"}]
+        - [1, {name: null}]
+
+  expected_exact_output:
+    - named:
+        - [1, {name: "ann"}]
+
+# "multiple rules for one relation are a union"
+- name: two rules for one head are a union
+  source: |
+    a :: relation(v: i64)
+    b :: relation(v: i64)
+    a(v:) <- input
+    b(v:) <- input
+
+    both(v: x) <- a(v: x)
+    both(v: x) <- b(v: x)
+
+  input:
+    - a:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+      b:
+        - [1, {v: 2}]
+        - [1, {v: 3}]
+
+  expected_exact_output:
+    - both:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+        - [1, {v: 3}]
+
+# An array unnest is generative, one row per element.
+- name: an array unnest produces one row per element
+  source: |
+    person :: relation(name: string, tags: array(string))
+    person(name:, tags:) <- input
+
+    item(name: n, tag: v) <-
+        person(name: n, tags: arr)
+        (v) := *arr
+
+  input:
+    - person:
+        - [1, {name: "ann", tags: ["x", "y"]}]
+
+  expected_exact_output:
+    - item:
+        - [1, {name: "ann", tag: "x"}]
+        - [1, {name: "ann", tag: "y"}]

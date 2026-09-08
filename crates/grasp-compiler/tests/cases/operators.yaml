@@ -1,0 +1,260 @@
+# Operator groups — `docs/grasp/syntax.md`, "Operator groups".
+#
+# Precedence is defined *within* a group. Between groups only three relations
+# hold; every other combination is a parse error and must be parenthesised.
+# This is deliberately stricter than most languages, so most of this file is
+# rejections.
+
+# ---------------------------------------------------------------------------
+# Within a group
+# ---------------------------------------------------------------------------
+
+- name: multiplication binds tighter than addition
+  source: |
+    r(v: n) <-
+        s(a: a, b: b, c: c)
+        n := a + b * c
+  expected_ok: true
+
+- name: arithmetic is left-associative
+  source: |
+    r(v: n) <-
+        s(a: a, b: b, c: c)
+        n := a - b - c
+  expected_ok: true
+
+- name: every arithmetic operator
+  source: |
+    r(v: n, w: m) <-
+        s(a: a, b: b)
+        n := a + b - a * b
+        m := a / b + a % b
+  expected_ok: true
+
+# "A unary operator adjacent to a binary one from another group is likewise an
+#  error: write `(not a) and b` and `(-a) * b`." Both of the spec's examples are
+#  same-group pairs, so what it asks for is parentheses around *any* unary that
+#  neighbours a binary operator — grasp declines to have an opinion there too.
+- name: unary minus beside a binary operator needs parentheses
+  source: |
+    r(v: n) <-
+        s(a: a, b: b)
+        n := -a * b
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "cannot be mixed without parentheses"
+      line: 3
+
+- name: parenthesised, unary minus may meet multiplication
+  source: |
+    r(v: n) <-
+        s(a: a, b: b)
+        n := (-a) * b
+  expected_ok: true
+
+- name: a unary operator alone needs no parentheses
+  source: |
+    r(v: n, w: m) <-
+        s(a: a, b: b)
+        n := -a
+        m := not b
+  expected_ok: true
+
+- name: concatenation chains
+  source: |
+    r(v: n) <-
+        s(a: a, b: b, c: c)
+        n := a ++ b ++ c
+  expected_ok: true
+
+- name: and binds tighter than or
+  source: |
+    r(v: n) <-
+        s(a: a, b: b, c: c)
+        n := a or b and c
+  expected_ok: true
+
+- name: not beside a boolean operator needs parentheses
+  source: |
+    r(v: n) <-
+        s(a: a, b: b)
+        n := not a or b
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "cannot be mixed without parentheses"
+      line: 3
+
+- name: parenthesised, not may meet a boolean operator
+  source: |
+    r(v: n) <-
+        s(a: a, b: b)
+        n := (not a) or b
+  expected_ok: true
+
+- name: not applies to a parenthesised expression
+  source: |
+    r(v: n) <-
+        s(a: a, b: b)
+        n := not (a or b)
+  expected_ok: true
+
+- name: every comparison operator
+  source: |
+    r(v: n) <-
+        s(a: a, b: b)
+        n := a = b or a != b or a < b or a <= b or a > b or a >= b
+  expected_ok: true
+
+# ---------------------------------------------------------------------------
+# The three permitted cross-group relations
+# ---------------------------------------------------------------------------
+
+# arithmetic < comparison:  a + b < c  ->  (a + b) < c
+- name: arithmetic below comparison
+  source: |
+    r(v: n) <-
+        s(a: a, b: b, c: c)
+        n := a + b < c
+  expected_ok: true
+
+# concatenation < comparison:  x ++ y = z  ->  (x ++ y) = z
+- name: concatenation below comparison
+  source: |
+    r(v: n) <-
+        s(x: x, y: y, z: z)
+        n := x ++ y = z
+  expected_ok: true
+
+# comparison < boolean:  x < 3 and y  ->  (x < 3) and y
+- name: comparison below boolean
+  source: |
+    r(v: n) <-
+        s(x: x, y: y)
+        n := x < 3 and y
+  expected_ok: true
+
+- name: all three relations at once
+  source: |
+    r(v: n) <-
+        s(a: a, b: b, c: c, d: d)
+        n := a + b < c and d
+  expected_ok: true
+
+# ---------------------------------------------------------------------------
+# Every other combination
+# ---------------------------------------------------------------------------
+
+# "`a ++ b + c` and `a + b and c` do not parse."
+- name: concatenation and arithmetic cannot be mixed
+  source: |
+    r(v: n) <-
+        s(a: a, b: b, c: c)
+        n := a ++ b + c
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "cannot be mixed without parentheses"
+      line: 3
+
+- name: parenthesised, concatenation and arithmetic are fine
+  source: |
+    r(v: n) <-
+        s(a: a, b: b, c: c)
+        n := a ++ (b + c)
+  expected_ok: true
+
+- name: arithmetic and boolean cannot be mixed
+  source: |
+    r(v: n) <-
+        s(a: a, b: b, c: c)
+        n := a + b and c
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "cannot be mixed without parentheses"
+      line: 3
+
+- name: concatenation and boolean cannot be mixed
+  source: |
+    r(v: n) <-
+        s(a: a, b: b, c: c)
+        n := a ++ b or c
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "cannot be mixed without parentheses"
+      line: 3
+
+# "Comparison does not chain: `a < b < c` is an error, not `(a < b) < c`."
+- name: comparison cannot be chained
+  source: |
+    r(v: n) <-
+        s(a: a, b: b, c: c)
+        n := a < b < c
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "comparison cannot be chained"
+      line: 3
+
+- name: equality does not chain either
+  source: |
+    r(v: n) <-
+        s(a: a, b: b, c: c)
+        n := a = b = c
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "comparison cannot be chained"
+      line: 3
+
+- name: parenthesised, comparisons may nest
+  source: |
+    r(v: n) <-
+        s(a: a, b: b, c: c)
+        n := (a < b) = c
+  expected_ok: true
+
+# "A unary operator adjacent to a binary one from another group is likewise an
+#  error: write `(not a) and b` and `(-a) * b`."
+- name: not adjacent to an arithmetic operator is an error
+  source: |
+    r(v: n) <-
+        s(a: a, b: b)
+        n := not a + b
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "cannot be mixed without parentheses"
+      line: 3
+
+- name: parenthesised, not may meet arithmetic
+  source: |
+    r(v: n) <-
+        s(a: a, b: b)
+        n := (not a) = b
+  expected_ok: true
+
+- name: unary minus adjacent to a boolean operator is an error
+  source: |
+    r(v: n) <-
+        s(a: a, b: b)
+        n := -a and b
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "cannot be mixed without parentheses"
+      line: 3
+
+- name: a comparison may not be an operand of arithmetic
+  source: |
+    r(v: n) <-
+        s(a: a, b: b, c: c)
+        n := a < b + c > c
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "comparison cannot be chained"
+      line: 3

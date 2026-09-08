@@ -1,0 +1,103 @@
+# The two dict spellings — `docs/grasp/syntax.md`, "The two dict forms".
+#
+# `{a: v}` *is* `{"a" => v}`; the `:` form is sugar. That equivalence is the
+# desugarer's job and lives in `desugar.yaml`. Here: that both spellings parse,
+# and what may appear in each.
+
+- name: the arrow form takes expression keys
+  source: |
+    r(v: d) <-
+        s(n: n, x: x)
+        d := {"name" => n, 1 => x}
+  expected_ok: true
+
+- name: the colon form writes a string key bare
+  source: |
+    r(v: d) <-
+        s(n: n)
+        d := {name: n, age: 30}
+  expected_ok: true
+
+- name: a key that is not an identifier is quoted
+  source: |
+    r(v: d) <-
+        s(x: x)
+        d := {"key with spaces": x}
+  expected_ok: true
+
+# "The two may be mixed in one literal."
+- name: the two forms mixed in one literal
+  source: |
+    r(v: d) <-
+        s(n: n, x: x)
+        d := {name: n, "computed" => x}
+  expected_ok: true
+
+- name: an empty dict literal
+  source: |
+    r(v: d) <-
+        s(x: x)
+        d := {}
+  expected_ok: true
+
+- name: a trailing comma
+  source: |
+    r(v: d) <-
+        s(x: x)
+        d := {a: 1, b: 2,}
+  expected_ok: true
+
+- name: an arrow key may be an arbitrary expression
+  source: |
+    r(v: d) <-
+        s(a: a, b: b)
+        d := {a + b => 1}
+  expected_ok: true
+
+- name: a dict value may be an arbitrary expression
+  source: |
+    r(v: d) <-
+        s(a: a, b: b)
+        d := {k: a + b}
+  expected_ok: true
+
+- name: nested dict literals
+  source: |
+    r(v: d) <-
+        s(x: x)
+        d := {outer: {inner: x}}
+  expected_ok: true
+
+- name: a dict literal in an atom argument
+  source: |
+    r(v: {a: 1, b: 2})
+  expected_ok: true
+
+- name: a colon entry needs a name or a string, not an expression
+  source: |
+    r(v: d) <-
+        s(a: a, x: x)
+        d := {a + 1: x}
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      line: 3
+
+- name: a missing value is an error
+  source: |
+    r(v: d) <-
+        s(x: x)
+        d := {a: }
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      line: 3
+
+- name: an unclosed brace is an error
+  source: |
+    r(v: d) <-
+        s(x: x)
+        d := {a: 1
+  expected_diagnostics:
+    - severity: error
+      pass: parse

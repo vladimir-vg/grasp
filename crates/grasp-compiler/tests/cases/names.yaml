@@ -1,0 +1,217 @@
+# Name resolution — `docs/grasp/syntax.md`, "Name resolution".
+
+# "keywords — not, and, or, input, true, false, NONE"
+- name: a keyword cannot name a relation
+  source: |
+    not(x: 1)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      line: 1
+
+- name: a keyword cannot name a column
+  source: |
+    r(input: 1)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      line: 1
+
+- name: a keyword cannot name a variable
+  source: |
+    r(x: x) <-
+        s(x: x)
+        true := x
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      line: 3
+
+# "type names — boolean, i64, f64, string, json, optional, record, array, dict,
+#  relation"
+- name: a type name cannot name a relation
+  source: |
+    string(x: 1)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      line: 1
+
+- name: a type name cannot name a variable
+  source: |
+    r(x: i64) <-
+        s(x: i64)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      line: 1
+
+# "aggregators — sum, count, min, max, avg"
+- name: an aggregator cannot name a relation
+  source: |
+    count(x: 1)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      line: 1
+
+# "Builtin names are not reserved as such; a column may be called `length`."
+- name: a column may be called length
+  source: |
+    r(length: 3)
+  expected_ok: true
+
+- name: a variable may be called length
+  source: |
+    r(v: length) <-
+        s(x: length)
+  expected_ok: true
+
+# "A name is either a relation or a callable, never both."
+- name: a relation may not share a builtin's name
+  source: |
+    length(x: 1)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "cannot be both a relation and a callable"
+      line: 1
+
+# "User code may not define names under the reserved namespace prefixes."
+- name: a relation may not be defined under a reserved namespace
+  source: |
+    string:mine(x: 1)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "reserved"
+      line: 1
+
+- name: a namespace-qualified relation outside the reserved prefixes
+  source: |
+    mine:edges(src: 1, dst: 2)
+  expected_ok: true
+
+# "Variables are always single-segment: no namespace."
+- name: a variable may not be namespace-qualified
+  source: |
+    r(x: a:b) <-
+        s(x: a:b)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      line: 1
+
+# "The wildcard is legal only in an atom's argument position."
+- name: the wildcard in an atom argument
+  source: |
+    r(x: x) <-
+        s(x: x, y: _)
+  expected_ok: true
+
+- name: two wildcards in one atom are unrelated
+  source: |
+    r(x: x) <-
+        s(x: x, y: _, z: _)
+  expected_ok: true
+
+- name: the wildcard in a head argument
+  source: |
+    r(x: _) <-
+        s(x: x)
+  expected_ok: true
+
+- name: the wildcard is not an expression
+  source: |
+    r(x: v) <-
+        s(x: x)
+        v := _ + 1
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "wildcard"
+      line: 3
+
+- name: the wildcard is not a filter
+  source: |
+    r(x: x) <-
+        s(x: x)
+        _ > 1
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "wildcard"
+      line: 3
+
+- name: the wildcard cannot be bound
+  source: |
+    r(x: x) <-
+        s(x: x)
+        _ := x
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "wildcard"
+      line: 3
+
+# "duplicate column `c` — one atom or head names a column twice"
+- name: a duplicate column in an atom
+  source: |
+    r(x: x) <-
+        s(a: x, a: x)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "duplicate column"
+      line: 2
+
+- name: a duplicate column in a head
+  source: |
+    r(x: 1, x: 2) <-
+        s(y: y)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "duplicate column"
+      line: 1
+
+- name: a duplicate column in a spec
+  source: |
+    r :: relation(a: i64, a: string)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "duplicate column"
+      line: 1
+
+# "duplicate field `f` — one record or dict literal names a field twice"
+- name: a duplicate field in a record literal
+  source: |
+    r(v: w) <-
+        s(x: x)
+        w := record(a: 1, a: 2)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "duplicate field"
+      line: 3
+
+- name: a duplicate field in a dict literal
+  source: |
+    r(v: w) <-
+        s(x: x)
+        w := {a: 1, a: 2}
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "duplicate field"
+      line: 3
+
+- name: a duplicate field in a record type
+  source: |
+    r :: relation(v: record(a: i64, a: string))
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "duplicate field"
+      line: 1

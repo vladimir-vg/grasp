@@ -1,0 +1,133 @@
+# Indentation — `docs/grasp/syntax.md`, "Comments and whitespace".
+#
+# "Indentation delimits a multiline rule body, and nothing else."
+
+- name: the first body statement sets the width
+  source: |
+    r(x: x, y: y) <-
+      s(x: x)
+      t(y: y)
+  expected_ok: true
+
+- name: any width will do, as long as it is consistent
+  source: |
+    r(x: x, y: y) <-
+            s(x: x)
+            t(y: y)
+  expected_ok: true
+
+# "every later statement in that body must be indented at least as far."
+- name: a later statement may be indented further
+  source: |
+    r(x: x, y: y) <-
+        s(x: x)
+            t(y: y)
+  expected_ok: true
+
+# "A line indented less than the first statement ends the rule."
+- name: a dedent ends the rule
+  source: |
+    r(x: x) <-
+        s(x: x)
+    t(y: 1)
+  expected_ok: true
+
+- name: a rule at the same indentation as the previous head ends it
+  source: |
+    first(x: x) <-
+        s(x: x)
+    second(y: y) <-
+        t(y: y)
+  expected_ok: true
+
+# "Blank lines and comment-only lines may appear between statements and do not
+#  end the body."
+- name: a blank line inside a body does not end it
+  source: |
+    r(x: x, y: y) <-
+        s(x: x)
+
+        t(y: y)
+  expected_ok: true
+
+- name: a comment-only line inside a body does not end it
+  source: |
+    r(x: x, y: y) <-
+        s(x: x)
+    # this comment is at column 1 and still does not end the body
+        t(y: y)
+  expected_ok: true
+
+- name: a comment-only line between rules
+  source: |
+    r(x: x) <-
+        s(x: x)
+
+    # a note about the next rule
+    t(y: y) <-
+        u(y: y)
+  expected_ok: true
+
+- name: trailing blank lines after a body
+  source: |
+    r(x: x) <-
+        s(x: x)
+
+
+  expected_ok: true
+
+- name: a body statement indented less than the first is an error
+  source: |
+    r(x: x, y: y) <-
+        s(x: x)
+      t(y: y)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "inconsistent indentation"
+      line: 3
+
+- name: a multiline rule with no indented statement is an error
+  source: |
+    r(x: x) <-
+    s(x: x)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      line: 1
+
+# "single_line_rule ::= head '<-' body_stmt" — exactly one statement.
+- name: a single-line rule may be followed by an ordinary rule
+  source: |
+    a(x: x) <- s(x: x)
+    b(y: y) <- t(y: y)
+  expected_ok: true
+
+- name: a single-line rule may be followed by a multiline one
+  source: |
+    a(x: x) <- s(x: x)
+    b(x: x, y: y) <-
+        s(x: x)
+        t(y: y)
+  expected_ok: true
+
+- name: a second statement on the arrow line is an error
+  source: |
+    r(x: x, y: y) <- s(x: x) t(y: y)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      line: 1
+
+- name: indentation elsewhere is not significant
+  source: |
+    r(
+        x: 1,
+        y: 2,
+    )
+  expected_ok: true
+
+- name: a spec may be indented
+  source: |
+        edge :: relation(src: i64, dst: i64)
+  expected_ok: true

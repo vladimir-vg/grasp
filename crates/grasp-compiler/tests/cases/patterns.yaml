@@ -1,0 +1,140 @@
+# Patterns — `docs/grasp/syntax.md`, "Patterns and literals share the `:`
+# spelling", and the `match` production.
+
+# unnest_pattern ":=" ("*" | "**") expr
+- name: an array unnest
+  source: |
+    item(name: n, tag: v) <-
+        person(name: n, tags: arr)
+        (v) := *arr
+  expected_ok: true
+
+- name: a dict unnest binds a key and a value
+  source: |
+    tagged(name: n, tag: k) <-
+        person(name: n, tags: d)
+        (k, _v) := **d
+  expected_ok: true
+
+# dict_pattern
+- name: an exact dict destructure
+  source: |
+    r(v: x) <-
+        s(d: d)
+        {a: x} := d
+  expected_ok: true
+
+- name: a dict destructure ignoring the rest
+  source: |
+    r(v: x) <-
+        s(d: d)
+        {a: x, **} := d
+  expected_ok: true
+
+- name: a dict destructure with several fields
+  source: |
+    r(v: x, w: y) <-
+        s(d: d)
+        {a: x, b: y} := d
+  expected_ok: true
+
+- name: a quoted key in a dict pattern
+  source: |
+    r(v: x) <-
+        s(d: d)
+        {"key with spaces": x} := d
+  expected_ok: true
+
+# record_pattern
+- name: a record destructure
+  source: |
+    r(v: x) <-
+        s(rec: rec)
+        record(a: x) := rec
+  expected_ok: true
+
+- name: a record destructure allowing extra fields
+  source: |
+    r(v: x) <-
+        s(rec: rec)
+        record(a: x, **) := rec
+  expected_ok: true
+
+# "`=>` is not allowed in a pattern."
+- name: the arrow form is rejected in a pattern
+  source: |
+    r(v: x) <-
+        s(d: d)
+        {"a" => x} := d
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      line: 3
+
+# "its values must be variables, so `{a: f(1)} := d` is rejected there rather
+#  than by the grammar."
+- name: a pattern value must be a variable
+  source: |
+    r(v: x) <-
+        s(d: d)
+        {a: f(1)} := d
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "not one"
+      line: 3
+
+- name: a pattern value may not be a literal
+  source: |
+    r(v: x) <-
+        s(d: d)
+        {a: 1} := d
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      line: 3
+
+- name: an unnest pattern needs at least one variable
+  source: |
+    r(v: x) <-
+        s(arr: arr)
+        () := *arr
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      line: 3
+
+# A brace form is parsed once and read as a pattern only if `:=` follows, so
+# the same text is a literal on the right of one.
+- name: a brace on the right of the arrow is a literal, not a pattern
+  source: |
+    r(v: d) <-
+        s(x: x)
+        d := {a: x}
+  expected_ok: true
+
+# "Both it and `**e` with a binding are rejected until then." —
+# `docs/grasp/semantics.md`, "Desugaring".
+- name: array destructure
+  skip: "array destructure needs array element access — overview.md#future-work"
+  source: |
+    r(a: x, b: y) <-
+        s(arr: arr)
+        [x, y] := arr
+  expected_ok: true
+
+- name: a dict destructure binding the rest
+  skip: "`**e` needs dict:without_keys — overview.md#future-work"
+  source: |
+    r(v: x, rest: e) <-
+        s(d: d)
+        {a: x, **e} := d
+  expected_ok: true
+
+- name: an indexed array unnest
+  skip: "indexed unnest follows array element access — overview.md#future-work"
+  source: |
+    r(i: i, v: v) <-
+        s(arr: arr)
+        (i, v) := *arr
+  expected_ok: true
