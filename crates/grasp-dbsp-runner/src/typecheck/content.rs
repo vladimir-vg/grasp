@@ -105,6 +105,13 @@ fn hash_op(h: &mut Xxh3Default, op: &PlanOp, ids: &[String]) {
         PlanOp::Differentiate { input } => (18, std::slice::from_ref(input)),
         PlanOp::Delay { input } => (19, std::slice::from_ref(input)),
         PlanOp::Empty => (20, &[]),
+        // The rows are the identity: two constants holding the same values are
+        // one node however they were spelled, since they were folded to values
+        // before reaching here.
+        PlanOp::Constant { rows } => {
+            rows.hash(h);
+            (27, &[])
+        }
 
         // A fixpoint's identity is its body's. The body is hashed with its own
         // ids, which is what lets `Import` contribute the *parent* node's id

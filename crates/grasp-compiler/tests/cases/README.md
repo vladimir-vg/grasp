@@ -211,10 +211,15 @@ emits rows nobody expected, which is the bug class these tests exist to catch.
 Retractions and incrementality need no special support: they are a negative
 weight and a second epoch.
 
-**Facts are not usable here yet.** grasp has facts, but grasp-dbsp's only sources
-are `input` and `empty`, so there is no emission for one — declare the data with
-`:: relation(...)` and `<- input` instead. Parsing facts is well defined and
-covered in `grammar.yaml`.
+**Facts have somewhere to go now, but no output case can use one yet.**
+grasp-dbsp gained `constant` for exactly this, and
+[`docs/grasp/mapping.md`](../../../../docs/grasp/mapping.md#facts) says what a
+fact emits — but the pipeline stops well short of emission, so such a case would
+be pending like any other. Until then, declare data with `:: relation(...)` and
+`<- input`. Parsing facts is well defined and covered in `grammar.yaml`.
+
+When emission does land: a fact-only program feeds nothing, so its `input` is
+`[{}]` — one transaction, no rows — and the facts arrive in it.
 
 ## Always on
 

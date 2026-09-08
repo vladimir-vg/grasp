@@ -20,6 +20,9 @@ pub(super) enum RArg<'a> {
     /// Only the shape matters: the `input` arm reads the table name from the
     /// unresolved argument.
     Str,
+    /// Likewise: the `constant` arm reads the rows from the unresolved
+    /// argument. There is nothing to resolve — it is a value, not a stream.
+    Expr,
     Fun(&'a FunLit),
 }
 
@@ -31,6 +34,7 @@ pub(super) enum RArg<'a> {
 pub(super) fn resolve_arg<'a>(arg: &'a Arg, plan: &mut Plan, env: Env<'_>) -> TResult<RArg<'a>> {
     Ok(match arg {
         Arg::Str(_) => RArg::Str,
+        Arg::Expr(_) => RArg::Expr,
         Arg::Fun(f) => RArg::Fun(f),
         Arg::Field(r) => RArg::Stream(lookup(r, plan, env.scope, env.prefix)?),
         Arg::Name(n) => match env
@@ -53,11 +57,14 @@ pub(super) fn resolve_arg<'a>(arg: &'a Arg, plan: &mut Plan, env: Env<'_>) -> TR
             RArg::Empty(call.span)
         }
         Arg::Op(call) => {
-            if call.op == "input" {
+            if call.op == "input" || call.op == "constant" {
                 return err(
                     call.span,
-                    "`input` cannot be nested: its schema comes from a `::` typespec, \
-                     which needs a name to attach to. Bind it to one first.",
+                    format!(
+                        "`{}` cannot be nested: its type comes from a `::` typespec, \
+                         which needs a name to attach to. Bind it to one first.",
+                        call.op
+                    ),
                 );
             }
             // Anonymous, so it is named for diagnostics only and deliberately
@@ -356,6 +363,93 @@ fn check_source(name: &str, cx: &Ctx<'_>, env: Env<'_>) -> TResult<Option<(Batch
                 );
             };
             Ok(((*ty).clone(), PlanOp::Empty))
+        }
+
+        // Like `input`, and for the same reason: the rows are literals, and a
+        // bare numeric literal has no operand beside it to take a type from, so
+        // the typespec is the only thing that can supply one — which needs a
+        // name to attach to. That is also why it does not nest.
+        "constant" => {
+            cx.want(1)?;
+            let Arg::Expr(rows) = &cx.args[0] else {
+                return err(
+                    span,
+                    "`constant` takes its rows as an array literal, `[record(...), ...]`",
+                );
+            };
+            let Some((spec, _)) = env.specs.get(name) else {
+                return err(
+                    span,
+                    format!("`{name}` is a constant and needs a `::` typespec"),
+                );
+            };
+            let BatchType::ZSet(row) = spec else {
+                return err(
+                    span,
+                    format!("a constant must be a `zset(...)`, found `{spec}`"),
+                );
+            };
+            // Checked as a function of no parameters, which is exactly what
+            // makes it *closed*: with an empty environment a variable fails to
+            // resolve here rather than reaching the evaluator, which would
+            // index into a row that does not exist.
+            // A source inside a fixpoint body would fire once per *iteration*
+            // rather than once per transaction, which is not a thing anyone
+            // wants. Rejected here rather than at lowering, where the message
+            // would be the internal "cannot be built here".
+            if env.in_fixpoint {
+                return err(
+                    span,
+                    format!(
+                        "`{name}` is inside a `fixpoint` body, where a source fires once                          per iteration rather than once per transaction. Declare it                          outside and pass it in as a circuit parameter, the way an input                          is passed in."
+                    ),
+                );
+            }
+            let want = TypeDesc::Array(Box::new(row.clone()));
+            let (e, got) = check_fun(
+                &[],
+                rows,
+                &[],
+                span,
+                format_args!("the rows of `{name}`"),
+                cx.funcs,
+                Some(&want),
+            )?;
+            // The typespec is checked against, never used to drive inference —
+            // so a bare numeric literal has still settled to its own default,
+            // and `zset(record(v: f64))` with a row of `1` is a mismatch rather
+            // than a coercion. Say so, because this is where people meet that
+            // rule first: there is no operand beside the literal at all.
+            if got != want {
+                return err(
+                    span,
+                    format!(
+                        "the rows of `{name}` are `{got}`, but it is declared `{spec}`.                          A bare numeric literal takes its own type — write `1.0` or                          `cast(1, f64)` for an `f64`."
+                    ),
+                );
+            }
+            let crate::value::DynValue::Array(mut values) = crate::expr::eval(&e, &[]) else {
+                // `check_fun` committed the expression to `array(row)`, so this
+                // cannot be anything else.
+                return err(span, "`constant` takes an array of rows");
+            };
+            if values.is_empty() {
+                return err(
+                    span,
+                    "an empty constant is `empty()`; there is one way to write each thing",
+                );
+            }
+            // Row order is not part of a relation, so it must not be part of
+            // the node's identity either: `constant([a, b])` and
+            // `constant([b, a])` are one node. The same move `infer` makes for
+            // a record literal's fields.
+            values.sort();
+            Ok((
+                (*spec).clone(),
+                PlanOp::Constant {
+                    rows: Arc::new(values),
+                },
+            ))
         }
 
         _ => return Ok(None),

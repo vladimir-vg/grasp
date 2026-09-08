@@ -374,6 +374,7 @@ indexed shape that is not a join.
 | `differentiate(s)` | `differentiate` | |
 | `delay(s)` | `delay` | `z⁻¹` |
 | `empty()` | `add_source(Generator::new(HasZero::zero))` | a source yielding the zero batch every cycle |
+| `constant([…])` | `add_source(ConstantGenerator::new(batch)).differentiate()` | the rows in the first transaction, the zero batch after |
 
 These are the methods `dbsp` exposes under its default `backend-mode` feature,
 where they come from `dbsp/src/mono.rs`; with that feature off, the equivalent
@@ -534,6 +535,48 @@ remain available as explicit primitives for two uses only:
 This is the key difference from the Erlang grasp-dbsp, which inserts I/D pairs
 as a compilation step. Here that step does not exist because it is unnecessary.
 
+`constant` is the one place the lowering inserts a `differentiate` of its own,
+and it is not an exception to the rule above. That rule is about not wrapping
+non-linear operators in I/D pairs. This is a *coercion*: the operator names a
+relation, every stream carries a change, and `differentiate` is the map from one
+to the other.
+
+### Why `constant` is not just a generator
+
+`Generator` and `ConstantGenerator` fire once per **step**, and a transaction may
+span many (see [Execution model](#execution-model)). So `ConstantGenerator` alone
+is a relation *held constant*, not the change stream that represents one.
+
+`differentiate` is that conversion. It expands to `x − z⁻¹(x)` over a
+step-aligned `Z1` (`dbsp/src/operator/differentiate.rs`, `z1.rs`), so the steps
+of a transaction telescope:
+
+| | `ConstantGenerator` | `z⁻¹` | `differentiate` |
+|---|---|---|---|
+| transaction 1, step 1 | `X` | `0` | `X` |
+| transaction 1, later steps | `X` | `X` | `0` |
+| transaction 2+, any step | `X` | `X` | `0` |
+
+The steps of a transaction sum to `X` in the first and to `0` in every later one,
+whatever the step count.
+
+Two nearby constructions are wrong, and both look right:
+
+- **Not `transaction_delay`.** `TransactionZ1` returns the same value on every
+  step of a transaction, which is right for an accumulated stream and wrong for a
+  delta stream — it would emit the batch once per step.
+- **Not a `TransactionGenerator` holding a `bool`.** That is transaction-aligned,
+  but the flag is state `dbsp` does not checkpoint, whereas `Z1`'s is; every
+  worker would emit its own copy, whereas `ConstantGenerator` guards on
+  `Runtime::worker_index() == 0`; and it is not a deterministic source, so a
+  `constant`-fed view added to a running pipeline would be refused a concurrent
+  bootstrap.
+
+One ordering consequence: `delay()` derives its persistent id from its input's
+**at construction time**, and the caller names what the lowering returns — which
+is the `minus`, too late for the stream underneath. So the generator's stream is
+named before `differentiate` is built, the same care a recursive stream needs.
+
 ## Input / output
 
 **Input.** Each `input` node yields an input handle. Records arrive as JSON and
@@ -635,6 +678,14 @@ transactions, not within them. `step()` is a scheduling knob — it returns
 complete, so a single transaction may span many steps when inputs are large
 (`dbsp/src/circuit/dbsp_handle.rs:1673-1712`). The runner's unit of "feed input,
 read output deltas" is the transaction.
+
+A source therefore has to decide what "once" means for itself. `input` drains its
+mailbox on the first step; `constant` telescopes with `differentiate`
+([above](#why-constant-is-not-just-a-generator)). Note also that
+`Stream::output`'s mailbox is *overwritten* each step rather than accumulated, so
+the runner reads the last step's batch rather than the transaction's sum —
+correct while a transaction is one step, which is what these circuits are today,
+and a thing to revisit before one is not.
 
 ## Checkpointing and parallelism
 

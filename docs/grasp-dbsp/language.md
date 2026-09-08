@@ -29,10 +29,11 @@ comment      := "#" [^\n]*
 
 op_call      := OP "(" [arg ("," arg)*] ")"
 arg          := NAME                    # a stream, or a named function
-              | op_call                 # a nested operator, except `input`
+              | op_call                 # a nested operator, except `input` and `constant`
               | STRING                  # a table name, for `input`
               | AGGREGATOR              # min | max | count | sum | avg
               | anon_function
+              | array_literal           # the rows, for `constant`
 ```
 
 `OP` is one of the operators listed under [Operators](#operators); `AGGREGATOR`
@@ -40,9 +41,9 @@ is accepted only as the second argument of `aggregate`, so a bare name is never
 ambiguous with a stream reference.
 
 Node definitions assign a name to a derived stream. A `typespec` attaches a
-type to a name. It is required in three places — an `input` node, a standalone
-`empty()`, and a recursive `fixpoint` stream whose type inference cannot reach —
-and optional but checked everywhere else.
+type to a name. It is required in four places — an `input` node, a `constant()`
+node, a standalone `empty()`, and a recursive `fixpoint` stream whose type
+inference cannot reach — and optional but checked everywhere else.
 
 **A typespec is always checked, never used to drive inference.** Inference is a
 convenience; an emitter always knows the type it intends and can write it down.
@@ -171,6 +172,7 @@ where that mapping is maintained.
 | operator | signature |
 |---|---|
 | `input("t")` | → `zset(T)` |
+| `constant([r, …])` | → `zset(T)` |
 | `map(s, f)` | `X → zset(U)`, `f : E → U` |
 | `filter(s, f)` | `X → X`, `f : E → bool` |
 | `flat_map(s, f)` | `X → zset(U)`, `f : E → array(U)` |
@@ -218,8 +220,9 @@ than a name, so `weighted_count(map(emp, f))` is one declaration. A named node
 then exists because it is worth naming — as an output, or as an intermediate
 used more than once — rather than because the grammar insists.
 
-**`input` is the one exception.** Its schema comes from a `::` typespec, which
-needs a name to attach to, so `map(input("emp"), f)` is rejected. Bind it first.
+**`input` and `constant` are the exceptions.** Both take their type from a `::`
+typespec, which needs a name to attach to, so `map(input("emp"), f)` and
+`plus(a, constant([record(v: 1)]))` are both rejected. Bind them first.
 
 **Nodes are content-addressed.** Identical operator, identical inputs and
 identical parameters means one node, however many times it is written. So
@@ -791,6 +794,49 @@ closure := fp.path
 - Every recursive stream in one `fixpoint` must have the same shape, since one
   nested batch type serves them all.
 
+## `constant()`
+
+`constant([r₁, r₂, …])` is a relation that is constantly those rows.
+
+```
+edge :: zset(record(src: i64, dst: i64))
+edge := constant([record(src: 1, dst: 2), record(src: 2, dst: 3)])
+```
+
+**What that means as a stream of changes.** Every stream here carries a
+*change*, so a relation that never changes is a batch delivered in the first
+transaction and nothing after: `constant(X)` reports `X` once, and
+`integrate(constant(X))` is `X` at every transaction. Operators downstream keep
+their own state — `join`, `distinct` and `aggregate` are incremental — so they
+go on seeing the rows long after the delta stops. That is what makes it a
+relation rather than a one-off pulse.
+
+**The argument is a closed expression.** Literals, arithmetic over them,
+`record(…)`, `[…]`, `{…}`, `cast`, the builtins and named functions all work; a
+parameter reference does not, because there is no row to read it from. The rows
+are computed once, when the program is checked, so `constant([record(v: 1 + 1)])`
+holds `record(v: 2)`.
+
+**It needs a typespec, and it does not nest** — the same rule as `input`, for the
+same reason: nothing in the argument says what type the rows are, so the
+annotation is the only thing that can, and an annotation needs a name.
+
+- **`zset(T)` only.** For an indexed constant, write
+  `map_index(constant([…]), f)`. `T` need not be a `record`; only `input` is
+  restricted that way.
+- **The typespec is checked, not used to drive inference**, so a bare numeric
+  literal still settles to its own type: `constant([record(v: 1)])` is
+  `zset(record(v: i64))`, and an `f64` column wants `1.0` or `cast(1, f64)`.
+  This is where that rule is most visible, because there is no operand beside
+  the literal at all — see [Numbers](#numbers).
+- **Rows may repeat**, and the second copy is a second unit of weight, as
+  everywhere else.
+- **Row order is not part of the relation**, so `constant([a, b])` and
+  `constant([b, a])` are one node.
+- **Not inside a `fixpoint` body.** A source there fires once per iteration
+  rather than once per transaction. Declare it outside and pass it in as a
+  circuit parameter, the way an input is passed in.
+
 ## `empty()`
 
 `empty()` is a stream with no rows. It carries no type of its own — it takes one
@@ -803,9 +849,16 @@ from where it sits:
 
 Anywhere else it is an error saying so, rather than guessing.
 
+`empty()` is the zero of the same family `constant()` populates, and the two
+stay separate because their typing rules are opposites: `constant` *requires* a
+typespec, since its rows cannot say what type they are, while `empty()`
+deliberately has none and takes one from where it sits. So an empty constant is
+written `empty()`, and `constant([])` is rejected — there is one way to write
+each thing.
+
 ## Reserved words
 
-These may not name a node, a function or a parameter: the 20 operator names,
+These may not name a node, a function or a parameter: the 21 operator names,
 the 5 aggregator names, the builtin names, the type constructors (`bool`,
 `i64`, `f64`, `string`, `json`, `optional`, `record`, `array`, `dict`, `sql`,
 `zset`, `indexed_zset`), `cast`, and `true`, `false`, `NONE`, `null`, `function`,

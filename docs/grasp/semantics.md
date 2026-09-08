@@ -22,11 +22,26 @@ order, and nothing observes one.
 
 ## Facts
 
-A relation name with literal arguments and no body asserts one tuple.
+A relation name with arguments and no body asserts one tuple.
 
 ```grasp
 edge(src: 1, dst: 2)
 ```
+
+The arguments are **closed expressions** — usually literals, but `1 + 1` and
+`length("abc")` are facts too. They cannot be anything else: a variable there
+would be one the head uses and the body does not bind, which
+[safety](#safety) already rejects, and the shorthand `edge(src:)` means
+`edge(src: src)` and is rejected the same way.
+
+So a fact is computed once, when the program is compiled, and is thereafter part
+of the relation for as long as the program runs. Facts cannot be retracted —
+they are program text, not data.
+
+A relation is defined by the program or comes from outside, not both: a relation
+with an `<- input` rule may not also have facts.
+
+> ``relation `edge` has both an input rule and facts``
 
 ## Rules
 
@@ -183,6 +198,24 @@ compute.
 
 The `input` rule is the deliberate exception: its head variables are bound from
 outside, which is what `input` means.
+
+### A body need not contain an atom
+
+Only positive atoms and matches bind, and a rule using nothing but matches is
+safe:
+
+```grasp
+answer(v: n) <-
+    n := 6 * 7
+```
+
+Such a rule derives exactly one tuple, once — it depends on no relation, so
+there is nothing that could make it derive another. A fact is the degenerate
+case of the same thing, with the computation moved into the head.
+
+[`compilation.md`](compilation.md) says how it is grounded: the optimizer roots
+a rule's evaluation at a positive atom, so a body with none is given one that
+produces a single row.
 
 ## Negation
 

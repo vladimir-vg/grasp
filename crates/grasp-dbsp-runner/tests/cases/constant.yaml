@@ -1,0 +1,266 @@
+# `constant` — a stream holding exactly the rows written in it.
+#
+# The rows arrive in the first transaction and the stream is zero thereafter,
+# so the *relation* is constant while the *delta* fires once. That is only
+# visible across several transactions, which is why most of this file spans
+# them.
+
+- name: the rows arrive once and not again
+  source: |
+    edge :: zset(record(src: i64, dst: i64))
+    edge := constant([record(src: 1, dst: 2), record(src: 2, dst: 3)])
+
+  input:
+    - {}
+    - {}
+
+  expected_exact_output:
+    - edge:
+        - [1, {src: 1, dst: 2}]
+        - [1, {src: 2, dst: 3}]
+    - edge: []
+
+# The relation-level statement: accumulated, it is those rows at every
+# transaction. This is the shape a consumer downstream of a join actually sees.
+- name: integrated, it is those rows at every transaction
+  source: |
+    edge  :: zset(record(src: i64, dst: i64))
+    edge  := constant([record(src: 1, dst: 2)])
+    total := integrate(edge)
+
+  input:
+    - {}
+    - {}
+    - {}
+
+  expected_exact_output:
+    - total:
+        - [1, {src: 1, dst: 2}]
+    - total:
+        - [1, {src: 1, dst: 2}]
+    - total:
+        - [1, {src: 1, dst: 2}]
+
+- name: a single row
+  source: |
+    one :: zset(record(v: i64))
+    one := constant([record(v: 42)])
+
+  input:
+    - {}
+
+  expected_exact_output:
+    - one:
+        - [1, {v: 42}]
+
+# The rows are a closed expression, not just literals: there is no row to
+# reference, but there is nothing to stop arithmetic being folded.
+- name: the rows may be computed
+  source: |
+    c :: zset(record(v: i64))
+    c := constant([record(v: 1 + 1), record(v: 2 * 3)])
+
+  input:
+    - {}
+
+  expected_exact_output:
+    - c:
+        - [1, {v: 2}]
+        - [1, {v: 6}]
+
+- name: duplicate rows collapse under distinct
+  source: |
+    c :: zset(record(v: i64))
+    c := constant([record(v: 1), record(v: 1)])
+    d := distinct(c)
+
+  input:
+    - {}
+
+  expected_exact_output:
+    - d:
+        - [1, {v: 1}]
+
+# The shape a frontend emits for facts: constant rows joined against a live
+# input. The constant side must still be there in the second transaction, when
+# its own delta is long gone — which is what an incorrect fire-once would break.
+- name: joined against an input, and still there next transaction
+  source: |
+    name  :: zset(record(id: i64, name: string))
+    name  := constant([record(id: 1, name: "ann"), record(id: 2, name: "bob")])
+    score :: zset(record(id: i64, points: i64))
+    score := input("score")
+
+    n := map_index(name, function((r) -> record(key: r.id, value: record(name: r.name))))
+    s := map_index(score, function((r) -> record(key: r.id, value: record(points: r.points))))
+    out := join(n, s, function((k, a, b) -> record(name: a.name, points: b.points)))
+
+  input:
+    - score:
+        - [1, {id: 1, points: 10}]
+    - score:
+        - [1, {id: 2, points: 20}]
+
+  expected_exact_output:
+    - out:
+        - [1, {name: "ann", points: 10}]
+    - out:
+        - [1, {name: "bob", points: 20}]
+
+# The typespec is checked against, never used to drive inference, so a bare
+# numeric literal still settles to its own type. This is where that rule is most
+# visible — there is no operand beside the literal at all — so an `f64` column
+# wants an `f64` literal.
+- name: an f64 column wants an f64 literal
+  source: |
+    c :: zset(record(v: f64))
+    c := constant([record(v: 1.0)])
+
+  input:
+    - {}
+
+  expected_exact_output:
+    - c:
+        - [1, {v: 1.0}]
+
+- name: a cast reaches the same place
+  source: |
+    c :: zset(record(v: f64))
+    c := constant([record(v: cast(1, f64))])
+
+  input:
+    - {}
+
+  expected_exact_output:
+    - c:
+        - [1, {v: 1.0}]
+
+# Row order is not part of a relation, so it is not part of the node either —
+# these two spellings are one node, and content addressing collapses them.
+- name: row order is not part of the relation
+  source: |
+    a :: zset(record(v: i64))
+    a := constant([record(v: 1), record(v: 2)])
+    b :: zset(record(v: i64))
+    b := constant([record(v: 2), record(v: 1)])
+    both := plus(a, b)
+
+  input:
+    - {}
+
+  expected_exact_output:
+    - both:
+        - [2, {v: 1}]
+        - [2, {v: 2}]
+
+# ---------------------------------------------------------------------------
+# Rejections
+# ---------------------------------------------------------------------------
+
+- name: a constant needs a typespec
+  source: |
+    c := constant([record(v: 1)])
+
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+      message: "needs a `::` typespec"
+
+- name: an empty constant is empty()
+  source: |
+    c :: zset(record(v: i64))
+    c := constant([])
+
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+      message: "an empty constant is `empty()`"
+
+- name: a row that does not match the declared type
+  source: |
+    c :: zset(record(v: i64))
+    c := constant([record(v: "not an i64")])
+
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+
+- name: a row missing a declared field
+  source: |
+    c :: zset(record(v: i64, w: i64))
+    c := constant([record(v: 1)])
+
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+
+- name: the rows cannot reference a row, because there is none
+  source: |
+    c :: zset(record(v: i64))
+    c := constant([record(v: r.v)])
+
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+
+- name: the argument must be an array of rows
+  source: |
+    c :: zset(record(v: i64))
+    c := constant(other)
+
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+
+- name: a constant must be a zset
+  source: |
+    c :: indexed_zset(i64, record(v: i64))
+    c := constant([record(v: 1)])
+
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+      message: "must be a `zset(...)`"
+
+# The literal rule, pinned: `1` is an i64 wherever it stands, and the typespec
+# checks rather than coerces.
+- name: a bare integer literal does not become an f64
+  source: |
+    c :: zset(record(v: f64))
+    c := constant([record(v: 1)])
+
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+      message: "A bare numeric literal takes its own type"
+
+- name: a constant cannot be nested
+  source: |
+    a :: zset(record(v: i64))
+    a := input("a")
+    out := plus(a, constant([record(v: 1)]))
+
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+      message: "cannot be nested"
+
+# A source inside a fixpoint body would fire once per iteration, not once per
+# transaction. The way in is the way an input comes in: as a parameter.
+- name: a constant may not appear inside a fixpoint body
+  source: |
+    circuit grow(seed: s, acc: a) {
+        acc :: zset(record(v: i64))
+        base :: zset(record(v: i64))
+        base := constant([record(v: 1)])
+        acc  := plus(s, base)
+    }
+    src :: zset(record(v: i64))
+    src := input("src")
+    fp  := fixpoint(grow(seed: src, acc: empty()))
+    out := fp.acc
+
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+      message: "inside a `fixpoint` body"

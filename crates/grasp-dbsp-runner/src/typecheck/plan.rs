@@ -29,6 +29,7 @@ pub const OPERATORS: &[&str] = &[
     "differentiate",
     "delay",
     "empty",
+    "constant",
 ];
 
 /// Every aggregator name. These appear as bare names in argument position, so a
@@ -143,6 +144,20 @@ pub enum PlanOp {
     },
     /// An empty stream. Its type is fixed by where it is used.
     Empty,
+
+    /// A stream holding exactly these rows.
+    ///
+    /// The rows are delivered in the first transaction and the stream is zero
+    /// thereafter, so `integrate(constant(X))` is `X` at every transaction —
+    /// which is the sense in which the *relation* is constant. The non-zero
+    /// sibling of [`PlanOp::Empty`].
+    ///
+    /// Already evaluated: the argument is a closed expression, checked and
+    /// folded during typechecking, so the plan carries values rather than an
+    /// expression nothing could supply a row to.
+    Constant {
+        rows: Arc<Vec<crate::value::DynValue>>,
+    },
 
     /// Iterate a circuit body to convergence.
     ///

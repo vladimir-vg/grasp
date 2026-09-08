@@ -157,7 +157,7 @@ fn different_work_stays_separate() {
 
 fn operands(op: &PlanOp) -> Vec<usize> {
     match op {
-        PlanOp::Input { .. } | PlanOp::Empty => vec![],
+        PlanOp::Input { .. } | PlanOp::Empty | PlanOp::Constant { .. } => vec![],
         PlanOp::Map { input, .. }
         | PlanOp::Filter { input, .. }
         | PlanOp::MapIndex { input, .. }
@@ -315,4 +315,68 @@ fn a_nested_node_is_observable_by_content_id() {
 
     let runner = Runner::build(&plan, &[ids[nested].clone()]).expect("builds");
     runner.kill();
+}
+
+/// A constant relation's identity is its rows, and a relation is a set: two
+/// constants holding the same rows are one node however they were written.
+///
+/// None of this is visible from a program's output — both spellings compute the
+/// same thing either way. It matters because the content id is the
+/// `persistent_id`, so two nodes that ought to be one would checkpoint as two.
+#[test]
+fn constants_are_identified_by_their_rows() {
+    let one = |src: &str| {
+        compile(src)
+            .expect("compiles")
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.op, PlanOp::Constant { .. }))
+            .count()
+    };
+
+    // Written in a different order: one relation, so one node.
+    assert_eq!(
+        one("a :: zset(record(v: i64))\n\
+             a := constant([record(v: 1), record(v: 2)])\n\
+             b :: zset(record(v: i64))\n\
+             b := constant([record(v: 2), record(v: 1)])\n\
+             out := plus(a, b)\n"),
+        1,
+        "row order is not part of a relation, so it must not be part of the node"
+    );
+
+    // Folded to the same values: also one node, which is why the rows are
+    // evaluated before they are hashed.
+    assert_eq!(
+        one("a :: zset(record(v: i64))\n\
+             a := constant([record(v: 1 + 1)])\n\
+             b :: zset(record(v: i64))\n\
+             b := constant([record(v: 2)])\n\
+             out := plus(a, b)\n"),
+        1,
+        "`1 + 1` and `2` are the same row, so they are the same node"
+    );
+
+    // Different rows are different relations.
+    assert_eq!(
+        one("a :: zset(record(v: i64))\n\
+             a := constant([record(v: 1)])\n\
+             b :: zset(record(v: i64))\n\
+             b := constant([record(v: 2)])\n\
+             out := plus(a, b)\n"),
+        2,
+        "distinct rows must not collapse"
+    );
+
+    // Same row values, different types: the node's type is hashed too, which
+    // matters because a record value is positional and carries no field names.
+    assert_eq!(
+        one("a :: zset(record(v: i64))\n\
+             a := constant([record(v: 1)])\n\
+             b :: zset(record(w: i64))\n\
+             b := constant([record(w: 1)])\n\
+             out := plus(a, map(b, function((r) -> record(v: r.w))))\n"),
+        2,
+        "the row values are identical; only the declared type tells them apart"
+    );
 }

@@ -122,6 +122,11 @@ pub enum Arg {
     Op(OpCall),
     /// `instance.node`.
     Field(NodeRef),
+    /// A value written inline. Only an array literal reaches here — every
+    /// other expression form is either claimed by the arms above or has no
+    /// operator that would take one — and `constant` is the operator that
+    /// takes it.
+    Expr(Expr),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -811,6 +816,11 @@ impl Parser {
                 self.bump();
                 Ok(Arg::Name(name))
             }
+            // `constant([record(…), …])`. Restricted to an array literal
+            // deliberately: a bare name is a node reference and a string is a
+            // table name, so admitting expressions generally would make an
+            // argument's meaning depend on which token it starts with.
+            Tok::LBracket => Ok(Arg::Expr(self.expr()?)),
             other => self.err(format!("expected an argument, found {}", describe(&other))),
         }
     }

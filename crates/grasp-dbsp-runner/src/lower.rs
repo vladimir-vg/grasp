@@ -14,7 +14,8 @@ use dbsp::Circuit;
 use dbsp::algebra::F64;
 use dbsp::algebra::{AddAssignByRef, HasZero, Semigroup};
 use dbsp::dynamic::{DataTrait, DynUnit, Erase, WeightTrait};
-use dbsp::operator::{Aggregator, Fold, Generator, Max};
+use dbsp::operator::{Aggregator, ConstantGenerator, Fold, Generator, Max};
+use dbsp::utils::Tup2;
 use dbsp::{
     DBSPHandle, IndexedZSetReader, NestedCircuit, OrdIndexedZSet, OrdZSet, OutputHandle,
     RootCircuit, Runtime, Stream, ZSetHandle, ZWeight,
@@ -687,6 +688,33 @@ fn build_root(
                 Node::Indexed(circuit.add_source(Generator::new(dbsp::algebra::HasZero::zero)))
             }
         },
+
+        // A source holding exactly these rows, delivered in the first
+        // transaction and zero thereafter.
+        //
+        // `ConstantGenerator` yields the batch on every step and is stateless —
+        // `is_deterministic_source` is true, so a restore reproduces it by
+        // re-running rather than by replaying it. `differentiate` is what turns
+        // "always" into "once", and it does so in a real operator carrying a
+        // persistent id, so the fire-once state is checkpointed. A `Generator`
+        // with a captured `bool` would put that state in a closure `dbsp` does
+        // not know about, and a restore would fire the rows a second time.
+        PlanOp::Constant { rows } => {
+            let batch = OrdZSet::<DynValue>::from_keys(
+                (),
+                rows.iter().map(|v| Tup2(v.clone(), 1)).collect(),
+            );
+            // The source is named *before* `differentiate` is built: that
+            // expands to `minus(x, delay(x))`, and `delay` derives its own
+            // persistent id from its input's at construction time. The caller
+            // names what this returns, which is the `minus` — too late for the
+            // stream underneath. This is the same ordering the fixpoint
+            // lowering follows for a recursive stream.
+            let source = circuit
+                .add_source(ConstantGenerator::new(batch))
+                .set_persistent_id(Some(&format!("{}.const", ids[built.len()])));
+            Node::Flat(source.differentiate())
+        }
 
         PlanOp::Input { table } => {
             let (stream, handle) = circuit.add_input_zset::<DynValue>();

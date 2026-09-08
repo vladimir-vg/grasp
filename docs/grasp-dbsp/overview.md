@@ -66,7 +66,7 @@ implicit numeric promotion deleted, both to satisfy the third and fifth.
 - Content-addressed nodes: identical operator, inputs and parameters means one
   node, however many times it is written — and that same address is the node's
   `persistent_id` and the name it can be observed by.
-- The operator set listed there: inputs; the mapping family (`map`, `filter`,
+- The operator set listed there: inputs and constants; the mapping family (`map`, `filter`,
   `flat_map`, `map_index`, `flat_map_index`); the join family (`join`,
   `join_index`, `antijoin`); `distinct`; `aggregate` over
   `min`/`max`/`sum`/`avg`/`count`; `weighted_count`; the algebraic operators

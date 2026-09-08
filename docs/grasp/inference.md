@@ -116,7 +116,10 @@ somewhere in the body. This is Datalog's safety condition, and
 
 ## Phase 2: across rules
 
-A relation defined by several rules gets one column type per column.
+A relation defined by several rules gets one column type per column. **A fact
+counts as a rule here** — it constrains its relation's columns exactly as a rule
+head does, and its arguments are closed, so each contributes the type of a
+literal rather than of a variable.
 
 - **With a `:: relation(...)` spec**, each rule's inferred column type must be
   assignable to the declared one. The spec is the answer; a rule that disagrees

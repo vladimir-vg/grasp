@@ -22,6 +22,12 @@ Indexed streams — `indexed_zset(K,V)` — never correspond to a grasp relation
 They exist only inside a rule, between a `map_index` and the join or aggregate
 that consumes it, and every rule ends by flattening back to a `zset`.
 
+**Two naming rules everything below depends on.** The node named `r` in the
+emitted program *is* grasp relation `r`'s stream, and an external relation's
+`input(...)` table string is the relation name. Both are visible in every
+example here; they are stated because a reader has to be able to rely on them —
+anything driving a compiled program keys on them.
+
 An external relation becomes an `input`:
 
 ```grasp
@@ -37,6 +43,45 @@ edge := input("edge")
 The typespec must be written, not inferred: grasp-dbsp takes an `input` node's
 schema from its `::` annotation, and that is also why the input cannot be
 inlined into another call.
+
+## Facts
+
+The facts of one relation collect into a single `constant`:
+
+```grasp
+edge :: relation(src: i64, dst: i64)
+edge(src: 1, dst: 2)
+edge(src: 2, dst: 3)
+```
+
+```
+edge :: zset(record(src: i64, dst: i64))
+edge := constant([record(src: 1, dst: 2), record(src: 2, dst: 3)])
+```
+
+A fact's arguments are closed expressions — [`semantics.md`](semantics.md#facts)
+says why they must be — so they translate across unchanged and grasp-dbsp
+evaluates them when the program is checked. Nothing here needs the compiler to
+be able to *evaluate* grasp.
+
+`constant` delivers its rows in the first transaction and is zero afterwards, so
+the relation is those rows at every transaction. That is the same shape as an
+`input` relation whose rows were pushed once, which is why nothing downstream of
+a fact relation has to know it was one.
+
+A **rule with no positive atom** — a body of nothing but matches — is grounded on
+a `constant` of a single row, which is then its join graph's root:
+
+```grasp
+answer(v: n) <-
+    n := 6 * 7
+```
+
+```
+unit   :: zset(record(unit: bool))
+unit   := constant([record(unit: true)])
+answer := distinct(map(unit, function((r) -> record(v: 42))))
+```
 
 ## Types
 
@@ -210,6 +255,12 @@ relation is `plus(rule₁, rule₂)` with no `distinct`.
 
 **3. Recursive streams start empty.** The call site passes `empty()`; the base
 case belongs in the body, as one of the summed rules.
+
+A fact-defined relation that a recursive component reads is the one thing that
+cannot move into the body: grasp-dbsp rejects `constant` inside a `fixpoint`,
+where a source would fire once per iteration rather than once per transaction.
+Emit it outside and pass it in as an ordinary parameter — which is exactly what
+an input relation already does, so this needs no special case.
 
 Only recursive members leave the fixpoint, read off as `fp.name`.
 
