@@ -252,14 +252,19 @@ When emission does land: a fact-only program feeds nothing, so its `input` is
 ## Every relation must be declared
 
 A relation a program mentions needs a `:: relation(...)` spec or a definition —
-a rule with it as head, a fact, or `<- input`. That is
-[`inference.md`](../../../../docs/grasp/inference.md#diagnostics)'s rule, not the
-suite's, but until `infer` exists nothing would catch a fixture breaking it, and
-124 of 185 cases had. So [`tests/declared.rs`](../declared.rs) checks it here.
+a rule with it as head, a fact, or `<- input`. So does a fact's untyped literal
+need somewhere to take a type from.
 
-It exempts two kinds of case: one whose only assertion is a `pass: parse`
-diagnostic, since parse short-circuits and inference never runs on it, and one
-that *asserts* the rule's own diagnostic, since breaking the rule is its job.
+Both were once checked by a `tests/declared.rs` that existed only because
+`infer` did not: 124 of 185 cases had drifted into breaking the first rule, and
+nothing would have caught them. `infer` now produces both diagnostics itself —
+the declaration one *is* its fixpoint's stall report — so that file is gone and
+the rules are enforced by the compiler rather than beside it.
+
+What survives from it is `assert_every_directory_was_walked`, now in
+[`tests/common/mod.rs`](../common/mod.rs) and called from the harness: a case
+that is never read is a case that never fails, and a new subdirectory the walk
+does not reach would hide silently.
 
 The scaffolding a case needs is usually one line — a spec with no rules is a
 declaration, and the relation is simply empty:
@@ -276,12 +281,8 @@ declaration, and the relation is simply empty:
 ```
 
 Choose the column types to match how the variables are *used*, not just to fill
-the slot: `expected_ok` will demand they typecheck once `infer` lands, and grasp
-has no implicit numeric conversion.
-
-`declared.rs` is scaffolding with an end — when `infer` implements the check,
-every `expected_ok` case enforces it and the file should be deleted rather than
-kept in step.
+the slot: grasp has no implicit numeric conversion, and an `expected_ok` case
+must typecheck.
 
 ## Always on
 

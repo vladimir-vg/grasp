@@ -19,6 +19,7 @@ pub mod ast;
 pub mod core;
 pub mod desugar;
 pub mod diag;
+pub mod infer;
 pub mod lex;
 pub mod parse;
 pub mod ty;
@@ -39,10 +40,11 @@ use crate::diag::{Diagnostic, Pass};
 /// wrong.
 pub fn compile(source: &str) -> Result<String, Vec<Diagnostic>> {
     let program = parse::parse(source).map_err(|d| vec![d])?;
-    let _core = desugar::desugar(&program)?;
+    let core = desugar::desugar(&program)?;
+    let _typed = infer::infer(core)?;
     Err(vec![Diagnostic::unimplemented(
-        Pass::Infer,
+        Pass::Plan,
         None,
-        "the stages after desugaring",
+        "the stages after inference",
     )])
 }

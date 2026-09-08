@@ -189,7 +189,8 @@ impl Diagnostic {
     /// and goes when that stage implements it, and when the list is empty this
     /// and [`Diagnostic::unimplemented`] go with it.
     pub const UNIMPLEMENTED: &[&str] = &[
-        "the stages after desugaring",
+        "the stages after inference",
+        "type assertions",
         "destructuring patterns",
         "keyword arguments",
     ];

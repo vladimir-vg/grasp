@@ -19,7 +19,7 @@
 //!   the text to `grasp_dbsp_runner::compile`, whatever it asserts, so a
 //!   program the target rejects is caught without a fixture having to ask.
 
-use common::{fixture_files, label};
+use common::{assert_every_directory_was_walked, fixture_files, label};
 use grasp_compiler::diag::{Diagnostic, Pass};
 use grasp_dbsp_runner::json::{decode_value, encode_value};
 use grasp_dbsp_runner::lower::Runner;
@@ -204,6 +204,7 @@ fn cases_dir() -> PathBuf {
 fn collect_trials() -> Result<Vec<Trial>, String> {
     let dir = cases_dir();
     let files = fixture_files(&dir)?;
+    assert_every_directory_was_walked(&dir, &files);
 
     let mut trials = Vec::new();
     for path in files {

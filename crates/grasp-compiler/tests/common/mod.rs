@@ -41,3 +41,28 @@ pub fn label(dir: &Path, path: &Path) -> String {
         .to_string_lossy()
         .into_owned()
 }
+
+/// Every directory holding fixtures contributed at least one file.
+///
+/// The corpus is filed in subdirectories, and a walk that missed one would hide
+/// a third of it while leaving every count plausible — a case that is never
+/// read is a case that never fails. Asserting coverage rather than a threshold
+/// needs no number that goes stale as the corpus grows.
+pub fn assert_every_directory_was_walked(dir: &Path, files: &[PathBuf]) {
+    let walked: std::collections::BTreeSet<&Path> =
+        files.iter().filter_map(|p| p.parent()).collect();
+    for entry in std::fs::read_dir(dir).expect("tests/cases") {
+        let path = entry.expect("a directory entry").path();
+        // An empty directory holds nothing to miss, and faulting one would be a
+        // false alarm rather than a caught bug.
+        let empty = std::fs::read_dir(&path).is_ok_and(|mut e| e.next().is_none());
+        if path.is_dir() && !empty {
+            assert!(
+                walked.contains(path.as_path()),
+                "no fixture was read from `{}`; the walk is not reaching every \
+                 directory, and cases nothing reads are cases nothing checks",
+                path.display()
+            );
+        }
+    }
+}
