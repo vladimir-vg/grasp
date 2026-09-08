@@ -38,8 +38,8 @@ pub const AGGREGATORS: &[&str] = &["sum", "count", "min", "max", "avg"];
 /// a *column* may be called `length`. They are unavailable as relation names by
 /// the one-name rule, which is a different check.
 pub const BUILTINS: &[&str] = &[
-    "abs", "floor", "ceil", "round", "length", "concat", "lower", "upper", "trim", "coalesce",
-    "if", "keys", "entries",
+    "abs", "floor", "ceil", "round", "length", "concat", "lower", "upper", "trim", "if", "keys",
+    "entries",
 ];
 
 /// "They are held now so that the standard library can grow into them without

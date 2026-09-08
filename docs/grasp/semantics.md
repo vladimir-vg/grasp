@@ -311,7 +311,8 @@ the result is keyed by.
   together give one row per group with both.
 - **An empty group produces no row.** A group exists because some row is in it;
   there is no set of keys to produce zeros against. A count that must show zero
-  needs a rule supplying the keys and a `coalesce`.
+  needs a second rule supplying it for the keys with nothing to count — which is
+  an ordinary negated atom, and says what it means better than a default would.
 - **`avg` yields `f64`** whatever it was given, since a mean is not an integer.
   Every other aggregator yields its argument's type.
 
@@ -416,18 +417,25 @@ contents — a library chosen by reading the target's is a library nobody chose.
 | `length` | `string → i64`, `array(T) → i64`, `dict(K,V) → i64` |
 | `concat` | `string × string → string` (also written `++`) |
 | `lower`, `upper`, `trim` | `string → string` |
-| `coalesce` | `optional(T) × T → T` |
 | `if` | `boolean × T × T → T` |
 | `keys` | `json → optional(array(string))`, `dict(K,V) → array(K)` |
 | `entries` | `dict(K,V) → array(record(key: K, value: V))` |
 
-Two things grasp-dbsp has are deliberately not here. **A computed dict lookup**
-— `get(d, k)` — and **an explicit conversion** — `cast(x, T)` — are its
-builtins, not grasp's. Reading a dict by a key written down is what the
-`{a: x} := d` pattern is for, and extracting from a `json` is what the
-[runtime filter](types.md#runtime-filters) `v :: T` is for. Neither has a grasp
-spelling for a *computed* key or an arbitrary conversion, and neither will
-until the case for one is made on grasp's own terms.
+Three things grasp-dbsp has are deliberately not here: **a computed dict
+lookup** (`get(d, k)`), **an explicit conversion** (`cast(x, T)`), and **a
+default for an absent value** (`coalesce(x, d)`). They are its builtins, not
+grasp's.
+
+Each has a grasp answer that is not a borrowed builtin. A dict is read by the
+`{a: x} := d` pattern, which names its key. A document is read by the
+[runtime filter](types.md#runtime-filters) `v :: T`. And an absent value is
+*dropped* by that same filter rather than defaulted — which is the whole shape
+of [a body having an answer](#a-body-must-have-an-answer), and the reason
+`coalesce` reads as the odd one out here even though it is ordinary below.
+
+What is genuinely missing is a *computed* dict key and an arbitrary change of
+type. Both are wanted; neither will arrive by copying grasp-dbsp's, which is how
+`optional` division briefly got in.
 
 The namespaced spellings (`string:length`, `agg:sum`) are reserved for when the
 library outgrows bare names, and for the type-specific namespaces that arrive

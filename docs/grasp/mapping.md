@@ -165,10 +165,13 @@ which is the point of putting the sugar on the grasp side — grasp-dbsp keeps
 *exactly one way to write each thing*, and grasp is what people write.
 
 Builtins pass through under the same names — `abs`, `floor`, `ceil`, `round`,
-`length`, `concat`, `lower`, `upper`, `trim`, `coalesce`, `if`, `keys`,
-`entries`. grasp-dbsp has two more, `get` and `cast`, which
-[`semantics.md`](semantics.md#builtins) does not offer; `dict:get`, which a dict
-pattern desugars to, is the one place grasp emits the first of them.
+`length`, `concat`, `lower`, `upper`, `trim`, `if`, `keys`, `entries`.
+
+grasp-dbsp has three more that [`semantics.md`](semantics.md#builtins) does not
+offer — `get`, `cast` and `coalesce` — and grasp emits all three without
+providing any of them: `dict:get` for a dict pattern, and `cast` and `coalesce`
+in the [narrowing](#narrowing-and-dropping) a runtime filter expands into. A
+builtin the compiler writes is not a builtin the language has.
 
 ## Computation DAG nodes
 
