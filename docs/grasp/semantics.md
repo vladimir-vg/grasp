@@ -215,8 +215,8 @@ case of the same thing, with the computation moved into the head.
 
 The optimizer roots a rule's evaluation at a positive atom, so a body with none
 is given one: an occurrence of the **unit relation**, which has no columns and
-holds exactly one tuple. That is the whole of the special case, and it happens
-before the join graph is built, so nothing downstream has one —
+holds exactly one tuple. That is the whole of the special case, and the join
+graph builder is where it happens, so nothing downstream has one —
 [`compilation.md`](compilation.md#grounding-a-body-with-no-atom) says where.
 
 The unit relation is not writable. It has no name in grasp and a program cannot

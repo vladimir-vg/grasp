@@ -115,22 +115,77 @@ best tree-shaped approximation, cutting the lightest edges to break cycles.
 The optimizer tries **every atom in the component as root**. For each, a
 post-order traversal of the rooted tree gives an evaluation order: children
 before parents, each parent joining its children's results with its own stream.
+The component's own dependent nodes are placed into that order before it is
+scored — a match produces a variable, so a component's peak is not its own
+number until its matches are in it — and an order violating the dependency
+partial order is discarded, which skips that rooting rather than rejecting the
+rule.
 
-Across components it is a **forest**: each is planned on its own and scored on
-its own, and the results are then concatenated, cheapest first, with consecutive
-components combined by a cross product.
+Across components it is a **forest**: each is planned and scored on its own, and
+the plans are then concatenated with consecutive components crossed.
 
-**The order between equally cheap components is structural.** It is their
-canonical form — the atoms rendered as `relation(col: var, …)` and sorted — and
-never where they were written. Two rule bodies differing only in statement order
-are the same program and must compile to the same circuit, so a tie broken by
-source position would be a bug the emitted text reveals.
+**A cross product is not a choice the optimizer makes.** Two atoms sharing a
+variable are in one component and will be joined on it; two sharing none cannot
+be joined at all. A rule with `k` components therefore crosses `k − 1` times in
+*every* candidate order. The old rule got its "no accidental cross product"
+guarantee by leaving such a plan unbuildable; this is the stronger version of
+the same guarantee, because the count is fixed by the rule rather than left to
+the plan.
 
-This is why a cross product stays a last resort without being forbidden. Within
-a component a spanning tree always exists, so a cross product can only arise
-*between* components, and components exist only where the rule itself shares no
-variable across them. The optimizer never reaches for one; it only accepts the
-one the rule already asked for.
+### Crossing components
+
+Two components share no variable, so there is no key to join them on. They are
+crossed instead, and a cross product is a `join` on the **unit key** — both
+sides indexed on nothing, so every row of one meets every row of the other:
+
+```
+n1: map_index(A, key=[], val=[…])
+n2: map_index(B, key=[], val=[…])
+n3: join(n1, n2, on=[])             # → schema(A) ∪ schema(B)
+```
+
+This needs no new node kind and no new operator. [Invariant
+4](#invariants) — every key variable of a `join` is in both input schemas —
+holds vacuously of an empty key, which is why the unit key is an empty key list
+rather than a constant column something would have to project away again.
+
+### Ordering the components
+
+Crossing multiplies, so the order decides the peak. Two numbers per component
+say what it costs, and both fall out of the live-variable analysis the cost
+model already runs:
+
+- its **peak** — the cost of its own plan;
+- its **exit width** — how many of its variables are still live when it ends:
+  those in the head, and those a node placed after the cross consumes. No other
+  component can need one, since components share no variables.
+
+Ordering `c₁ … c_k` costs `max over j of (exit(c₁) + … + exit(c_{j−1}) + peak(c_j))`,
+because everything an earlier component left behind is still live while a later
+one runs. That is not a second cost function — it is what the existing analysis
+reports for the concatenated order.
+
+**Components are ordered by descending headroom**, where headroom is
+`peak − exit`: how far a component swells above what it leaves behind. One that
+swells and leaves little should run while there is least beside it; one that only
+accumulates should run last. That is optimal by exchange — putting `x` before `y`
+costs `max(peak(x), exit(x) + peak(y))` and the swap costs
+`max(peak(y), exit(y) + peak(x))`, and the first is no larger exactly when `x`
+has the greater headroom. Since each component's own plan already minimises its
+own peak, it minimises every term, so the forest plan is optimal under this cost
+model just as the single tree was.
+
+Two things sit on top of that. **A component with exit width 0 goes first**: it
+leaves nothing behind, so its position is free on the peak, and running it early
+is right for the same reason running a filter early is. An atom over a relation
+with no columns is always such a component. And **ties break by ascending exit
+width, then by structural key** — the first is free, and the second is what makes
+the choice a function of the program rather than of how it was typed.
+
+A component can depend on another: a match can carry a variable out of one
+component and into another's argument. The dependency partial order is lifted
+onto components and the choice is greedy among those whose predecessors are
+placed; a cycle in the lifted order is the same rejection a rooting failure is.
 
 ### Cost model
 
@@ -148,6 +203,42 @@ statistics. It cannot know that one relation is a thousand times larger than
 another. What it does know is which plans blow up regardless of the data, and it
 is deterministic, which means a program compiles to the same circuit every time.
 
+### Determinism
+
+The cost model settles most choices. Where it does not, the tie must still be
+settled the same way every time, and [`syntax.md`](syntax.md#ast) says how:
+nothing downstream may key on source **position**, so that reformatting a
+program — or writing its statements in another order — cannot change what it
+compiles to. "Whichever came first" is exactly what that forbids, which rules
+out iteration order everywhere in this pass.
+
+Every tie is broken by a **structural key**: a canonical rendering of a node's
+own content, taken from the core form after desugaring.
+
+| node | key |
+|---|---|
+| positive atom | `r(c₁: a₁, …)`, columns sorted by name; each `aᵢ` a variable name, `_`, or a literal's canonical text |
+| negated atom | `not`, then the atom's key |
+| filter | the canonical printing of its expression |
+| match | the pattern's key, `:=`, and the canonical printing of its right-hand side |
+| aggregate | the variable, `:=`, the aggregator and its argument |
+
+An order's key is the sequence of its nodes' keys; a component's is that
+sequence sorted. Both compare lexicographically, smallest first. Keys are built
+from relation, column and variable names, literal values and operator
+spellings — what a program *means* — and never from a line, a column, or which
+statement was written first.
+
+The key need not be injective, and that is the point: two candidates with equal
+keys emit identical grasp-dbsp, because emission reads a node's content and its
+position in the order and nothing else. So the key is total on everything
+observable, which is all determinism needs.
+
+Four choices take it: the heavier edge when Prim's algorithm finds two of equal
+weight; the winning rooting when two rootings cost the same; the component order
+when two have equal headroom and exit width; and the order of several dependent
+nodes of one kind that become ready at the same point.
+
 ### Placing dependent nodes
 
 Filters, matches, negated atoms and aggregates are not in the spanning tree —
@@ -163,10 +254,23 @@ for each dependent node N:
 Early is always right: a filter that runs sooner shrinks everything downstream,
 and there is never a reason to carry a row that is going to be discarded.
 
+The rule is unchanged by the forest, and has to be — the order is one sequence
+whether it came from one tree or from five, and "earliest" is a position in it.
+What the forest adds is only where that position can fall. A node whose inputs
+all come from one component lands inside that component, before any cross, which
+is what lets the component be scored on its own; one whose inputs span several
+lands immediately after the cross that binds its last input, because that is the
+first point at which they are in one place.
+
+A node consuming **no** variable has no such position, and takes the first. A
+negated atom over a relation with no columns is the only one there is: a plan
+must have a stream before it can subtract from one.
+
 When several become ready at the same point, they are ordered **negated atoms,
 then filters, then matches, then aggregates** — most selective first, and
 aggregates last because an aggregate consumes a whole group and must come after
-everything contributing to it.
+everything contributing to it. Several of one kind are ordered by
+[structural key](#determinism).
 
 ### Resolving competing producers
 
@@ -200,33 +304,65 @@ already runs, so finding them costs nothing extra.
 
 ```
 optimize(join_graph):
-    plans = []
-    for each component C of the weighted graph:
-        best = none
-        for each positive atom R in C:
-            T = maximum spanning tree of C, rooted at R
-            order = post-order traversal of T
-            if cost(order) < cost(best): best = order
-        plans.append(best)
-    sort plans by (cost, canonical form)
-    order = plans concatenated, consecutive components crossed
-    if order violates the dependency partial order: reject
-    place dependent nodes into order
+    components = the connected components of the weighted graph
+    for each dependent node N:
+        N.owner = the component producing every input of N, if one does,
+                  otherwise `spanning`
+
+    for each component C:
+        C.plan = plan(C)
+        C.peak = cost(C.plan)
+        C.exit = |variables C produces that the head or a `spanning` node needs|
+
+    order = []
+    for each C in component_order(components):
+        if order is not empty: order += cross(order, C)
+        order += C.plan
+
+    place the `spanning` dependent nodes into order
     resolve competing producers
     insert projections
     return order as a computation DAG
+
+plan(C):
+    best = none
+    for each positive atom R of C:
+        T = maximum spanning tree of C, rooted at R
+        p = post-order traversal of T
+        if p violates the dependency partial order: skip
+        place C's own dependent nodes into p
+        if (cost(p), key(p)) < (cost(best), key(best)): best = p
+    if best is none: reject the rule
+    return best
+
+component_order(components):
+    precedence = the dependency partial order, lifted onto components
+    if precedence has a cycle: reject the rule
+    order = []
+    while some component is unplaced:
+        ready = the unplaced components whose predecessors are all placed
+        append the smallest of `ready` under (exit > 0, -(peak - exit), exit, key)
+    return order
 ```
 
 Every candidate is scored and the cheapest wins. A rule whose dependencies
-genuinely contradict each other is rejected rather than evaluated in some order
-that happens to work — but a *disconnected* graph is no longer a reason to
-reject anything, which is the only thing that changed.
+genuinely contradict each other is rejected — no valid rooting for some
+component, or a cycle in the lifted order — rather than evaluated in some order
+that happens to work. A *disconnected* graph is not that case and never was one
+worth rejecting: a forest is a plan.
 
 ### Grounding a body with no atom
 
 A body of nothing but matches has an empty join graph, and there is nothing to
-root. Before the graph is built, such a body is given one atom: an occurrence of
-the **unit relation**, which has no columns and holds exactly one tuple.
+root. **The graph builder gives it one node**: an occurrence of the **unit
+relation**, which has no columns and holds exactly one tuple.
+
+It belongs there rather than in desugaring or in the optimizer, for two reasons.
+Nothing a program writes *means* `unit()`, so it is not a surface form standing
+for another. And it is not a relation: it never enters the program's namespace,
+so name resolution, the spec check, SCC analysis and stratification never see a
+synthetic relation each would have to remember to ignore. It is one node of a
+kind the graph already has.
 
 ```grasp
 answer(v: n) <-
@@ -339,7 +475,8 @@ ordinary `map` computing `get(d, "a")`, followed by the `filter` its
    some ancestor.
 3. **Acyclic.** Recursion is a property of the program, not of a rule.
 4. **Key validity.** For `join` and `antijoin`, every key variable is in both
-   input schemas.
+   input schemas. An empty key satisfies this vacuously, which is what makes a
+   cross product a `join` rather than an operator of its own.
 5. **Group validity.** For `aggregate`, the group keys and aggregated column are
    in the input schema, and the output variable is not.
 

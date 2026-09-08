@@ -209,3 +209,25 @@
   expected_exact_output:
     - out:
         - [1, {id: 1, name: "ana"}]
+
+# `cast` to a record extracts the fields it names and ignores the rest, so a
+# record naming none fails on nothing — whatever the document is. Stated in
+# language.md because it is not what a reader guesses, and pinned here because
+# a documented surprise with no fixture is a rumour.
+- name: any document casts to the empty record
+  source: |
+    a :: zset(record(id: i64, payload: json))
+    a := input("a")
+    out := map(a, function((r) -> record(id: r.id, u: cast(r.payload, optional(record())))))
+
+  input:
+    - a:
+        - [1, {id: 1, payload: {x: 1}}]
+        - [1, {id: 2, payload: [1, 2]}]
+        - [1, {id: 3, payload: 7}]
+
+  expected_exact_output:
+    - out:
+        - [1, {id: 1, u: {}}]
+        - [1, {id: 2, u: {}}]
+        - [1, {id: 3, u: {}}]
