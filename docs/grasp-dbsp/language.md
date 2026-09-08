@@ -85,7 +85,7 @@ value_type := scalar | record_type | array_type | dict_type | "json"
 
 scalar      := bool | i64 | f64 | string | optional "(" value_type ")"
 
-record_type := "record" "(" field ("," field)* ")"
+record_type := "record" "(" [field ("," field)*] ")"
 field       := FIELD_NAME ":" value_type
 
 array_type  := "array" "(" value_type ")"
@@ -117,6 +117,31 @@ position — the type names the fields, and the literal fills them:
 r :: zset(record(id: i64, name: string))                        # the type
 map(s, function((row) -> record(id: row.id, name: row.name)))   # a value
 ```
+
+**`record()` is the record with no fields**, and so the type with exactly one
+value. It is written the same way in both positions, and it is `{}` on the wire.
+
+It exists because three things need a name for "no columns", and it is the same
+name for all three:
+
+- **A stream with no columns.** `zset(record())` carries a proposition: every row
+  is the same key, so after a `distinct` the relation is present or absent and
+  nothing else.
+- **The key of a cross product.** `join` needs both sides indexed on one key
+  type; indexing both on `record()` gives every row one partner, which is what a
+  cross product is. There is no `cross` operator because there does not need to
+  be one.
+- **The key of an aggregate over everything.** An `aggregate` with nothing to
+  group by is `map_index` to `record()` and then the fold.
+
+One consequence worth stating rather than leaving to be found: `cast(doc, record())`
+succeeds for **any** document. A record whose fields are all optional extracts
+from a non-object as an all-absent record rather than failing, and a record with
+no fields is vacuously all-optional, so there is nothing left to fail on.
+
+`record()` and an empty `dict(K,V)` are both `{}` on the wire. Decoding is driven
+by the declared type, so this is not an ambiguity — it is the same benign overlap
+that already puts `record(a: i64)` and `dict(string, i64)` on the same encoding.
 
 `array(T)` is a sequence of one element type, and an ordinary value: it can sit
 in a record, in a column and in a stream, and `flat_map` turns one into rows.
@@ -297,7 +322,7 @@ params        := NAME ("," NAME)*
 expr       := literal
             | NAME                                        # a bound parameter
             | expr "." FIELD_NAME                         # record field
-            | "record" "(" FIELD_NAME ":" expr ("," FIELD_NAME ":" expr)* ")"
+            | "record" "(" [FIELD_NAME ":" expr ("," FIELD_NAME ":" expr)*] ")"
             | "{" [expr "=>" expr ("," expr "=>" expr)*] "}"   # a dict
             | "dict" "(" expr ")"                         # a dict, from an array
             | "[" expr ("," expr)* "]"                    # an array

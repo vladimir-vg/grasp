@@ -190,3 +190,33 @@
     - out:
         - [-1, {name: "bo", dname: null}]
         - [1, {name: "bo", dname: "ops"}]
+
+# A cross product is a join on the unit key: index both sides to `record()` and
+# every row meets every row. There is no `cross` operator because there does not
+# need to be one — this is what a frontend emits for a rule whose atoms share no
+# variable.
+- name: a cross product is a join on the unit key
+  source: |
+    a :: zset(record(x: i64))
+    a := input("a")
+    b :: zset(record(y: i64))
+    b := input("b")
+
+    ai := map_index(a, function((r) -> record(key: record(), value: r)))
+    bi := map_index(b, function((r) -> record(key: record(), value: r)))
+    cross := join(ai, bi, function((k, l, r) -> record(x: l.x, y: r.y)))
+
+  input:
+    - a:
+        - [1, {x: 1}]
+        - [1, {x: 2}]
+      b:
+        - [1, {y: 10}]
+        - [1, {y: 20}]
+
+  expected_exact_output:
+    - cross:
+        - [1, {x: 1, y: 10}]
+        - [1, {x: 1, y: 20}]
+        - [1, {x: 2, y: 10}]
+        - [1, {x: 2, y: 20}]

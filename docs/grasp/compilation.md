@@ -97,21 +97,40 @@ Take the subgraph induced by **positive atoms only**. Nodes are atom
 occurrences; an edge joins two atoms that share at least one variable, weighted
 by how many.
 
-Atoms sharing no variable have no edge. A plan needing a cross product therefore
-cannot be built as a spanning tree, which is the point: the optimizer will not
-reach for one unless the rule leaves it no choice.
+Atoms sharing no variable have no edge, so the graph may be **disconnected**. A
+component is a set of atoms that can be joined; two components can only be
+combined by a cross product, and the shape of the graph is what says so.
 
-### Join spanning tree
+An atom over a relation with no columns binds no variable, so it is always a
+component of its own. That is not a degenerate case to be tolerated — guarding a
+rule with a proposition is what such a relation is for.
 
-A **join spanning tree** is a maximum-weight spanning tree of that graph —
+### Join spanning forest
+
+A **join spanning tree** is a maximum-weight spanning tree of one component —
 Prim's algorithm, always taking the heaviest edge from the visited set. For an
 acyclic rule it coincides with a classical join tree; for a cyclic one it is the
 best tree-shaped approximation, cutting the lightest edges to break cycles.
 
-The optimizer tries **every atom as root**. For each, a post-order traversal of
-the rooted tree gives an evaluation order: children before parents, each parent
-joining its children's results with its own stream. Orders that violate the
-partial order are discarded.
+The optimizer tries **every atom in the component as root**. For each, a
+post-order traversal of the rooted tree gives an evaluation order: children
+before parents, each parent joining its children's results with its own stream.
+
+Across components it is a **forest**: each is planned on its own and scored on
+its own, and the results are then concatenated, cheapest first, with consecutive
+components combined by a cross product.
+
+**The order between equally cheap components is structural.** It is their
+canonical form — the atoms rendered as `relation(col: var, …)` and sorted — and
+never where they were written. Two rule bodies differing only in statement order
+are the same program and must compile to the same circuit, so a tie broken by
+source position would be a bug the emitted text reveals.
+
+This is why a cross product stays a last resort without being forbidden. Within
+a component a spanning tree always exists, so a cross product can only arise
+*between* components, and components exist only where the rule itself shares no
+variable across them. The optimizer never reaches for one; it only accepts the
+one the rule already asked for.
 
 ### Cost model
 
@@ -181,21 +200,45 @@ already runs, so finding them costs nothing extra.
 
 ```
 optimize(join_graph):
-    best = none
-    for each positive atom R:
-        T = maximum spanning tree of the weighted graph, rooted at R
-        order = post-order traversal of T
-        if order violates the dependency partial order: skip
-        place dependent nodes into order
-        resolve competing producers
-        insert projections
-        if cost(order) < cost(best): best = order
-    return best as a computation DAG
+    plans = []
+    for each component C of the weighted graph:
+        best = none
+        for each positive atom R in C:
+            T = maximum spanning tree of C, rooted at R
+            order = post-order traversal of T
+            if cost(order) < cost(best): best = order
+        plans.append(best)
+    sort plans by (cost, canonical form)
+    order = plans concatenated, consecutive components crossed
+    if order violates the dependency partial order: reject
+    place dependent nodes into order
+    resolve competing producers
+    insert projections
+    return order as a computation DAG
 ```
 
-Every candidate is scored and the cheapest wins. With no valid rooting — which
-takes a rule whose dependencies genuinely contradict each other — the rule is
-rejected rather than evaluated in some order that happens to work.
+Every candidate is scored and the cheapest wins. A rule whose dependencies
+genuinely contradict each other is rejected rather than evaluated in some order
+that happens to work — but a *disconnected* graph is no longer a reason to
+reject anything, which is the only thing that changed.
+
+### Grounding a body with no atom
+
+A body of nothing but matches has an empty join graph, and there is nothing to
+root. Before the graph is built, such a body is given one atom: an occurrence of
+the **unit relation**, which has no columns and holds exactly one tuple.
+
+```grasp
+answer(v: n) <-
+    n := 6 * 7
+```
+
+The rule then plans like any other — one component, one atom, the matches placed
+as dependent nodes — and the cost model, the placement rule and projection are
+all untouched. A fact is the same shape with the computation moved into the head.
+
+The unit relation is not writable: it has no name in grasp, and it is the only
+atom the compiler ever adds to a body.
 
 ## Computation DAG
 

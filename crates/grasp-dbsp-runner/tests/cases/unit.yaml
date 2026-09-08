@@ -1,0 +1,147 @@
+# `record()` — the empty record.
+#
+# It is the type with exactly one value, and it is what several things in the
+# language need a name for: the row of a relation with no columns, the key of a
+# cross product, and the key of an aggregate with no group columns.
+
+- name: a relation with no columns
+  source: |
+    tick :: zset(record())
+    tick := input("tick")
+
+  input:
+    - tick:
+        - [1, {}]
+
+  expected_exact_output:
+    - tick:
+        - [1, {}]
+
+# Every row of a `zset(record())` is the same key, so a second one is a second
+# unit of weight rather than a second row. That is what makes the type carry a
+# proposition: `distinct` collapses it to present or absent.
+- name: rows of the unit type are one row with weight
+  source: |
+    tick :: zset(record())
+    tick := input("tick")
+    once := distinct(tick)
+
+  input:
+    - tick:
+        - [1, {}]
+        - [1, {}]
+
+  expected_exact_output:
+    - once:
+        - [1, {}]
+
+- name: the unit constant
+  source: |
+    unit :: zset(record())
+    unit := constant([record()])
+
+  input:
+    - {}
+
+  expected_exact_output:
+    - unit:
+        - [1, {}]
+
+- name: an empty record literal in a function body
+  source: |
+    a :: zset(record(v: i64))
+    a := input("a")
+    erased := map(a, function((r) -> record()))
+
+  input:
+    - a:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+
+  # Both rows map to the same value, so they consolidate.
+  expected_exact_output:
+    - erased:
+        - [2, {}]
+
+- name: an empty record round-trips as an empty object
+  source: |
+    a :: zset(record(k: string, r: record()))
+    a := input("a")
+
+  input:
+    - a:
+        - [1, {k: "x", r: {}}]
+
+  expected_exact_output:
+    - a:
+        - [1, {k: "x", r: {}}]
+
+- name: an empty record has no fields
+  source: |
+    a :: zset(record())
+    a := input("a")
+    b := map(a, function((r) -> record(v: r.nope)))
+
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+      message: "has no field `nope`"
+
+# The guard: a relation with no columns joined against one that has them, on the
+# unit key. While the proposition is absent nothing passes; once it holds,
+# everything does. This is what a frontend emits for `r(x: x) <- s(x: x), enabled()`.
+- name: a proposition guards a relation
+  source: |
+    enabled :: zset(record())
+    enabled := input("enabled")
+    item    :: zset(record(v: i64))
+    item    := input("item")
+
+    e := map_index(enabled, function((r) -> record(key: record(), value: record())))
+    i := map_index(item, function((r) -> record(key: record(), value: r)))
+    out := join(e, i, function((k, a, b) -> record(v: b.v)))
+
+  input:
+    - item:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+    - enabled:
+        - [1, {}]
+    - item:
+        - [1, {v: 3}]
+
+  expected_exact_output:
+    # Nothing holds yet.
+    - out: []
+    # The proposition arrives and everything accumulated so far passes.
+    - out:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+    # And it goes on holding for what arrives after.
+    - out:
+        - [1, {v: 3}]
+
+- name: retracting the proposition retracts what it admitted
+  source: |
+    enabled :: zset(record())
+    enabled := input("enabled")
+    item    :: zset(record(v: i64))
+    item    := input("item")
+
+    e := map_index(enabled, function((r) -> record(key: record(), value: record())))
+    i := map_index(item, function((r) -> record(key: record(), value: r)))
+    out := join(e, i, function((k, a, b) -> record(v: b.v)))
+
+  input:
+    - enabled:
+        - [1, {}]
+      item:
+        - [1, {v: 1}]
+    - enabled:
+        - [-1, {}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: 1}]
+    - out:
+        - [-1, {v: 1}]

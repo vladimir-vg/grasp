@@ -1,0 +1,157 @@
+# What defines a relation: facts, rules with no atom, and relations with no
+# columns — `docs/grasp/semantics.md` and `docs/grasp/types.md`.
+
+# ---------------------------------------------------------------------------
+# Facts
+# ---------------------------------------------------------------------------
+
+- name: facts over every literal form
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src: 1, dst: 2)
+    edge(src: 2, dst: 3)
+  expected_ok: true
+
+# "usually literals, but `1 + 1` and `length("abc")` are facts too."
+- name: a fact argument may be any closed expression
+  source: |
+    sized :: relation(n: i64, m: i64)
+    sized(n: 1 + 1, m: length("abc"))
+  expected_ok: true
+
+- name: a fact with a compound argument
+  source: |
+    conf :: relation(tags: array(string), meta: record(k: string))
+    conf(tags: ["a", "b"], meta: record(k: "v"))
+  expected_ok: true
+
+- name: facts and rules may define one relation together
+  source: |
+    reachable(node: 1)
+    reachable(node: n) <-
+        reachable(node: m)
+        edge(src: m, dst: n)
+  expected_ok: true
+
+# ---------------------------------------------------------------------------
+# Rules with no positive atom
+# ---------------------------------------------------------------------------
+
+- name: a body of nothing but a match
+  source: |
+    answer(v: n) <-
+        n := 6 * 7
+  expected_ok: true
+
+- name: the same rule on one line
+  source: |
+    answer(v: n) <- n := 6 * 7
+  expected_ok: true
+
+- name: several matches and no atom
+  source: |
+    origin(x: a, y: b, d: c) <-
+        a := 0
+        b := 0
+        c := a + b
+  expected_ok: true
+
+- name: a match and a filter, and no atom
+  source: |
+    maybe(v: n) <-
+        n := 6 * 7
+        n > 40
+  expected_ok: true
+
+# ---------------------------------------------------------------------------
+# Relations with no columns
+# ---------------------------------------------------------------------------
+
+- name: a relation with no columns, specified and derived
+  source: |
+    ready :: relation()
+    ready() <-
+        config(mode: "on")
+  expected_ok: true
+
+- name: a proposition asserted as a fact
+  source: |
+    ready :: relation()
+    ready()
+  expected_ok: true
+
+# The main reason to have one: guarding a rule. The atom binds nothing, so it is
+# its own component of the join graph and is crossed in.
+- name: a proposition guards a rule
+  source: |
+    ready :: relation()
+    ready() <-
+        config(mode: "on")
+
+    active(id: i) <-
+        ready()
+        account(id: i)
+  expected_ok: true
+
+- name: a negated proposition
+  source: |
+    paused :: relation()
+    paused() <-
+        config(mode: "off")
+
+    active(id: i) <-
+        account(id: i)
+        not paused()
+  expected_ok: true
+
+- name: a proposition derived with no atom at all
+  source: |
+    always :: relation()
+    always() <-
+        1 = 1
+  expected_ok: true
+
+# ---------------------------------------------------------------------------
+# Rejections the specification states verbatim
+# ---------------------------------------------------------------------------
+
+# `types.md`: "A proposition cannot be declared `<- input`."
+- name: a relation with no columns cannot be an input
+  source: |
+    ready :: relation()
+    ready() <- input
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "has no columns and cannot be an input"
+
+# `semantics.md`: a fact's arguments are closed, and the shorthand is not.
+- name: a fact argument cannot be a variable
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src: x, dst: 2)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "nothing in the body binds it"
+
+- name: the shorthand is not closed either
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src:, dst: 2)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "nothing in the body binds it"
+
+# `semantics.md`: "A relation is defined by the program or comes from outside,
+# not both."
+- name: a relation may not have both facts and an input rule
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src:, dst:) <- input
+    edge(src: 1, dst: 2)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "has both an input rule and facts"

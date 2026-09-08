@@ -211,12 +211,12 @@ emits rows nobody expected, which is the bug class these tests exist to catch.
 Retractions and incrementality need no special support: they are a negative
 weight and a second epoch.
 
-**Facts have somewhere to go now, but no output case can use one yet.**
-grasp-dbsp gained `constant` for exactly this, and
+**Facts are specified now, but no output case can use one yet.** grasp-dbsp gained
+`constant` for exactly this, and
 [`docs/grasp/mapping.md`](../../../../docs/grasp/mapping.md#facts) says what a
 fact emits — but the pipeline stops well short of emission, so such a case would
 be pending like any other. Until then, declare data with `:: relation(...)` and
-`<- input`. Parsing facts is well defined and covered in `grammar.yaml`.
+`<- input`. What facts *are* is covered in `relations.yaml`.
 
 When emission does land: a fact-only program feeds nothing, so its `input` is
 `[{}]` — one transaction, no rows — and the facts arrive in it.
@@ -242,12 +242,14 @@ Live now, covering [`syntax.md`](../../../../docs/grasp/syntax.md):
 | `names.yaml` | reserved words and namespace prefixes, the one-name rule, wildcards, duplicates |
 | `dict_literals.yaml` | the two spellings, mixed, quoted keys |
 | `patterns.yaml` | unnest and destructure forms, and what a pattern may not be |
+| `relations.yaml` | facts, rules with no atom, relations with no columns — and the four rejections the spec states verbatim |
 
 Pending, because the spec gives them verbatim:
 
 | file | covers |
 |---|---|
 | `desugar.yaml` | the desugaring table, as `equivalent_to` pairs |
+| `normalization.yaml` | statement and rule order do not change the emission — including the two component-ordering cases the optimizer's forest must respect |
 | `recursion.yaml` | the transitive closure worked example, end to end |
 | `smoke.yaml` | the worked programs from the spec, end to end |
 
@@ -258,7 +260,7 @@ a spec change has an obvious fixture home:
 - **infer** — `assignability`, `optional`, `json`, `runtime_filters`,
   `comparison`, `inference_fixpoint`, `inference_compose`, `inference_literals`,
   `inference_overloads`, `specs`, `safety`.
-- **plan** — `normalization`, `optimizer`, `stratification`, and the diagnostic
-  halves of `negation`, `aggregation`, `input_relations`.
+- **plan** — `optimizer`, `stratification`, and the diagnostic halves of
+  `negation`, `aggregation`, `input_relations`.
 - **emit** — `joins`, `expressions`, `builtins`, `unions`, and the end-to-end
   halves of everything above.

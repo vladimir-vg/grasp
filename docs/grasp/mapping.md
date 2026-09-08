@@ -22,11 +22,26 @@ Indexed streams — `indexed_zset(K,V)` — never correspond to a grasp relation
 They exist only inside a rule, between a `map_index` and the join or aggregate
 that consumes it, and every rule ends by flattening back to a `zset`.
 
+A relation with no columns falls out of the same rule: `relation()` is
+`zset(record())`, whose one possible row is the empty record. grasp-dbsp gives
+that row a `distinct` like any other relation's, so the stream holds the empty
+tuple or nothing, which is what a
+[proposition](../grasp/types.md#a-relation-with-no-columns) means.
+
 **Two naming rules everything below depends on.** The node named `r` in the
 emitted program *is* grasp relation `r`'s stream, and an external relation's
 `input(...)` table string is the relation name. Both are visible in every
 example here; they are stated because a reader has to be able to rely on them —
 anything driving a compiled program keys on them.
+
+They have a consequence for everything else the emitter names. **An intermediate
+node may not take a relation's name.** Most intermediates need no name at all —
+grasp-dbsp operator calls nest, and a stream used once can simply be written
+where it is used — but a few must have one: a stream used twice, and anything
+`input` or `constant`, neither of which nests. Those are named after the relation
+whose rule they serve and made unique against the program's relation names.
+Which suffix is used is the emitter's business; that no intermediate collides is
+not.
 
 An external relation becomes an `input`:
 
@@ -70,7 +85,8 @@ the relation is those rows at every transaction. That is the same shape as an
 a fact relation has to know it was one.
 
 A **rule with no positive atom** — a body of nothing but matches — is grounded on
-a `constant` of a single row, which is then its join graph's root:
+the unit relation, which is a `constant` holding the one empty row and is then
+its join graph's root:
 
 ```grasp
 answer(v: n) <-
@@ -78,10 +94,23 @@ answer(v: n) <-
 ```
 
 ```
-unit   :: zset(record(unit: bool))
-unit   := constant([record(unit: true)])
-answer := distinct(map(unit, function((r) -> record(v: 42))))
+answer_g :: zset(record())
+answer_g := constant([record()])
+answer_1 := map(answer_g, function((r) -> record(n: 6 * 7)))
+answer   := distinct(map(answer_1, function((r) -> record(v: r.n))))
 ```
+
+The grounding node has to be named, because `constant` does not nest — so it is
+named after the relation it serves and made unique, per the rule
+[above](#relations). Note that `6 * 7` crosses unevaluated: emission translates
+expressions, it does not fold them, and grasp-dbsp evaluates a closed expression
+in a `constant` or a `map` alike.
+
+The facts of one relation could be emitted the same way — one grounded rule
+each, summed — and the single `constant` above is an emission choice over that,
+building the same relation with fewer nodes. Both are correct; they are not the
+same *text*, so nothing should assert that a fact and its rule form emit
+identically.
 
 ## Types
 
@@ -210,6 +239,27 @@ right is what this pass emits for it.
 
 Nothing in that table is a special case: each is the operator its DAG node named,
 which is why the node vocabulary was renamed to grasp-dbsp's in the first place.
+
+**A cross product is a join on the unit key.** When the optimizer has to combine
+two components that share no variable
+([`compilation.md`](compilation.md#join-spanning-forest)), both sides are indexed
+on `record()` — one key, so every row meets every row — and joined:
+
+```grasp
+pair(x: x, y: y) <-
+    a(x: x)
+    b(y: y)
+```
+
+```
+pair_a := map_index(a, function((r) -> record(key: record(), value: r)))
+pair_b := map_index(b, function((r) -> record(key: record(), value: r)))
+pair   := distinct(join(pair_a, pair_b, function((k, l, r) -> record(x: l.x, y: r.y))))
+```
+
+There is no `cross` operator and there does not need to be one. A guard reads the
+same way: an atom over a relation with no columns is a component whose rows are
+already `record()`, so joining it costs an index and nothing else.
 
 ## Rules and unions
 

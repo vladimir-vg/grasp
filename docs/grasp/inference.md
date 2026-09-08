@@ -134,6 +134,13 @@ A spec never *overrides* what a rule infers — it constrains it. A rule produci
 > ``relation `r` column `c` is `i64` at line N and `string` at line M``
 > ``rule at line N gives `r.c` type `string`, but it is declared `i64` ``
 
+A relation declared `<- input` must have at least one column. A relation with
+none is a proposition, and rows pushed into one could only be counted rather than
+collected — so it has to be derived, not supplied. See
+[`types.md`](types.md#a-relation-with-no-columns).
+
+> ``relation `ready` has no columns and cannot be an input``
+
 A rule head must name **every** column of a declared relation. Omitting one is
 an error rather than an implicit absence, because a column that is sometimes
 absent should say so in its type.

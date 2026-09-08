@@ -191,7 +191,9 @@ fn any_type() -> impl Strategy<Value = TypeDesc> {
             Just(TypeDesc::Optional(Box::new(TypeDesc::Json))),
         ];
         prop_oneof![
-            prop::collection::vec(field, 1..4).prop_map(|ts| {
+            // From zero: `record()` is a legal type, and the empty case is the
+            // one a hand-written fixture is least likely to reach.
+            prop::collection::vec(field, 0..4).prop_map(|ts| {
                 TypeDesc::record(
                     ts.into_iter()
                         .enumerate()

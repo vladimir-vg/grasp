@@ -1,0 +1,98 @@
+# "A rule body is a set, not a sequence" — `docs/grasp/overview.md`.
+#
+# Two rule bodies differing only in statement order are the same program and
+# compile to the same circuit. `equivalent_to` is what holds the compiler to
+# that, by comparing the emitted text: any pass that keyed on source position
+# would show up here rather than as a subtlety nobody noticed.
+#
+# The optimizer's component ordering is the part most at risk, which is why the
+# proposition and cross-product cases below exist.
+
+- name: body statement order does not change the emission
+  source: |
+    rich(name: n, title: t) <-
+        emp(name: n, dept: d, sal: s)
+        s > 100
+        dept(id: d, title: t)
+  equivalent_to: |
+    rich(name: n, title: t) <-
+        dept(id: d, title: t)
+        s > 100
+        emp(name: n, dept: d, sal: s)
+
+- name: a filter may be written anywhere in the body
+  source: |
+    adult(name: n) <-
+        person(name: n, age: a)
+        a > 20
+  equivalent_to: |
+    adult(name: n) <-
+        a > 20
+        person(name: n, age: a)
+
+- name: rule order does not change the emission
+  source: |
+    parent(child: x, parent: y) <- father(child: x, parent: y)
+    parent(child: x, parent: y) <- mother(child: x, parent: y)
+  equivalent_to: |
+    parent(child: x, parent: y) <- mother(child: x, parent: y)
+    parent(child: x, parent: y) <- father(child: x, parent: y)
+
+# A proposition is its own component of the join graph, so where it is written
+# decides nothing — the optimizer orders components structurally.
+- name: a guard may be written before or after what it guards
+  source: |
+    ready :: relation()
+    ready() <-
+        config(mode: "on")
+
+    active(id: i) <-
+        ready()
+        account(id: i)
+  equivalent_to: |
+    ready :: relation()
+    ready() <-
+        config(mode: "on")
+
+    active(id: i) <-
+        account(id: i)
+        ready()
+
+# Two atoms sharing no variable are two components, crossed at the end. Which
+# was written first must not decide which is crossed first.
+- name: the order of two independent components does not change the emission
+  source: |
+    pair(x: x, y: y) <-
+        a(x: x)
+        b(y: y)
+  equivalent_to: |
+    pair(x: x, y: y) <-
+        b(y: y)
+        a(x: x)
+
+- name: the matches of an atom-less rule may be written in any order
+  source: |
+    origin(x: a, y: b) <-
+        a := 0
+        b := 1
+  equivalent_to: |
+    origin(x: a, y: b) <-
+        b := 1
+        a := 0
+
+# `equivalent_to` proves the two programs agree, not that either is right, so
+# the sources are pinned as legal programs too.
+- name: the programs above are legal
+  source: |
+    ready :: relation()
+    ready() <-
+        config(mode: "on")
+
+    active(id: i) <-
+        ready()
+        account(id: i)
+
+    pair(x: x, y: y) <-
+        a(x: x)
+        b(y: y)
+  expected_ok: true

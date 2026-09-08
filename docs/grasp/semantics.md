@@ -213,9 +213,15 @@ Such a rule derives exactly one tuple, once — it depends on no relation, so
 there is nothing that could make it derive another. A fact is the degenerate
 case of the same thing, with the computation moved into the head.
 
-[`compilation.md`](compilation.md) says how it is grounded: the optimizer roots
-a rule's evaluation at a positive atom, so a body with none is given one that
-produces a single row.
+The optimizer roots a rule's evaluation at a positive atom, so a body with none
+is given one: an occurrence of the **unit relation**, which has no columns and
+holds exactly one tuple. That is the whole of the special case, and it happens
+before the join graph is built, so nothing downstream has one —
+[`compilation.md`](compilation.md#grounding-a-body-with-no-atom) says where.
+
+The unit relation is not writable. It has no name in grasp and a program cannot
+mention it; a relation of your own with no columns is an ordinary proposition,
+described in [`types.md`](types.md#a-relation-with-no-columns).
 
 ## Negation
 
@@ -226,6 +232,24 @@ not enrolled(student: s, course: c)
 Rows with a match are discarded. Negation is **stratified**: the negated
 relation must be fully computed before this rule runs, so it must live in a
 strictly lower stratum. Negation inside a recursive component is rejected.
+
+A relation with no columns is a **proposition** — it holds the empty tuple or
+nothing — so an atom over one neither binds nor constrains any variable. It is a
+guard:
+
+```grasp
+ready :: relation()
+ready() <- config(mode: "on")
+
+active(id: i) <-
+    ready()
+    account(id: i)
+```
+
+Every row passes while `ready` holds and none passes when it does not, and
+`not ready()` is the other way round. Because such an atom shares no variable
+with anything, it is always its own component of the join graph — see
+[`compilation.md`](compilation.md#the-weighted-join-graph).
 
 Stratified negation has a definite meaning where unrestricted negation does not.
 `p <- not p` has no least fixpoint — neither `p` empty nor `p` full satisfies it

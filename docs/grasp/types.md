@@ -43,6 +43,24 @@ cannot appear inside a value. There is no `array(relation(...))`.
 A `:: relation(...)` spec is required for a relation declared `<- input`, whose
 columns nothing else can determine, and optional elsewhere.
 
+### A relation with no columns
+
+`relation()` has no columns, so it has exactly one possible tuple — the empty
+one. Being a set, it holds that tuple or it holds nothing: it is a
+**proposition**, true or false, and `not enabled()` is how one is usually read.
+
+```grasp
+ready :: relation()
+ready() <- config(mode: "on")
+```
+
+A proposition cannot be declared `<- input`. A relation is a set, and pushing
+rows into one with no columns could only ever count them — every row is the same
+tuple — which is not what `relation()` means. Derive it from a rule instead, over
+a relation that does have columns.
+
+> ``relation `ready` has no columns and cannot be an input``
+
 ## Type identity
 
 Two types are the same type when they are structurally equal, with three
