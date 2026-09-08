@@ -53,18 +53,6 @@
     copy(x: x) <- source(x: x)
   expected_ok: true
 
-# The grammar accepts a bare filter as a body, and safety then rejects this one:
-# `x` is used by the head and bound by nothing. Asserting the rejection says both
-# halves at once — and keeps the case from passing today for the right reason and
-# failing later for the wrong one.
-- name: a single-line rule with a filter body, which safety then rejects
-  source: |
-    big(v: x) <- x > 3
-  expected_diagnostics:
-    - severity: error
-      pass: infer
-      message: "nothing in the body binds it"
-
 # multiline_rule ::= head "<-" NEWLINE (INDENT body_stmt NEWLINE)+
 - name: a multiline rule
   source: |
@@ -244,20 +232,3 @@
     - severity: error
       pass: parse
       line: 1
-
-# `filter ::= expr -- must be boolean`. A bare call is grammatical — it is a
-# filter whose expression is not boolean — so the rejection belongs to `infer`,
-# not here. The message is deliberately not pinned: `inference.md` does not name
-# one yet, and `pass` plus `line` are enough to keep a typo in this source from
-# satisfying the case.
-- name: a bare call is a filter, and must be boolean
-  source: |
-    s :: relation(x: string)
-
-    r(x: x) <-
-        s(x: x)
-        length(x)
-  expected_diagnostics:
-    - severity: error
-      pass: infer
-      line: 5

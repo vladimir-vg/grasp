@@ -1,0 +1,22 @@
+# Assignability — `docs/grasp/types.md`.
+#
+# What a value of one type may be used as, and what the compiler says when it
+# may not.
+
+# The counterpart to the rejection above, and the one group pair where
+# parenthesising is not enough: `++` takes strings and `+` takes numbers, and
+# grasp has no implicit conversion, so there is no program that mixes them.
+# Parentheses settle how it parses; the types then reject it anyway. Both facts
+# are worth having, which is why this case asserts the second rather than
+# pretending the first is the whole story.
+- name: parenthesised, concatenation and arithmetic still do not typecheck
+  source: |
+    s :: relation(a: string, b: i64, c: i64)
+
+    r(v: n) <-
+        s(a: a, b: b, c: c)
+        n := a ++ (b + c)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "no version of"

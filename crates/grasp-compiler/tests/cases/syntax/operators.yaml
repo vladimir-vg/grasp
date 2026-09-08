@@ -188,24 +188,6 @@
       message: "cannot be mixed without parentheses"
       line: 3
 
-# The counterpart to the rejection above, and the one group pair where
-# parenthesising is not enough: `++` takes strings and `+` takes numbers, and
-# grasp has no implicit conversion, so there is no program that mixes them.
-# Parentheses settle how it parses; the types then reject it anyway. Both facts
-# are worth having, which is why this case asserts the second rather than
-# pretending the first is the whole story.
-- name: parenthesised, concatenation and arithmetic still do not typecheck
-  source: |
-    s :: relation(a: string, b: i64, c: i64)
-
-    r(v: n) <-
-        s(a: a, b: b, c: c)
-        n := a ++ (b + c)
-  expected_diagnostics:
-    - severity: error
-      pass: infer
-      message: "no version of"
-
 - name: arithmetic and boolean cannot be mixed
   source: |
     r(v: n) <-

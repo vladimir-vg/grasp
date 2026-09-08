@@ -1,14 +1,39 @@
 # YAML fixtures
 
 Every `.yaml` file here holds a **list of cases**, and each case becomes one
-test named `<file stem>::<index>_<name>`:
+test named `<path>::<index>_<name>`, the path being the file's place under
+`tests/cases` without its extension:
 
 ```
 cargo test -p grasp-compiler --test yaml                 # all of them
+cargo test -p grasp-compiler --test yaml syntax/         # one directory
 cargo test -p grasp-compiler --test yaml operators       # one file
 cargo test -p grasp-compiler --test yaml operators::3_   # one case
 cargo test -p grasp-compiler --test yaml -- --list       # the inventory
 ```
+
+## Two directories
+
+**`syntax/` asks whether the text is grasp at all; `programs/` asks what the
+program means and what it computes.** A semantic rejection and an execution case
+are both answers to the second question — one says a program is wrong, the other
+says what a correct one does — so they live together rather than being split
+again by how far down the pipeline they get.
+
+Where a case goes follows from what it asserts:
+
+| a case asserting | goes to |
+|---|---|
+| a `pass: parse` diagnostic | `syntax/` |
+| a diagnostic from any later pass | `programs/` |
+| `equivalent_to`, or an output mode | `programs/` |
+| `expected_ok` | wherever its topic lives |
+
+The last row is the one that needs saying. `expected_ok` is **not** a
+parser-level assertion — it compiles the program and hands the result to
+`grasp-dbsp-runner` — so it belongs with the subject it illustrates rather than
+with a stage. An operator-precedence case that happens to be accepted is a
+syntax case; a case about what a fact means is a program case.
 
 The harness is [`tests/yaml.rs`](../yaml.rs). The language these exercise is
 grasp, specified in [`docs/grasp/`](../../../../docs/grasp/).
@@ -268,7 +293,7 @@ been guarding — and unlike a snapshot it cannot rot.
 
 ## The files
 
-Live now, covering [`syntax.md`](../../../../docs/grasp/syntax.md):
+`syntax/`, covering [`syntax.md`](../../../../docs/grasp/syntax.md):
 
 | file | covers |
 |---|---|
@@ -279,25 +304,29 @@ Live now, covering [`syntax.md`](../../../../docs/grasp/syntax.md):
 | `names.yaml` | reserved words and namespace prefixes, the one-name rule, wildcards, duplicates |
 | `dict_literals.yaml` | the two spellings, mixed, quoted keys |
 | `patterns.yaml` | unnest and destructure forms, and what a pattern may not be |
-| `relations.yaml` | facts, rules with no atom, relations with no columns — and the four rejections the spec states verbatim |
 
-Pending, because the spec gives them verbatim:
+`programs/`:
 
 | file | covers |
 |---|---|
+| `relations.yaml` | facts, rules with no atom, relations with no columns — and the rejections the spec states verbatim |
+| `safety.yaml` | a variable the body does not bind |
+| `assignability.yaml` | what a value of one type may be used as |
+| `expressions.yaml` | what a body expression computes, and where it has no answer |
 | `desugar.yaml` | the desugaring table, as `equivalent_to` pairs |
 | `normalization.yaml` | statement and rule order do not change the emission — including the two component-ordering cases the optimizer's forest must respect |
 | `recursion.yaml` | the transitive closure worked example, end to end |
 | `smoke.yaml` | the worked programs from the spec, end to end |
 
-Still to write, one stage ahead of the pass that satisfies them — named here so
-a spec change has an obvious fixture home:
+Still to write, a little ahead of the code that satisfies them — named here so a
+spec change has an obvious fixture home. All of them are `programs/`, since
+`syntax/` is as complete as the grammar is:
 
 - **desugar** — the `expected_core` half of `patterns.yaml`.
-- **infer** — `assignability`, `optional`, `json`, `runtime_filters`,
-  `comparison`, `inference_fixpoint`, `inference_compose`, `inference_literals`,
-  `inference_overloads`, `specs`, `safety`.
+- **infer** — `optional`, `json`, `runtime_filters`, `comparison`,
+  `inference_fixpoint`, `inference_compose`, `inference_literals`,
+  `inference_overloads`, `specs`, and more of `safety` and `assignability`.
 - **plan** — `optimizer`, `stratification`, and the diagnostic halves of
   `negation`, `aggregation`, `input_relations`.
-- **emit** — `joins`, `expressions`, `builtins`, `unions`, and the end-to-end
-  halves of everything above.
+- **emit** — `rules`, `joins`, `builtins`, `unions`, more of `expressions`, and
+  the end-to-end halves of everything above.

@@ -238,35 +238,3 @@
   source: |
     greeting(word: "hello")
   expected_ok: true
-
-# Division has no answer for a zero divisor, so those rows are not derived —
-# `q` is an ordinary `i64` and nothing downstream sees an absence.
-- name: a zero divisor derives no row
-  source: |
-    pair :: relation(a: i64, b: i64)
-    pair(a:, b:) <- input
-
-    ratio(a: a, q: q) <-
-        pair(a: a, b: b)
-        q := a / b
-
-  input:
-    - pair:
-        - [1, {a: 10, b: 2}]
-        - [1, {a: 9, b: 3}]
-        - [1, {a: 7, b: 0}]
-
-  expected_exact_output:
-    - ratio:
-        - [1, {a: 10, q: 5}]
-        - [1, {a: 9, q: 3}]
-
-- name: a division result is an ordinary operand
-  source: |
-    pair :: relation(a: i64, b: i64)
-    pair(a:, b:) <- input
-
-    scaled(v: n) <-
-        pair(a: a, b: b)
-        n := a / b + a % b
-  expected_ok: true

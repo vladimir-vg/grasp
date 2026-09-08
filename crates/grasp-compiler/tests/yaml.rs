@@ -1,8 +1,9 @@
 //! The YAML fixture harness.
 //!
 //! Every file under `tests/cases/` holds a list of cases; each becomes one test
-//! named `<file stem>::<index>_<name>`, so `cargo test --test yaml operators`
-//! filters and a failure names itself.
+//! named `<path>::<index>_<name>` — the path being the file's place under
+//! `tests/cases` without its extension, so `cargo test --test yaml syntax/`
+//! runs a directory, `… operators` a file, and a failure names itself.
 //!
 //! The format is documented in `tests/cases/README.md`.
 //!
@@ -18,6 +19,7 @@
 //!   the text to `grasp_dbsp_runner::compile`, whatever it asserts, so a
 //!   program the target rejects is caught without a fixture having to ask.
 
+use common::{fixture_files, label};
 use grasp_compiler::diag::{Diagnostic, Pass};
 use grasp_dbsp_runner::json::{decode_value, encode_value};
 use grasp_dbsp_runner::lower::Runner;
@@ -34,6 +36,8 @@ use std::sync::{LazyLock, Mutex};
 /// each the construct the compiler said it had not implemented.
 /// A `Mutex` because `libtest-mimic` runs trials on several threads.
 static PENDING: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+
+mod common;
 
 fn main() {
     let args = Arguments::from_args();
@@ -199,16 +203,11 @@ fn cases_dir() -> PathBuf {
 
 fn collect_trials() -> Result<Vec<Trial>, String> {
     let dir = cases_dir();
-    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
-        .map_err(|e| format!("{}: {e}", dir.display()))?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "yaml" || x == "yml"))
-        .collect();
-    files.sort();
+    let files = fixture_files(&dir)?;
 
     let mut trials = Vec::new();
     for path in files {
-        let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+        let stem = label(&dir, &path);
         let text =
             std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let cases: Vec<Case> =

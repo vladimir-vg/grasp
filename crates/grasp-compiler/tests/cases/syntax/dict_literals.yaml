@@ -1,8 +1,8 @@
 # The two dict spellings — `docs/grasp/syntax.md`, "The two dict forms".
 #
 # `{a: v}` *is* `{"a" => v}`; the `:` form is sugar. That equivalence is the
-# desugarer's job and lives in `desugar.yaml`. Here: that both spellings parse,
-# and what may appear in each.
+# desugarer's job and lives in `programs/desugar.yaml`. Here: that both spellings
+# parse, and what may appear in each.
 
 # A dict has one key type over all its entries, so the keys here are a variable
 # and a string rather than a string and an integer — what `=>` buys is that a
