@@ -7,7 +7,7 @@
 //! - **Operator groups are incomparable.** Precedence is defined within a group;
 //!   between groups only three relations hold, and every other adjacency is an
 //!   error. A binding-power table cannot say that, so each level checks the
-//!   group of the operand it just parsed — see [`permits`].
+//!   group of the operand it just parsed — see `permits` below.
 //! - **Indentation delimits a rule body and nothing else.** There is no layout
 //!   stack; a body's width is set by its first statement and read off the token
 //!   spans.

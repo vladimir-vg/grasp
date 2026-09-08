@@ -12,7 +12,8 @@
 //!
 //! - **Cases outrun the compiler.** A fixture asserting something only a later
 //!   pass can produce is expected to fail, and is reported as *pending* rather
-//!   than as a failure. See [`required_pass`] and the block in [`run_trial`].
+//!   than as a failure. The compiler is what says so, through
+//!   `Diagnostic::unimplemented`; see [`unimplemented_reason`].
 //! - **What it emits must be executable.** Any case that reaches emission hands
 //!   the text to `grasp_dbsp_runner::compile`, whatever it asserts, so a
 //!   program the target rejects is caught without a fixture having to ask.
@@ -62,6 +63,10 @@ fn report_pending() {
     // the largest number is the feature that would free the most fixtures.
     let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
     for reason in pending.iter() {
+        assert!(
+            grasp_compiler::diag::Diagnostic::UNIMPLEMENTED.contains(&reason.as_str()),
+            "the compiler reported `{reason}` as unimplemented, which is not in              `Diagnostic::UNIMPLEMENTED` — the burn-down would count it as a row of              its own rather than with the gap it belongs to"
+        );
         *counts.entry(reason.as_str()).or_default() += 1;
     }
     let mut parts: Vec<(usize, &str)> = counts.into_iter().map(|(r, n)| (n, r)).collect();

@@ -24,7 +24,7 @@ use crate::diag::{Diagnostic, Pass};
 
 /// Compile a grasp program to grasp-dbsp.
 ///
-/// The one door into the pipeline, as [`grasp_dbsp_runner::compile`] is for the
+/// The one door into the pipeline, as `grasp_dbsp_runner::compile` is for the
 /// runner: as passes are added they go here, and every caller picks them up.
 /// Returns a vector because a pass will eventually report more than one
 /// problem — today it always holds exactly one.

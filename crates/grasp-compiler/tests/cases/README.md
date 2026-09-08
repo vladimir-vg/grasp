@@ -90,10 +90,13 @@ thing that would unblock it.
   expected_ok: true
 ```
 
-"This program is legal." Diagnostics from a pass the pipeline has not reached
-yet are tolerated, which is what lets this be written today; as stages land the
-same fixture demands more, and once emission works it also requires that
-`grasp-dbsp-runner` accepts what was emitted.
+"This program is legal." A construct the compiler has not implemented is
+tolerated — it is not a rejection — which is what lets this be written today.
+Everything else is not: a diagnostic the compiler *means* fails the case.
+
+So the claim tightens on its own as the compiler grows, from "nothing rejects
+this" to "nothing rejects this and the emitted grasp-dbsp is accepted by
+`grasp-dbsp-runner`", without the fixture changing.
 
 There is no `expected_ok: false` — a case that expects rejection should say which
 diagnostics it expects.

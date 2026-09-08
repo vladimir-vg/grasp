@@ -80,10 +80,11 @@ impl fmt::Display for Severity {
 /// The compilation pass a diagnostic came from — the stages of the architecture
 /// table in `docs/grasp/overview.md`.
 ///
-/// The variants are **ordered**, and the ordering is the pipeline's. Two things
-/// depend on it: [`crate::IMPLEMENTED`] names how far the pipeline reaches, and
-/// the YAML harness compares a fixture's required pass against it to decide
-/// whether the fixture is live yet. Keep them in pipeline order.
+/// The variants are **ordered**, and the ordering is the pipeline's. Nothing
+/// depends on that today — how far the compiler has got is something it reports
+/// per construct, through [`Diagnostic::unimplemented`], rather than something a
+/// reader derives from a pass — but the order is the architecture's and costs
+/// nothing to keep true.
 ///
 /// Where the doc's eight stages collapse: `Infer` carries the safety check,
 /// which `docs/grasp/inference.md` performs in phase 1; `Plan` carries the join
@@ -176,6 +177,19 @@ impl Diagnostic {
         }
     }
 
+    /// Every construct the pipeline can report as unimplemented.
+    ///
+    /// The burn-down in the test suite groups by this string, so the vocabulary
+    /// is pinned here rather than left to each call site: two places blocked by
+    /// one feature must count as one thing, and a second spelling would quietly
+    /// split the row in half.
+    ///
+    /// Each entry is a noun phrase that reads after `not implemented: `. The
+    /// list is scaffolding — an entry appears when a stage starts reporting it
+    /// and goes when that stage implements it, and when the list is empty this
+    /// and [`Diagnostic::unimplemented`] go with it.
+    pub const UNIMPLEMENTED: &[&str] = &["the stages after parsing"];
+
     /// A construct this compiler has not implemented yet.
     ///
     /// `construct` names the thing, in the words the language uses for it, and
@@ -187,10 +201,16 @@ impl Diagnostic {
         construct: impl Into<String>,
     ) -> Diagnostic {
         let construct = construct.into();
+        debug_assert!(
+            Diagnostic::UNIMPLEMENTED.contains(&construct.as_str()),
+            "`{construct}` is not in `Diagnostic::UNIMPLEMENTED`; the burn-down \
+             groups by this string, so a new spelling of an existing gap would \
+             split its count"
+        );
         Diagnostic {
             severity: Severity::Error,
             pass,
-            message: format!("{construct} are not implemented yet"),
+            message: format!("not implemented: {construct}"),
             span: span.into(),
             unimplemented: Some(construct),
         }
