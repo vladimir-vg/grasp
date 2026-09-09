@@ -81,7 +81,7 @@ For each variable in a rule, collect every constraint on it, then compose them.
 | dict literal `{a: v}` | `K` is `string`; `v` contributes to `V` |
 | aggregate `v := sum<e>` | `v` is the aggregator's result for `e`'s type |
 | field access `e.f` | `e` is a record with field `f` |
-| assertion `v :: T` | `v` is `T`, or is filtered to `T` — see phase 4 |
+| assertion `v :: T` | `v` is `T` everywhere in the rule — see phase 4 |
 | head `r(col: v)` | `v` must be assignable to the column, if `r` is declared |
 | filter `expr` | `expr` is `boolean` |
 
@@ -115,6 +115,13 @@ third type — there is no numeric tower here for them to meet in, which is what
 makes this rule short.
 
 > ``variable `x` is used as `i64` here and as `string` at line N``
+
+An assertion is read **before** the others. Its type is written down rather than
+inferred, so nothing has to be known first — and a rule body being a set, `v :: T`
+is a claim about the whole rule rather than about what follows it. What the other
+statements *contribute* is kept apart from what a variable *is*: the atom in
+`doc(d: x)` beside `x :: i64` goes on contributing `json`, and the two are not in
+conflict.
 
 ### Collecting them is a fixpoint
 

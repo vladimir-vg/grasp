@@ -270,3 +270,83 @@
   expected_exact_output:
     - s:
         - [1, {k: "e", v: []}]
+
+# "`v` is narrowed to `T` for the rest of the rule" — and a rule body is a set,
+# so "the rest" is the whole of it. Every statement sees the narrowed type,
+# however the two were arranged.
+#
+# None of this worked until the assertions were read before the walk rather
+# than applied after it: the head saw the narrowed type and no body statement
+# did, so the common `optional(T) :: T` could not be followed by arithmetic on
+# what it narrowed.
+- name: a narrowed variable is an ordinary operand
+  source: |
+    p :: relation(a: optional(i64))
+    p(a:) <- input
+    out(v: n) <- 
+        p(a: x)
+        x :: i64
+        n := x + 1
+  input:
+    - p:
+        - [1, {a: 41}]
+        - [1, {a: null}]
+  expected_exact_output:
+    - out:
+        - [1, {v: 42}]
+
+- name: an assertion may be written above what it narrows
+  source: |
+    p :: relation(a: optional(i64))
+    p(a:) <- input
+    out(v: n) <-
+        x :: i64
+        n := x + 1
+        p(a: x)
+  equivalent_to: |
+    p :: relation(a: optional(i64))
+    p(a:) <- input
+    out(v: n) <-
+        p(a: x)
+        n := x + 1
+        x :: i64
+
+- name: a narrowed document may be unnested
+  source: |
+    doc :: relation(d: json)
+    doc(d:) <- input
+    out(v: v) <-
+        doc(d: x)
+        x :: array(i64)
+        (v) := *x
+  input:
+    - doc:
+        - [1, {d: [1, 2]}]
+        - [1, {d: "no"}]
+  expected_exact_output:
+    - out:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+
+- name: two assertions that agree are one claim
+  source: |
+    p :: relation(a: optional(i64))
+    p(a:) <- input
+    out(v: x) <-
+        p(a: x)
+        x :: i64
+        x :: i64
+  expected_ok: true
+
+- name: two assertions that disagree are a mistake
+  source: |
+    p :: relation(a: json)
+    p(a:) <- input
+    out(v: x) <-
+        p(a: x)
+        x :: i64
+        x :: string
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "asserted as"

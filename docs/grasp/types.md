@@ -192,8 +192,10 @@ hold what was asked.
 
 Where `S` is not assignable to `T` but a check on the value could settle it, the
 body assertion `v :: T` inserts that check instead of rejecting the program. A
-row whose value does not match is **discarded**, and `v` is narrowed to `T` for
-the rest of the rule.
+row whose value does not match is **discarded**, and `v` is a `T` for the whole
+rule — a body is a set, so an assertion is a claim about the rule rather than
+about what follows it, and writing it above or below what it narrows is the
+same program.
 
 | `S` | `:: T` | drops the row when |
 |---|---|---|

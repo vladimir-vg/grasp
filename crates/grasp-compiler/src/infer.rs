@@ -292,15 +292,16 @@ impl Cx {
 /// What typing one rule produced.
 struct RuleTypes {
     vars: BTreeMap<String, Ty>,
-    /// What the body walk alone concluded, before assertions narrowed anything.
+    /// What the statements *contribute*, which is not always what a variable
+    /// is: an assertion narrows `x` to `i64` while the atom that bound it goes
+    /// on contributing `json`.
     ///
-    /// This, and not `vars`, is what the next round is seeded with. An
-    /// assertion *replaces* a variable's type, so `vars` disagrees with the
-    /// statement that binds the variable by construction: seeding a second
-    /// walk from it makes `doc(k: k, d: x)` beside `x :: i64` report `x` as
-    /// both `json` and `i64`. The walk is the monotone part, so the walk is
-    /// the part that iterates.
-    walked: BTreeMap<String, Ty>,
+    /// This, and not `vars`, is what the next round is seeded with, and it is
+    /// where a conflict between two statements is a mistake. Seeding from
+    /// `vars` would make `doc(k: k, d: x)` beside `x :: i64` report `x` as both
+    /// `json` and `i64` — the two are not disagreeing, they are saying
+    /// different things.
+    source: BTreeMap<String, Ty>,
     filters: Vec<Assert>,
     head: BTreeMap<String, Ty>,
     /// The first thing wrong, which is the only thing reported.
@@ -334,13 +335,18 @@ impl Cx {
     /// the lattice has no finite height either, since `x := [y]` beside
     /// `y := [x]` deepens both by an array every round. A rule that does not
     /// settle falls out with its variables open, which phase 3 reports.
+    ///
+    /// Assertions need none of this — an assertion's type is written down, so
+    /// [`Cx::type_pass`] reads them all before it reads anything else, and a
+    /// narrowing is order-insensitive by construction rather than by
+    /// iteration.
     fn type_rule(&self, rule: &core::Rule) -> RuleTypes {
         let limit = self.round_limit();
         let mut seed: BTreeMap<String, Ty> = BTreeMap::new();
         for _ in 0..limit {
             let next: BTreeMap<String, Ty> = self
                 .type_pass(rule, &seed)
-                .walked
+                .source
                 .into_iter()
                 .filter(|(_, ty)| !ty.is_poisoned())
                 .collect();
@@ -353,22 +359,74 @@ impl Cx {
     }
 
     fn type_pass(&self, rule: &core::Rule, seed: &BTreeMap<String, Ty>) -> RuleTypes {
-        let mut vars: BTreeMap<String, Ty> = seed.clone();
         let mut fault: Option<Diagnostic> = None;
-        let mut asserts: Vec<(&String, &Type, Span)> = Vec::new();
-        let mut filters: Vec<Assert> = Vec::new();
         let note = |d: Diagnostic, fault: &mut Option<Diagnostic>| {
             if fault.is_none() {
                 *fault = Some(d);
             }
         };
 
-        let constrain = |vars: &mut BTreeMap<String, Ty>,
+        // **Assertions first.** A rule body is a set, so `x :: i64` is a claim
+        // about the whole rule rather than about what follows it — and an
+        // assertion's type is *written down* rather than inferred, so it can be
+        // read before anything else is. That is what makes the claim
+        // order-insensitive: every statement sees the narrowed type, however
+        // the two were arranged.
+        //
+        // Two assertions on one variable compose, which is order-insensitive
+        // too; where they cannot, neither is the truth and both are reported.
+        let mut narrowed: BTreeMap<String, Ty> = BTreeMap::new();
+        for stmt in &rule.body {
+            let core::Stmt::Assert { variable, ty, span } = stmt else {
+                continue;
+            };
+            let want = Ty::known(ty);
+            let merged = match narrowed.get(variable) {
+                Some(already) => match compose(already, &want) {
+                    Ok(t) => t,
+                    Err(c) => {
+                        note(
+                            Diagnostic::error(
+                                Pass::Infer,
+                                *span,
+                                format!(
+                                    "variable `{variable}` is asserted as `{}` and as `{}`",
+                                    c.left, c.right
+                                ),
+                            ),
+                            &mut fault,
+                        );
+                        Ty::Error
+                    }
+                },
+                None => want,
+            };
+            narrowed.insert(variable.clone(), merged);
+        }
+
+        // Two tables. `source` is what the statements *contribute*, which is
+        // where a conflict between them is a mistake; `vars` is what a
+        // variable *is*, which for an asserted one is what the assertion says.
+        // Keeping them apart is what lets `doc(k: k, d: x)` and `x :: i64`
+        // stand together instead of reporting `x` as both `json` and `i64`.
+        let mut source: BTreeMap<String, Ty> = seed.clone();
+        let mut vars: BTreeMap<String, Ty> = seed.clone();
+        for (name, ty) in &narrowed {
+            if vars.contains_key(name) {
+                vars.insert(name.clone(), ty.clone());
+            }
+        }
+        let mut filters: Vec<Assert> = Vec::new();
+
+        // One contribution, composed into `source` — and mirrored into `vars`
+        // unless an assertion has already said what the variable is.
+        let constrain = |source: &mut BTreeMap<String, Ty>,
+                         vars: &mut BTreeMap<String, Ty>,
                          name: &str,
                          ty: Ty,
                          span: Span,
                          fault: &mut Option<Diagnostic>| {
-            let merged = match vars.get(name) {
+            let merged = match source.get(name) {
                 Some(existing) => match compose(existing, &ty) {
                     Ok(t) => t,
                     Err(c) => {
@@ -389,7 +447,11 @@ impl Cx {
                 },
                 None => ty,
             };
-            vars.insert(name.to_string(), merged);
+            source.insert(name.to_string(), merged.clone());
+            vars.insert(
+                name.to_string(),
+                narrowed.get(name).cloned().unwrap_or(merged),
+            );
         };
 
         for stmt in &rule.body {
@@ -408,6 +470,7 @@ impl Cx {
                         match e {
                             core::Expr::Var { name, span } => {
                                 constrain(
+                                    &mut source,
                                     &mut vars,
                                     name,
                                     want.unwrap_or(Ty::Unknown),
@@ -451,7 +514,7 @@ impl Cx {
                         if let Some(d) = err {
                             note(d, &mut fault);
                         }
-                        constrain(&mut vars, name, ty, *vs, &mut fault);
+                        constrain(&mut source, &mut vars, name, ty, *vs, &mut fault);
                     }
                     // `inference.md`: "`arr` is `array(E)`; `x` and `y` are
                     // `E`." Definite, as a dict pattern's are: `array:get`
@@ -482,12 +545,26 @@ impl Cx {
                             }
                         };
                         for var in elems {
-                            constrain(&mut vars, var, element.clone(), *ps, &mut fault);
+                            constrain(
+                                &mut source,
+                                &mut vars,
+                                var,
+                                element.clone(),
+                                *ps,
+                                &mut fault,
+                            );
                         }
                         // The remainder is an array of the same elements — the
                         // one destructure whose rest needs no type of its own.
                         if let core::Rest::Bind(r) = rest {
-                            constrain(&mut vars, r, Ty::Array(Box::new(element)), *ps, &mut fault);
+                            constrain(
+                                &mut source,
+                                &mut vars,
+                                r,
+                                Ty::Array(Box::new(element)),
+                                *ps,
+                                &mut fault,
+                            );
                         }
                     }
 
@@ -536,13 +613,13 @@ impl Cx {
                             }
                         };
                         for (_, var) in fields {
-                            constrain(&mut vars, var, value.clone(), *ps, &mut fault);
+                            constrain(&mut source, &mut vars, var, value.clone(), *ps, &mut fault);
                         }
                         // The remainder is the same dict, minus some entries —
                         // the one destructure whose rest needs no type of its
                         // own beyond the subject's.
                         if let core::Rest::Bind(r) = rest {
-                            constrain(&mut vars, r, subject.clone(), *ps, &mut fault);
+                            constrain(&mut source, &mut vars, r, subject.clone(), *ps, &mut fault);
                         }
                     }
 
@@ -564,7 +641,14 @@ impl Cx {
                                 for (key, var) in fields {
                                     match have.iter().find(|(n, _)| n == key) {
                                         Some((_, t)) => {
-                                            constrain(&mut vars, var, t.clone(), *ps, &mut fault);
+                                            constrain(
+                                                &mut source,
+                                                &mut vars,
+                                                var,
+                                                t.clone(),
+                                                *ps,
+                                                &mut fault,
+                                            );
                                         }
                                         None => note(
                                             Diagnostic::error(
@@ -602,7 +686,14 @@ impl Cx {
                                         .filter(|(n, _)| !fields.iter().any(|(k, _)| k == n))
                                         .cloned()
                                         .collect();
-                                    constrain(&mut vars, r, Ty::Record(left), *ps, &mut fault);
+                                    constrain(
+                                        &mut source,
+                                        &mut vars,
+                                        r,
+                                        Ty::Record(left),
+                                        *ps,
+                                        &mut fault,
+                                    );
                                 }
                             }
                             Ty::Unknown => {}
@@ -647,10 +738,19 @@ impl Cx {
                                 // index first, which is an `i64` whatever the
                                 // array holds.
                                 match names.as_slice() {
-                                    [v] => constrain(&mut vars, v, elem, *ps, &mut fault),
+                                    [v] => {
+                                        constrain(&mut source, &mut vars, v, elem, *ps, &mut fault)
+                                    }
                                     [i, v] => {
-                                        constrain(&mut vars, i, Ty::I64, *ps, &mut fault);
-                                        constrain(&mut vars, v, elem, *ps, &mut fault);
+                                        constrain(
+                                            &mut source,
+                                            &mut vars,
+                                            i,
+                                            Ty::I64,
+                                            *ps,
+                                            &mut fault,
+                                        );
+                                        constrain(&mut source, &mut vars, v, elem, *ps, &mut fault);
                                     }
                                     // `check_unnest` admits no other arity, and
                                     // reports before this pass runs.
@@ -674,10 +774,10 @@ impl Cx {
                                     }
                                 };
                                 if let Some(n) = names.first() {
-                                    constrain(&mut vars, n, k, *ps, &mut fault);
+                                    constrain(&mut source, &mut vars, n, k, *ps, &mut fault);
                                 }
                                 if let Some(n) = names.get(1) {
-                                    constrain(&mut vars, n, v, *ps, &mut fault);
+                                    constrain(&mut source, &mut vars, n, v, *ps, &mut fault);
                                 }
                             }
                         }
@@ -700,62 +800,62 @@ impl Cx {
                     }
                 }
 
-                // Applied after the walk: an assertion is a claim about a
-                // variable, not a contribution to it, and it has to see what
-                // everything else concluded before it can override that.
-                core::Stmt::Assert { variable, ty, span } => {
-                    asserts.push((variable, ty, *span));
-                }
+                // Read before the walk, into `narrowed`. An assertion is a
+                // claim about a variable rather than a contribution to it, so
+                // it contributes nothing here.
+                core::Stmt::Assert { .. } => {}
 
                 core::Stmt::Input { .. } => {}
             }
         }
 
-        let walked = vars.clone();
-
-        // Assertions, now that every other statement has had its say.
+        // What each assertion turned out to *be*, now that the statements have
+        // had their say: a compile-time check, a filter, or a mistake. What it
+        // narrowed to is settled already — `vars` has carried it throughout.
         //
-        // An assertion *replaces* a variable's type rather than composing with
-        // it: `n : optional(string)` from the atom and `n :: string` do not
-        // meet in the lattice, they are a narrowing — and after it, "`n` is
-        // `string` for everything below". A rule body being a set, "below" is
-        // wherever the filter lands, and the filter lands as early as the
-        // variable is bound; so one type for the whole rule is the truth.
-        for (variable, ty, span) in asserts {
+        // Reported ahead of anything the walk found. An assertion that can
+        // never pass explains every type error under it, and reporting `no
+        // version of + takes string` first would send a reader after the wrong
+        // line.
+        let mut wrong: Option<Diagnostic> = None;
+        for stmt in &rule.body {
+            let core::Stmt::Assert { variable, ty, span } = stmt else {
+                continue;
+            };
             let want = Ty::known(ty);
-            let Some(have) = vars.get_mut(variable) else {
+            let Some(have) = source.get(variable) else {
                 // Unbound: the safety check reports it, and saying so twice
                 // would be two diagnostics for one fault.
                 continue;
             };
             match narrows(have, &want) {
-                Narrowing::Already => *have = want,
-                Narrowing::Filter { cast, shape } => {
-                    filters.push(Assert {
-                        variable: variable.clone(),
-                        ty: ty.clone(),
-                        cast,
-                        shape,
-                        span,
-                    });
-                    *have = want;
-                }
+                Narrowing::Already => {}
+                Narrowing::Filter { cast, shape } => filters.push(Assert {
+                    variable: variable.clone(),
+                    ty: ty.clone(),
+                    cast,
+                    shape,
+                    span: *span,
+                }),
                 Narrowing::Unsupported => note(
-                    Diagnostic::unimplemented(Pass::Infer, span, "narrowing under two wrappers"),
-                    &mut fault,
+                    Diagnostic::unimplemented(Pass::Infer, *span, "narrowing under two wrappers"),
+                    &mut wrong,
                 ),
                 Narrowing::Never => note(
                     Diagnostic::error(
                         Pass::Infer,
-                        span,
+                        *span,
                         format!(
                             "no `{have}` value is a `{ty}`: this assertion would discard \
                              every row"
                         ),
                     ),
-                    &mut fault,
+                    &mut wrong,
                 ),
             }
+        }
+        if wrong.is_some() {
+            fault = wrong;
         }
 
         // Phase 3, upwards: a declared head column reaches back into the
@@ -800,7 +900,7 @@ impl Cx {
 
         RuleTypes {
             vars,
-            walked,
+            source,
             head,
             fault,
             filters,

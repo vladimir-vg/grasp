@@ -185,15 +185,23 @@ A match binds, so it satisfies [safety](#safety) for the variable on its left.
 
 An assertion states a variable's type. It is a **compile-time check** where the
 value is already known to be a `T`, and a **runtime filter** where a check could
-settle it — dropping the rows that do not match and narrowing `v` to `T` for
-everything after it. Which one it is depends on the tables in
-[`types.md`](types.md#runtime-filters).
+settle it — dropping the rows that do not match and making `v` a `T`. Which one
+it is depends on the tables in [`types.md`](types.md#runtime-filters).
 
 ```grasp
-named(name: n) <-
+named(name: n, len: k) <-
     person(name: n)      # n : optional(string)
-    n :: string          # drops the absent rows; n : string below
+    n :: string          # drops the absent rows
+    k := length(n)       # n is a string here
 ```
+
+**It narrows for the whole rule, not for what follows it.** A body is a set, so
+an assertion is a claim about the rule; the three statements above may be
+written in any order and mean the same thing. That is the same rule everything
+else in a body obeys, and typespecs are not the exception they look like.
+
+Two assertions on one variable are one claim, composed. Two that cannot compose
+are a mistake, since neither is then the truth.
 
 An assertion **binds nothing** — the variable must already exist — and where no
 check could ever pass it is an error rather than a silently empty relation.
