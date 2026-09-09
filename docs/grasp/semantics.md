@@ -536,9 +536,10 @@ apart: `["x", "x"]` unnests to one row without one and to two rows with it,
 which is the [set](#programs-and-relations) rule doing what it always does
 rather than an exception to it.
 
-One form named above is not yet available: `{a:, **e} := d` needs the entries
-the pattern did not name, which is `dict:without_keys` and is
-[future work](overview.md#future-work). Every other row works.
+Every row above works. The two remainders differ in *when* they are known, which
+is why they became different things: a record's fields are fixed by its type, so
+`**e` there is a literal built at compile time, while a dict's entries are data,
+so `**e` there is a subtraction the program performs.
 
 **An array pattern is positional**, so its variables are not reordered and
 `[x, y]` and `[y, x]` are two patterns — unlike a dict's or a record's, which

@@ -1372,10 +1372,40 @@ fn destructure(
         }
     }
 
+    // A dict's remainder is not known until the program runs, so it is the
+    // subtraction itself — an emission-time `filter_array` over the entries.
+    if let (false, core::Rest::Bind(name)) = (record, rest) {
+        let without = core::Expr::Call {
+            callee: core::Builtin::DictWithoutKeys,
+            args: vec![
+                subject.clone(),
+                core::Expr::ArrayLit {
+                    elems: fields
+                        .iter()
+                        .map(|(key, _)| core::Expr::Lit {
+                            value: Lit::Str(key.clone()),
+                            span,
+                        })
+                        .collect(),
+                    span,
+                },
+            ],
+            span,
+        };
+        deps.push(Dependent {
+            kind: Kind::Match,
+            binds: vec![name.clone()],
+            consumes,
+            key: format!("{name} := {}", key::expr(&without)),
+            body: Body::Bind(name.clone(), without),
+        });
+        return;
+    }
+
     // A record's remainder is a set of fields known at compile time, so it is a
-    // literal rather than the builtin subtraction a dict would need. `infer`
-    // typed it, and reading the field names back off that type is what keeps
-    // the two from deciding it separately.
+    // literal rather than the builtin subtraction a dict needs. `infer` typed
+    // it, and reading the field names back off that type is what keeps the two
+    // from deciding it separately.
     if let core::Rest::Bind(name) = rest {
         let Type::Record(left) = settled(typed, name) else {
             unreachable!("`infer` types a bound remainder as a record")

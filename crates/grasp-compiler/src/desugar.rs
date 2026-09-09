@@ -156,22 +156,11 @@ fn pattern_of(p: &ast::Pattern) -> Result<core::Pattern, Diagnostic> {
         // The dict and record patterns survive into the core for the reason an
         // unnest does: expanding them needs types, and this runs before there
         // are any.
-        ast::Pattern::Dict { fields, rest, span } => {
-            // `{a: x, **e}` needs the entries the pattern did not name, which
-            // is `dict:without_keys` — a builtin grasp-dbsp does not have.
-            if matches!(rest, ast::Rest::Bind(_)) {
-                return Err(Diagnostic::unimplemented(
-                    Pass::Desugar,
-                    *span,
-                    "binding a dict's remaining entries",
-                ));
-            }
-            core::Pattern::Dict {
-                fields: sorted_fields(fields),
-                rest: rest.clone(),
-                span: *span,
-            }
-        }
+        ast::Pattern::Dict { fields, rest, span } => core::Pattern::Dict {
+            fields: sorted_fields(fields),
+            rest: rest.clone(),
+            span: *span,
+        },
         ast::Pattern::Record { fields, rest, span } => core::Pattern::Record {
             fields: sorted_fields(fields),
             rest: rest.clone(),

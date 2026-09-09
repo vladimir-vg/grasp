@@ -317,6 +317,12 @@ pub enum Builtin {
     /// i >= n))` — and grasp's expressions do not, so the binder is introduced
     /// at emission rather than carried through the middle of the compiler.
     ArrayDrop,
+    /// `dict:without_keys(d, ["a"])` — the entries the pattern did not name.
+    ///
+    /// What a dict pattern's `**e` binds, and an emission-time binder like
+    /// [`Builtin::ArrayDrop`]: it becomes a `filter_array` over the dict's
+    /// entries, rebuilt with `dict`.
+    DictWithoutKeys,
 }
 
 impl Builtin {
@@ -360,6 +366,7 @@ impl Builtin {
         Builtin::BooleanNot,
         Builtin::ArrayGet,
         Builtin::ArrayDrop,
+        Builtin::DictWithoutKeys,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -380,6 +387,7 @@ impl Builtin {
             Builtin::DictGet => "dict:get",
             Builtin::ArrayGet => "array:get",
             Builtin::ArrayDrop => "array:drop",
+            Builtin::DictWithoutKeys => "dict:without_keys",
             Builtin::BooleanNot => "boolean:not",
         }
     }

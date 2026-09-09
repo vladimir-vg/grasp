@@ -275,6 +275,7 @@ promise is one mechanism rather than two.
 | `keys(d)` | `keys(d)` → `array(K)` |
 | `length(d)` | `length(d)` |
 | `{a:} := d` destructure | `get(d, "a")` per key, guarded by `length(d) = N` |
+| `{a:, **e} := d` remainder | `dict(filter_array(entries(d), function((e) -> e.key != "a")))` |
 | `[x, y] := arr` destructure | `get(arr, 0)` per position, guarded by `length(arr) = N` |
 | `[x, *r] := arr` remainder | `filter_array(arr, function((e, i) -> i >= N))` |
 | `(k, v) := **d` unnest | `flat_map` over `entries(d)` |
@@ -283,12 +284,13 @@ promise is one mechanism rather than two.
 what makes the unnest deterministic. Its inverse is the other form of the dict
 literal, `dict(a)`, for building a dict whose size follows the data.
 
-`{k:, **rest} := d` has no lowering yet: subtracting the named keys needs a
-`without_keys` builtin grasp-dbsp does not have. See
-[`overview.md`](overview.md#future-work). A **record** remainder does lower,
-because its fields are known before the program runs: `record(a:, **e) := r`
-builds `e` as a `record(…)` literal of `get`s over the fields the pattern did
-not name, which is why the two spellings are not one feature.
+`{k:, **rest} := d` subtracts the named keys, which is a `filter_array` over the
+dict's entries rebuilt with `dict`. The pattern's keys are literal, so the
+predicate is a conjunction the emitter writes out and no membership builtin is
+needed. A **record** remainder lowers differently, its fields being known before
+the program runs: `record(a:, **e) := r` builds `e` as a `record(…)` literal of
+`get`s over the fields the pattern did not name, which is why the two spellings
+are not one feature.
 
 ## Body statements, end to end
 

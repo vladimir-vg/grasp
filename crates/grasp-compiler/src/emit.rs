@@ -1212,6 +1212,27 @@ fn call_text(scope: &Scope<'_>, callee: core::Builtin, args: &[core::Expr]) -> S
         // are free here: an expression is emitted inside a `map`'s function,
         // whose one parameter is the row, and `array:drop` never nests inside
         // another array function — a pattern produces at most one.
+        // The keys are the pattern's, so they are literals and the predicate is
+        // a conjunction the emitter writes out — no membership builtin needed.
+        // A pattern naming no key at all leaves `true`.
+        (core::Builtin::DictWithoutKeys, [dict, keys]) => {
+            let core::Expr::ArrayLit { elems, .. } = keys else {
+                unreachable!("`dict:without_keys` takes a literal array of keys")
+            };
+            let tests: Vec<String> = elems
+                .iter()
+                .map(|k| format!("{ELEMENT}.key != {}", expr_text(k, None)))
+                .collect();
+            let predicate = if tests.is_empty() {
+                "true".to_string()
+            } else {
+                tests.join(" and ")
+            };
+            format!(
+                "dict(filter_array(entries({}), function(({ELEMENT}) -> ({predicate}))))",
+                expr_text(dict, None)
+            )
+        }
         (core::Builtin::ArrayDrop, [array, from]) => format!(
             "filter_array({}, function(({ELEMENT}, {INDEX}) -> ({INDEX} >= {})))",
             expr_text(array, None),

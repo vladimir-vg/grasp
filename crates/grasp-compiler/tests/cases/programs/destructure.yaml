@@ -342,3 +342,62 @@
     - severity: error
       pass: infer
       message: "is not an array to destructure"
+
+# `{a:, **rest} := d` — the remainder, which for a dict is not known until the
+# program runs. It becomes a `filter_array` over the entries, rebuilt with
+# `dict`; the predicate is a conjunction over the pattern's keys, which are
+# always literal, so no membership builtin is needed.
+- name: a dict remainder is the entries left over
+  source: |
+    src :: relation(id: i64, d: dict(string, i64))
+    src(id:, d:) <- input
+
+    out(id: id, a: a, left: rest) <-
+        src(id: id, d: d)
+        {a:, **rest} := d
+
+  input:
+    - src:
+        - [1, {id: 1, d: {"a": 10, "b": 20, "c": 30}}]
+        - [1, {id: 2, d: {"a": 40}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {id: 1, a: 10, left: {b: 20, c: 30}}]
+        - [1, {id: 2, a: 40, left: {}}]
+
+# A rest binding asks nothing about the size, so a missing key is still what
+# drops the row — not the remainder.
+- name: a dict remainder does not rescue a missing key
+  source: |
+    src :: relation(id: i64, d: dict(string, i64))
+    src(id:, d:) <- input
+
+    out(id: id, a: a, left: rest) <-
+        src(id: id, d: d)
+        {a:, **rest} := d
+
+  input:
+    - src:
+        - [1, {id: 1, d: {"b": 20}}]
+
+  expected_exact_output:
+    - {}
+
+# Several named keys are several conjuncts.
+- name: a dict remainder drops every key the pattern named
+  source: |
+    src :: relation(d: dict(string, i64))
+    src(d:) <- input
+
+    out(a: a, b: b, left: rest) <-
+        src(d: d)
+        {a:, b:, **rest} := d
+
+  input:
+    - src:
+        - [1, {d: {"a": 1, "b": 2, "c": 3, "d": 4}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {a: 1, b: 2, left: {c: 3, d: 4}}]

@@ -83,11 +83,12 @@ end yet. **The compiler says what it cannot do**, through a diagnostic carrying
 - a case that fails because the compiler said so is **pending**;
 - a case that fails any other way is a **failure**.
 
-That is the whole rule. Nothing is `#[ignore]`d, so nothing quietly stops being
-parsed, and each run ends with the debt, grouped by what is blocking it:
+That is the whole rule — with one exception, `skip:`, described below. Nothing
+else is `#[ignore]`d, so nothing quietly stops being parsed, and each run ends
+with the debt, grouped by what is blocking it:
 
 ```
-1 pending: narrowing that keeps its wrapper 1
+2 pending: narrowing inside a container 2
 ```
 
 which is a work queue rather than a census — the largest number is the feature
@@ -129,13 +130,15 @@ has designed is wrong in ways nothing detects.
 ### `skip` is not the same thing
 
 ```yaml
-skip: "array destructure needs element access — overview.md#future-work"
+skip: "some construct needs a named thing — overview.md#future-work"
 ```
 
 `skip:` is only for constructs blocked on **named future work**, and its reason
 must name a section of
 [`docs/grasp/overview.md#future-work`](../../../../docs/grasp/overview.md#future-work).
-A skipped case is not run at all, because the construct may not even parse.
+A skipped case is not run at all, because the construct may not even parse — and
+that is the cost: its `source` is never read, so it can rot. **No case is skipped
+today**, and the fewer there are the better.
 
 Anything blocked merely on *time* is pending, not skipped. The difference is that
 pending resolves itself and skip does not, which is why skip has to name the

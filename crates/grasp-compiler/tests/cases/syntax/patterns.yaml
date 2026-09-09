@@ -226,8 +226,10 @@
   expected_ok: true
 
 - name: a dict destructure binding the rest
-  skip: "`**e` needs dict:without_keys — overview.md#future-work"
   source: |
+    s :: relation(d: dict(string, i64))
+    s(d:) <- input
+
     r(v: x, rest: e) <-
         s(d: d)
         {a: x, **e} := d

@@ -492,7 +492,9 @@ impl Cx {
                     // that the key is there, and `plan` is where the row
                     // without it is dropped.
                     core::Pattern::Dict {
-                        fields, span: ps, ..
+                        fields,
+                        rest,
+                        span: ps,
                     } => {
                         let (subject, err) = self.rhs_ty(rhs, &vars);
                         if let Some(d) = err {
@@ -531,6 +533,12 @@ impl Cx {
                         };
                         for (_, var) in fields {
                             constrain(&mut vars, var, value.clone(), *ps, &mut fault);
+                        }
+                        // The remainder is the same dict, minus some entries —
+                        // the one destructure whose rest needs no type of its
+                        // own beyond the subject's.
+                        if let core::Rest::Bind(r) = rest {
+                            constrain(&mut vars, r, subject.clone(), *ps, &mut fault);
                         }
                     }
 
@@ -1250,6 +1258,20 @@ impl Cx {
                 match &args[0] {
                     Ty::Array(_) if matches!(args[1], Ty::I64 | Ty::Int) => (args[0].clone(), None),
                     Ty::Unknown => (Ty::Unknown, None),
+                    _ => wrong(),
+                }
+            }
+            // `dict:without_keys(d, ks)` — the same dict, smaller.
+            B::DictWithoutKeys => {
+                if let Some(d) = arity(2) {
+                    return (Ty::Error, Some(d));
+                }
+                match (&args[0], &args[1]) {
+                    (Ty::Dict(k, _), Ty::Array(e)) if k == e => (args[0].clone(), None),
+                    // An empty `[]` has no element type to compare, and a
+                    // pattern that names no key produces exactly that.
+                    (Ty::Dict(..), Ty::Array(e)) if **e == Ty::Unknown => (args[0].clone(), None),
+                    (Ty::Unknown, _) => (Ty::Unknown, None),
                     _ => wrong(),
                 }
             }

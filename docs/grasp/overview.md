@@ -100,11 +100,6 @@ design comes from. What is missing is missing on purpose.
   syntax for writing one directly, not the capability. A slice also wants a
   range, and a range is not a value here.
 
-- **A dict's remainder.** `{k:, **rest} := d` needs the entries the pattern did
-  not name, which means subtracting keys — a `without_keys` builtin grasp-dbsp
-  does not have, and the one destructure row that does not work. A *record's*
-  remainder does, its fields being known before the program runs.
-
 - **The rest of the type vocabulary.** `dynamic` — the top type, and the one
   most likely to be wanted first, since it is what an untyped subset of the
   language would be built on. Then the narrower integers and `f32`, the
