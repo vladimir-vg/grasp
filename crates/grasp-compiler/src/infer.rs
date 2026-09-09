@@ -95,6 +95,14 @@ pub struct TypedRule {
     pub vars: BTreeMap<String, Type>,
     /// The assertions that became runtime filters, in body order.
     pub asserts: Vec<Assert>,
+    /// What an aggregate in this rule groups by — the variables the head's
+    /// non-aggregate columns read. Empty for a rule with no aggregate.
+    ///
+    /// Decided here for the reason [`Assert`] is: the scope rule is read in
+    /// this pass, so this pass owns the answer. The plan derives the same set
+    /// from liveness and asserts the two agree, which is a check rather than a
+    /// second implementation.
+    pub group: BTreeSet<String>,
 }
 
 pub fn infer(program: core::Program) -> Result<Typed, Vec<Diagnostic>> {
@@ -1226,6 +1234,13 @@ impl Cx {
         if let Some(d) = self.check_safety(rule) {
             return Some(d);
         }
+        // Scope, also before typing, and for the same reason plus one: it needs
+        // no types, so nothing it says can be poisoned by an earlier fault —
+        // and `type_rule` walks the body in source order, so running it first
+        // would make this message depend on where a line was written.
+        if let Some(d) = check_aggregate_scope(rule) {
+            return Some(d);
+        }
 
         let typed = self.type_rule(rule);
         if typed.fault.is_some() {
@@ -1375,6 +1390,320 @@ impl Cx {
         }
         None
     }
+}
+
+/// Everything an aggregate puts out of reach, and what may still read it.
+///
+/// An aggregate folds a whole group into one value, so past that point the only
+/// things with a value are the group and the aggregates' results. A variable
+/// that varies *within* the group does not have one — which is why
+/// `s > r` is refused rather than answered.
+///
+/// Note what the diagnostics below never say: *after*. A rule body is a set,
+/// not a sequence, and a message that spoke of statements running in an order
+/// would teach the opposite of what the language promises. The group is a
+/// scope, and that is how they are worded.
+fn check_aggregate_scope(rule: &core::Rule) -> Option<Diagnostic> {
+    let after = after(rule);
+    if after.is_empty() {
+        return None;
+    }
+    let group = group_of(rule, &after);
+    let allowed: BTreeSet<String> = group.union(&after).cloned().collect();
+
+    // The name of some aggregate result, for a message that has to point at one.
+    let an_aggregate = |reads: &BTreeSet<String>| -> String {
+        reads
+            .iter()
+            .find(|v| after.contains(*v))
+            .cloned()
+            .unwrap_or_default()
+    };
+
+    for stmt in &rule.body {
+        let read = reads(stmt);
+        match stmt {
+            // An aggregate folds the body's assignments, and an aggregate's own
+            // result is not one of them. `compilation.md` says so as an
+            // invariant — "the aggregated column is in the input schema" — and
+            // nothing enforced it.
+            core::Stmt::Match {
+                rhs: core::Rhs::Aggregate { function, arg, .. },
+                ..
+            } => {
+                if let Some(e) = arg
+                    && let Some(v) = pick(&free(e), |v| after.contains(v))
+                {
+                    return Some(Diagnostic::error(
+                        Pass::Infer,
+                        var_span(e, &v).unwrap_or(e.span()),
+                        format!(
+                            "`{}` folds the body's assignments, and `{v}` is an aggregate \
+                             result rather than one of them",
+                            key::aggregator(*function)
+                        ),
+                    ));
+                }
+            }
+            // An atom is one of the things the aggregate folds, so it cannot
+            // mention what the folding produced — whether it reads the result
+            // in an argument expression or binds a column to its name.
+            core::Stmt::Atom {
+                relation,
+                args,
+                negated: false,
+                span,
+                ..
+            } => {
+                let mentions: BTreeSet<String> = read.union(&binds(stmt)).cloned().collect();
+                if let Some(v) = pick(&mentions, |v| after.contains(v)) {
+                    let at = args
+                        .iter()
+                        .find_map(|(_, a)| match a {
+                            core::Arg::Expr(e) => var_span(e, &v),
+                            core::Arg::Wildcard(_) => None,
+                        })
+                        .unwrap_or(*span);
+                    return Some(Diagnostic::error(
+                        Pass::Infer,
+                        at,
+                        format!(
+                            "atom `{relation}` mentions the aggregate result `{v}`, but an \
+                             atom is one of the things `{v}` is folded over"
+                        ),
+                    ));
+                }
+            }
+            _ => {}
+        }
+
+        // An aggregate is what *puts* its result out of reach, so it is not a
+        // statement that reads nothing and binds something out of reach.
+        let aggregating = matches!(
+            stmt,
+            core::Stmt::Match {
+                rhs: core::Rhs::Aggregate { .. },
+                ..
+            }
+        );
+
+        // A variable cannot be both something the group ranges over and the
+        // group's answer.
+        if read.is_disjoint(&after) {
+            for v in binds(stmt) {
+                if after.contains(&v) && !aggregating {
+                    return Some(Diagnostic::error(
+                        Pass::Infer,
+                        stmt.span(),
+                        format!(
+                            "variable `{v}` is bound by the body and again from an aggregate \
+                             result, and those are not one value"
+                        ),
+                    ));
+                }
+            }
+            continue;
+        }
+
+        // And the general rule: reading an aggregate's result puts a statement
+        // in the group's scope, where only the group has values.
+        if let Some(v) = pick(&read, |v| !allowed.contains(v)) {
+            let at = statement_var_span(stmt, &v).unwrap_or(stmt.span());
+            return Some(Diagnostic::error(
+                Pass::Infer,
+                at,
+                format!(
+                    "variable `{v}` is not in the group, so it has no value where the \
+                     aggregate `{}` does",
+                    an_aggregate(&read)
+                ),
+            ));
+        }
+    }
+
+    // The head is one statement for this purpose: a column that reads an
+    // aggregate result and a body variable widens the group exactly as a filter
+    // would, and nothing in the body would catch it.
+    let head_reads: BTreeSet<String> = rule.head.args.iter().flat_map(|(_, e)| free(e)).collect();
+    if !head_reads.is_disjoint(&after)
+        && let Some(v) = pick(&head_reads, |v| !allowed.contains(v))
+    {
+        let at = rule
+            .head
+            .args
+            .iter()
+            .find_map(|(_, e)| var_span(e, &v))
+            .unwrap_or(rule.head.span);
+        return Some(Diagnostic::error(
+            Pass::Infer,
+            at,
+            format!(
+                "variable `{v}` is not in the group, so it has no value where the aggregate \
+                 `{}` does",
+                an_aggregate(&head_reads)
+            ),
+        ));
+    }
+    None
+}
+
+/// The first of `read` that is in `within`, by name so the choice is the
+/// program's rather than a set's iteration order.
+fn pick(read: &BTreeSet<String>, within: impl Fn(&str) -> bool) -> Option<String> {
+    read.iter().find(|v| within(v)).cloned()
+}
+
+/// Where a variable is written inside an expression, for a span that points at
+/// the mistake rather than at the line.
+fn var_span(e: &core::Expr, name: &str) -> Option<Span> {
+    let mut found = None;
+    walk(e, &mut |x| {
+        if let core::Expr::Var { name: n, span } = x
+            && n == name
+            && found.is_none()
+        {
+            found = Some(*span);
+        }
+    });
+    found
+}
+
+fn statement_var_span(stmt: &core::Stmt, name: &str) -> Option<Span> {
+    match stmt {
+        core::Stmt::Atom { args, .. } => args.iter().find_map(|(_, a)| match a {
+            core::Arg::Expr(e) => var_span(e, name),
+            core::Arg::Wildcard(_) => None,
+        }),
+        core::Stmt::Match { rhs, .. } => match rhs {
+            core::Rhs::Expr(e) => var_span(e, name),
+            core::Rhs::Aggregate { arg, .. } => arg.as_ref().and_then(|e| var_span(e, name)),
+        },
+        core::Stmt::Filter { expr, .. } => var_span(expr, name),
+        core::Stmt::Assert { span, .. } => Some(*span),
+        core::Stmt::Input { .. } => None,
+    }
+}
+
+/// The variables an expression reads.
+fn free(e: &core::Expr) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    walk(e, &mut |x| {
+        if let core::Expr::Var { name, .. } = x {
+            out.insert(name.clone());
+        }
+    });
+    out
+}
+
+/// What one statement reads — every variable it needs a value for.
+///
+/// A positive atom's plain-variable arguments *bind*; anything else it writes
+/// there is a constraint, so it reads. A negated atom binds nothing, so all of
+/// it reads.
+fn reads(stmt: &core::Stmt) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    match stmt {
+        core::Stmt::Atom { args, negated, .. } => {
+            for (_, arg) in args {
+                match arg {
+                    core::Arg::Wildcard(_) => {}
+                    core::Arg::Expr(core::Expr::Var { .. }) if !negated => {}
+                    core::Arg::Expr(e) => out.extend(free(e)),
+                }
+            }
+        }
+        core::Stmt::Match { rhs, .. } => match rhs {
+            core::Rhs::Expr(e) => out.extend(free(e)),
+            core::Rhs::Aggregate { arg, .. } => {
+                if let Some(e) = arg {
+                    out.extend(free(e));
+                }
+            }
+        },
+        core::Stmt::Filter { expr, .. } => out.extend(free(expr)),
+        core::Stmt::Assert { variable, .. } => {
+            out.insert(variable.clone());
+        }
+        core::Stmt::Input { .. } => {}
+    }
+    out
+}
+
+/// What one statement binds.
+fn binds(stmt: &core::Stmt) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    match stmt {
+        core::Stmt::Atom {
+            args,
+            negated: false,
+            ..
+        } => {
+            for (_, arg) in args {
+                if let core::Arg::Expr(core::Expr::Var { name, .. }) = arg {
+                    out.insert(name.clone());
+                }
+            }
+        }
+        core::Stmt::Match { lhs, .. } => match lhs {
+            core::Pattern::Var { name, .. } => {
+                out.insert(name.clone());
+            }
+            core::Pattern::Unnest { vars, .. } => out.extend(vars.iter().cloned()),
+        },
+        _ => {}
+    }
+    out
+}
+
+/// Everything that has no value until the group is formed.
+///
+/// The aggregates' results, and whatever is computed from them. Closed under
+/// reading rather than under statement order, because a rule body is a set:
+/// which line came first is not a question the language can answer.
+fn after(rule: &core::Rule) -> BTreeSet<String> {
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    for stmt in &rule.body {
+        if let core::Stmt::Match {
+            lhs: core::Pattern::Var { name, .. },
+            rhs: core::Rhs::Aggregate { .. },
+            ..
+        } = stmt
+        {
+            out.insert(name.clone());
+        }
+    }
+    loop {
+        let mut grew = false;
+        for stmt in &rule.body {
+            if reads(stmt).is_disjoint(&out) {
+                continue;
+            }
+            for v in binds(stmt) {
+                grew |= out.insert(v);
+            }
+        }
+        if !grew {
+            return out;
+        }
+    }
+}
+
+/// The variables the head's non-aggregate columns read — the group.
+///
+/// "The group is the head's non-aggregate columns", and it is the *variables*
+/// they read rather than the columns themselves. The difference is visible:
+/// `q(tag: length(d), total: s)` groups by `d`, while binding `t := length(d)`
+/// first and writing `q(tag: t, …)` groups by `t`, so two departments whose
+/// names are the same length give two rows in the first and one in the second.
+fn group_of(rule: &core::Rule, after: &BTreeSet<String>) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for (_, expr) in &rule.head.args {
+        let vars = free(expr);
+        if vars.is_disjoint(after) {
+            out.extend(vars);
+        }
+    }
+    out
 }
 
 fn bound_map(bound: &BTreeSet<&str>) -> BTreeMap<String, Ty> {
@@ -1546,10 +1875,12 @@ impl Cx {
                     }
                 }
             }
+            let after = after(rule);
             decls.push(Decl::Rule(TypedRule {
                 rule: rule.clone(),
                 vars,
                 asserts: typed.filters,
+                group: group_of(rule, &after),
             }));
         }
         for fact in &self.facts {

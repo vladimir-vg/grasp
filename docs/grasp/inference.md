@@ -114,6 +114,37 @@ somewhere in the body. This is Datalog's safety condition, and
 
 > ``variable `x` appears in the head but nothing in the body binds it``
 
+### Aggregate scope, checked here
+
+An aggregate folds a whole group into one value, so where its result has a value
+the only other things that do are **the group** and the other aggregates'
+results. A variable that varies *within* the group has none, and reading one is
+refused rather than answered.
+
+The group is the variables the head's non-aggregate columns read
+([`semantics.md`](semantics.md#aggregation)). Everything computed from an
+aggregate result is in the group's scope with it, transitively — the rule is
+closed under *reading*, not over statement order, because a rule body is a set.
+
+Four rejections, and none of them is about where a line was written:
+
+- a statement, **or the head**, that reads an aggregate result and also a
+  variable outside the group;
+- an **aggregate** whose argument reads another aggregate's result — it folds the
+  body's assignments, and a result is not one of them;
+- a **positive atom** that mentions one — an atom is among the things being
+  folded, so joining a grouped result against a relation takes a second rule,
+  which is the ordinary Datalog shape;
+- a variable **bound both** by the body and from an aggregate result.
+
+> ``variable `r` is not in the group, so it has no value where the aggregate `s` does``
+
+The rule is on variables rather than values, so a binding that happens to be
+constant within the group is refused too — `m := concat(d, "x")` followed by
+`s > length(m)`, where `m` varies with `d` alone. SQL refuses the same thing.
+The way out is always available and mechanical: inline the definition, since it
+reads only group variables.
+
 ## Phase 2: across rules
 
 A relation defined by several rules gets one column type per column. **A fact
@@ -246,6 +277,10 @@ Every rejection this pass can produce, in the phase that produces it.
 |---|---|
 | ``variable `x` is used as A here and as B at line N`` | 1 |
 | ``variable `x` appears in the head but nothing in the body binds it`` | 1 |
+| ``variable `x` is not in the group, so it has no value where the aggregate `s` does`` | 1 |
+| ``` `f` folds the body's assignments, and `s` is an aggregate result rather than one of them ``` | 1 |
+| ``atom `r` mentions the aggregate result `s`, but an atom is one of the things `s` is folded over`` | 1 |
+| ``variable `x` is bound by the body and again from an aggregate result`` | 1 |
 | ```e` is not a record, so it has no field `f` `` | 1 |
 | ``` `count` takes no argument ``` | 1 |
 | ``` `f` needs an argument: the expression to fold ``` | 1 |

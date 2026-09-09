@@ -1,0 +1,280 @@
+# What has a value once a group is formed.
+#
+# An aggregate folds a whole group into one value, so the only things with a
+# value where its result has one are the group and the aggregates' results. A
+# variable that varies *within* the group does not have one, and asking for it
+# is refused rather than answered.
+#
+# The group is "the head's non-aggregate columns" — and it is the *variables*
+# those columns read, not the columns. `q(tag: length(d), total: s)` groups by
+# `d`; binding `t := length(d)` first and writing `q(tag: t, …)` groups by `t`.
+
+# The case this rule exists for. Read as a group-by-dept with a `having`, it is
+# what a reader means. Answered by widening the group instead, it groups by
+# (dept, sal), so `sum<r>` is `r`, the filter is `r > r`, and the relation is
+# empty for every possible input.
+- name: a filter may not read a variable outside the group
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    big(dept: d) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+        s > r
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "variable `r` is not in the group, so it has no value where the aggregate `s` does"
+
+- name: a match may not read a variable outside the group
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    share(dept: d, rest: g) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+        g := s - r
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "`r` is not in the group"
+
+- name: a negated atom may not read a variable outside the group
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    pair :: relation(a: i64, b: i64)
+    emp(dept:, sal:) <- input
+    pair(a:, b:) <- input
+
+    odd(dept: d) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+        not pair(a: r, b: s)
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "`r` is not in the group"
+
+- name: an unnest may not read a variable outside the group
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    spread(dept: d, v: v) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+        (v) := *[r, s]
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "`r` is not in the group"
+
+# The head widens the group exactly as a filter would, and nothing in the body
+# would have caught it.
+- name: a head column may not read a variable outside the group
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    q(dept: d, total: s + r) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "`r` is not in the group"
+
+# "An aggregate ranges over the set of satisfying assignments to the rule's body
+#  variables" — and an aggregate's own result is not one of them.
+- name: an aggregate may not fold another aggregate result
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    q(dept: d, x: t) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+        t := sum<s>
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "`sum` folds the body's assignments, and `s` is an aggregate result rather than one of them"
+
+# An atom is one of the things the aggregate folds, so it cannot read what the
+# folding produced. Joining a grouped result against a relation takes two rules
+# — the ordinary Datalog shape.
+- name: an atom may not read an aggregate result
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    threshold :: relation(v: i64)
+    emp(dept:, sal:) <- input
+    threshold(v:) <- input
+
+    big(dept: d) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+        threshold(v: s)
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "atom `threshold` mentions the aggregate result `s`, but an atom is one of the things `s` is folded over"
+
+# Writing a variable twice says both computations agree. One of these is what
+# the group ranges over and the other is the group's answer, and those are not
+# one value.
+- name: a variable may not be bound both inside and outside the group
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    q(dept: d, v: x) <-
+        emp(dept: d, sal: r)
+        x := r
+        s := sum<r>
+        x := s * 2
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "is bound by the body and again from an aggregate result"
+
+# --- and everything that must keep working ---
+
+- name: a filter over the aggregate result alone is fine
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    big(dept: d) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+        s > 150
+
+  input:
+    - emp:
+        - [1, {dept: "eng", sal: 100}]
+        - [1, {dept: "eng", sal: 200}]
+        - [1, {dept: "ops", sal: 50}]
+
+  expected_exact_output:
+    - big:
+        - [1, {dept: "eng"}]
+
+- name: a match over the aggregate result alone is fine
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    half :: relation(dept: string, h: i64)
+    half(dept: d, h: h) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+        h := s / 2
+
+  input:
+    - emp:
+        - [1, {dept: "eng", sal: 100}]
+        - [1, {dept: "eng", sal: 200}]
+
+  expected_exact_output:
+    - half:
+        - [1, {dept: "eng", h: 150}]
+
+- name: a negated atom over the aggregate result alone is fine
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    blocked :: relation(amount: i64)
+    emp(dept:, sal:) <- input
+    blocked(amount:) <- input
+
+    ok(dept: d) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+        not blocked(amount: s)
+
+  input:
+    - emp:
+        - [1, {dept: "eng", sal: 300}]
+        - [1, {dept: "ops", sal: 50}]
+      blocked:
+        - [1, {amount: 300}]
+
+  expected_exact_output:
+    - ok:
+        - [1, {dept: "ops"}]
+
+# Naming a column puts it in the group, which is how you ask for a finer one.
+# This is the only shape where the head-derived and liveness-derived groups
+# agree for a non-trivial reason.
+- name: an aggregate argument that is also a head column groups by it
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    q(dept: d, sal: r, total: s) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+
+  input:
+    - emp:
+        - [1, {dept: "eng", sal: 100}]
+        - [1, {dept: "eng", sal: 200}]
+
+  expected_exact_output:
+    - q:
+        - [1, {dept: "eng", sal: 100, total: 100}]
+        - [1, {dept: "eng", sal: 200, total: 200}]
+
+# A head column mixing a group variable with an aggregate result is fine: `d` is
+# in the group because another column names it.
+- name: a head column may mix the group and an aggregate result
+  source: |
+    emp :: relation(dept: i64, sal: i64)
+    emp(dept:, sal:) <- input
+
+    q :: relation(dept: i64, skewed: i64)
+    q(dept: d, skewed: s + d) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+
+  input:
+    - emp:
+        - [1, {dept: 7, sal: 100}]
+
+  expected_exact_output:
+    - q:
+        - [1, {dept: 7, skewed: 107}]
+
+# An atom whose argument is an expression reads the result rather than binding
+# it, and is refused for the same reason.
+- name: an atom argument may not compute from an aggregate result
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    threshold :: relation(v: i64)
+    emp(dept:, sal:) <- input
+    threshold(v:) <- input
+
+    big(dept: d) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+        threshold(v: s + 1)
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "an atom is one of the things `s` is folded over"
+
+# There is no `equivalent_to` case here, and the reason is a separate bug:
+# `infer` types a rule body in source order, so writing `s > 150` above
+# `s := sum<r>` is rejected with "nothing determines this type" even though a
+# rule body is a set. Until that is fixed, no aggregate rule can have its
+# order-independence pinned.

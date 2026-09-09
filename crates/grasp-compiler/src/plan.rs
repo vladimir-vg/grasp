@@ -219,9 +219,9 @@ pub enum Op {
     /// between. Several aggregates share the node because they share the group
     /// — that is the whole of grasp's implicit grouping.
     ///
-    /// `group` is what the rule still needs that no aggregate produced, which
-    /// is `semantics.md`'s "the head's non-aggregate columns" arrived at from
-    /// the other side: liveness already knows it.
+    /// `group` is `semantics.md`'s "the head's non-aggregate columns", read as
+    /// the variables those columns read and decided in `infer`, which is where
+    /// the scope rule that makes it well defined is read.
     Aggregate {
         input: usize,
         group: Vec<String>,
@@ -1797,20 +1797,27 @@ fn lower(
                 let input = *stack.last().expect("a stream to group");
                 let schema = nodes[input].schema.clone();
                 let input = push(&mut nodes, Op::Distinct { input }, schema);
-                // What is still wanted and no aggregate produced: the group.
-                // `semantics.md` says "the head's non-aggregate columns", and
-                // liveness has already worked out which those are.
+                // The group, decided in `infer` — "the head's non-aggregate
+                // columns", read as the variables those columns read.
                 //
-                // `carry` is liveness *after* the aggregate, so widening the
-                // row before it does not widen the group. That is the whole
-                // reason the two are read from different places.
+                // Liveness computes the same set from the other side: what is
+                // still wanted here and no aggregate produced. The two agree
+                // only because the scope rule makes them, by refusing anything
+                // that would keep a body variable alive past the group. The
+                // assertion is that rule's proof, and it fails loudly rather
+                // than drifting if a later change to projection breaks it.
                 let outs: BTreeSet<&str> = aggs.iter().map(|a| a.out.as_str()).collect();
-                let group: Vec<String> = nodes[input]
-                    .schema
-                    .iter()
-                    .filter(|v| carry.contains(*v) && !outs.contains(v.as_str()))
-                    .cloned()
-                    .collect();
+                let group: Vec<String> = typed.group.iter().cloned().collect();
+                debug_assert_eq!(
+                    typed.group,
+                    nodes[input]
+                        .schema
+                        .iter()
+                        .filter(|v| carry.contains(*v) && !outs.contains(v.as_str()))
+                        .cloned()
+                        .collect::<BTreeSet<String>>(),
+                    "the group `infer` decided and the one liveness reaches must agree"
+                );
                 let mut schema: BTreeSet<String> = group.iter().cloned().collect();
                 schema.extend(aggs.iter().map(|a| a.out.clone()));
                 schema.retain(|v| carry.contains(v));

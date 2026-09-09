@@ -302,7 +302,12 @@ payroll(dept: d, total: s) <-
 
 Aggregators are `sum`, `count`, `min`, `max` and `avg`.
 
-**Grouping is implicit: the group is the head's non-aggregate columns.** Above,
+**Grouping is implicit: the group is the head's non-aggregate columns** — the
+*variables* those columns read, rather than the columns themselves. The
+difference shows: `q(tag: length(d), total: s)` groups by `d`, while binding
+`t := length(d)` first and writing `q(tag: t, …)` groups by `t`, so two
+departments whose names are the same length give two rows in the first and one
+in the second. Above,
 `dept` — so one row per department. This is what makes aggregation read like the
 rest of the language: there is no `group by`, because the head already says what
 the result is keyed by.
@@ -365,6 +370,13 @@ not mention it.
   folded, and the wrapper survives into the result: `sum` over an
   `optional(i64)` is an `optional(i64)`, absent only for a group with nothing to
   add.
+
+**Where an aggregate's result has a value, only the group does too.** An
+aggregate folds a whole group into one value, so a variable that varies within
+the group has no value beside it: `s > r` is refused rather than answered, and
+so is anything else that reads an aggregate result together with a variable
+outside the group. [`inference.md`](inference.md#aggregate-scope-checked-here)
+states the four shapes this rejects and the one workaround it needs.
 
 Aggregation is **stratified on the same terms as negation**: the aggregated
 relation must be in a strictly lower stratum. An aggregate over a relation still
