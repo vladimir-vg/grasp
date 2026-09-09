@@ -136,3 +136,111 @@
       odd:
         - [1, {n: 1}]
         - [1, {n: 3}]
+
+# A fact-defined relation inside a recursive component is the one thing that
+# cannot move into the body: grasp-dbsp rejects a `constant` in a `fixpoint`,
+# where a source would fire once per iteration rather than once per
+# transaction. It is emitted outside and passed in, which is what an input
+# relation already does.
+- name: a fact seeds a recursive relation
+  source: |
+    step :: relation(from: i64, to: i64)
+    step(from:, to:) <- input
+
+    seen :: relation(node: i64)
+    seen(node: 1)
+    seen(node: b) <-
+        seen(node: a)
+        step(from: a, to: b)
+
+  input:
+    - step:
+        - [1, {from: 1, to: 2}]
+        - [1, {from: 2, to: 3}]
+        - [1, {from: 8, to: 9}]
+
+  expected_exact_output:
+    - seen:
+        - [1, {node: 1}]
+        - [1, {node: 2}]
+        - [1, {node: 3}]
+
+# Two relations that reach each other are one component and one `fixpoint`,
+# each entering the body as the previous round of itself.
+- name: mutually recursive relations compute together
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src:, dst:) <- input
+
+    odd_step :: relation(v: i64)
+    even_step :: relation(v: i64)
+
+    odd_step(v: y) <-
+        edge(src: 0, dst: y)
+    odd_step(v: y) <-
+        even_step(v: x)
+        edge(src: x, dst: y)
+    even_step(v: y) <-
+        odd_step(v: x)
+        edge(src: x, dst: y)
+
+  input:
+    - edge:
+        - [1, {src: 0, dst: 1}]
+        - [1, {src: 1, dst: 2}]
+        - [1, {src: 2, dst: 3}]
+
+  expected_exact_output:
+    - odd_step:
+        - [1, {v: 1}]
+        - [1, {v: 3}]
+      even_step:
+        - [1, {v: 2}]
+
+# One recursive component reading another: `far` is its own fixpoint over the
+# `path` that a lower one produced.
+- name: a recursive component may read another
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src:, dst:) <- input
+
+    path(src: x, dst: y) <- edge(src: x, dst: y)
+    path(src: x, dst: y) <-
+        path(src: x, dst: z)
+        edge(src: z, dst: y)
+
+    far(v: y) <- path(src: 1, dst: y)
+    far(v: y) <-
+        far(v: x)
+        path(src: x, dst: y)
+
+  input:
+    - edge:
+        - [1, {src: 1, dst: 2}]
+        - [1, {src: 2, dst: 3}]
+
+  expected_exact_output:
+    - far:
+        - [1, {v: 2}]
+        - [1, {v: 3}]
+
+# A relation defined only by a rule that mentions itself has a typespec, so it
+# is declared — and it derives nothing, because the iteration starts empty and
+# nothing ever enters it.
+- name: a recursive relation with no base case stays empty
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src:, dst:) <- input
+
+    lonely :: relation(v: i64)
+    lonely(v: y) <-
+        lonely(v: x)
+        edge(src: x, dst: y)
+
+  input:
+    - edge:
+        - [1, {src: 1, dst: 2}]
+
+  expected_output:
+    - edge:
+        - [1, {src: 1, dst: 2}]

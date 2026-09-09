@@ -46,12 +46,30 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// A whole program, planned.
 ///
-/// Relations are in name order rather than source order, for the reason every
+/// Groups are in name order rather than source order, for the reason every
 /// other ordering here is structural: two programs whose declarations differ
 /// only in sequence are one program.
 #[derive(Debug)]
 pub struct Plan {
+    pub groups: Vec<Group>,
+}
+
+/// Relations that have to be built together.
+///
+/// Almost always one relation. More than one, or one that reaches itself, is a
+/// strongly connected component of the dependency graph — mutually recursive
+/// relations, which `mapping.md` says become one `circuit` instantiated by one
+/// `fixpoint`. Nothing else in the plan distinguishes them, because nothing
+/// else needs to: a recursive relation's rules are planned exactly as any
+/// other's, and only emission cares that they iterate.
+#[derive(Debug)]
+pub struct Group {
+    /// Name-ordered.
     pub relations: Vec<Relation>,
+    pub recursive: bool,
+    /// What the group's rules read from outside itself, name-ordered. These
+    /// become the circuit's ordinary parameters. Empty unless `recursive`.
+    pub reads: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -216,6 +234,24 @@ pub fn plan(typed: infer::Typed) -> Result<Plan, Vec<Diagnostic>> {
         }
     }
 
+    // The dependency graph over relations, from which the components come:
+    // "an edge r -> s when a rule for r has s in its body".
+    let mut edges: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for name in typed.relations.keys() {
+        edges.entry(name.clone()).or_default();
+    }
+    for rs in rules.values() {
+        for r in rs {
+            let out = edges.entry(r.rule.head.relation.clone()).or_default();
+            for stmt in &r.rule.body {
+                if let core::Stmt::Atom { relation, .. } = stmt {
+                    out.insert(relation.clone());
+                }
+            }
+        }
+    }
+    let components = scc(&edges);
+
     let mut relations = Vec::new();
     for (name, relation) in &typed.relations {
         let source = if relation.kind == infer::Kind::Input {
@@ -247,7 +283,119 @@ pub fn plan(typed: infer::Typed) -> Result<Plan, Vec<Diagnostic>> {
         });
     }
 
-    Ok(Plan { relations })
+    // Fold the relations into their components. A component is recursive when
+    // it holds more than one relation, or when its one relation reaches itself.
+    let mut groups = Vec::new();
+    for members in components {
+        let recursive = members.len() > 1 || members.first().is_some_and(|m| edges[m].contains(m));
+        let mut reads: BTreeSet<String> = BTreeSet::new();
+        if recursive {
+            for m in &members {
+                for target in &edges[m] {
+                    if !members.contains(target) {
+                        reads.insert(target.clone());
+                    }
+                }
+            }
+        }
+        let mut held = Vec::new();
+        let mut rest = Vec::new();
+        for r in relations {
+            if members.contains(&r.name) {
+                held.push(r);
+            } else {
+                rest.push(r);
+            }
+        }
+        relations = rest;
+        groups.push(Group {
+            relations: held,
+            recursive,
+            reads: reads.into_iter().collect(),
+        });
+    }
+    debug_assert!(relations.is_empty(), "every relation is in a component");
+    groups.sort_by(|a, b| a.relations[0].name.cmp(&b.relations[0].name));
+
+    Ok(Plan { groups })
+}
+
+/// The strongly connected components of the dependency graph — Tarjan's.
+///
+/// Each is a set of mutually recursive relations; a relation in no cycle is its
+/// own component. `semantics.md` names this as step 2 of stratification, and
+/// step 5 — rejecting a NEGATIVE edge internal to a component — belongs here
+/// too. It is absent because it cannot be reached: negation and aggregation are
+/// the only things that mark an edge negative, and both are reported
+/// unimplemented before a program gets this far. It lands with whichever
+/// arrives first.
+///
+/// Everything iterates in name order, so the partition is a function of the
+/// program rather than of a traversal.
+fn scc(edges: &BTreeMap<String, BTreeSet<String>>) -> Vec<BTreeSet<String>> {
+    struct Tarjan<'a> {
+        edges: &'a BTreeMap<String, BTreeSet<String>>,
+        index: BTreeMap<&'a str, usize>,
+        low: BTreeMap<&'a str, usize>,
+        on: BTreeSet<&'a str>,
+        stack: Vec<&'a str>,
+        next: usize,
+        out: Vec<BTreeSet<String>>,
+    }
+    impl<'a> Tarjan<'a> {
+        fn visit(&mut self, v: &'a str) {
+            self.index.insert(v, self.next);
+            self.low.insert(v, self.next);
+            self.next += 1;
+            self.stack.push(v);
+            self.on.insert(v);
+            for w in self.edges.get(v).into_iter().flatten() {
+                // A body may mention a relation the map does not hold only if
+                // `infer` let an undeclared one through, which it does not.
+                let w = self
+                    .edges
+                    .get_key_value(w.as_str())
+                    .map(|(k, _)| k.as_str());
+                let Some(w) = w else { continue };
+                if !self.index.contains_key(w) {
+                    self.visit(w);
+                    let l = self.low[w];
+                    let e = self.low.get_mut(v).expect("visited");
+                    *e = (*e).min(l);
+                } else if self.on.contains(w) {
+                    let i = self.index[w];
+                    let e = self.low.get_mut(v).expect("visited");
+                    *e = (*e).min(i);
+                }
+            }
+            if self.low[v] == self.index[v] {
+                let mut component = BTreeSet::new();
+                while let Some(w) = self.stack.pop() {
+                    self.on.remove(w);
+                    component.insert(w.to_string());
+                    if w == v {
+                        break;
+                    }
+                }
+                self.out.push(component);
+            }
+        }
+    }
+    let mut t = Tarjan {
+        edges,
+        index: BTreeMap::new(),
+        low: BTreeMap::new(),
+        on: BTreeSet::new(),
+        stack: Vec::new(),
+        next: 0,
+        out: Vec::new(),
+    };
+    for v in edges.keys() {
+        if !t.index.contains_key(v.as_str()) {
+            t.visit(v);
+        }
+    }
+    t.out
 }
 
 fn to_args(row: &[(String, core::Expr)]) -> Vec<(String, core::Arg)> {
@@ -298,10 +446,6 @@ pub fn gaps(typed: &infer::Typed) -> Vec<Diagnostic> {
             }
         }
     }
-    if let Some(span) = recursive(&edges, typed) {
-        note("recursion", span);
-    }
-
     for decl in &typed.decls {
         let infer::Decl::Rule(r) = decl else { continue };
         let rule = &r.rule;
@@ -339,13 +483,7 @@ pub fn gaps(typed: &infer::Typed) -> Vec<Diagnostic> {
 
     // The rank. `Diagnostic::UNIMPLEMENTED` lists the plan constructs in this
     // order too, so the two cannot drift far apart unnoticed.
-    const RANK: &[&str] = &[
-        "recursion",
-        "aggregation",
-        "negation",
-        "unnesting",
-        "type assertions",
-    ];
+    const RANK: &[&str] = &["aggregation", "negation", "unnesting", "type assertions"];
     let mut out = Vec::new();
     for construct in RANK {
         if let Some(span) = found.get(construct) {
@@ -358,34 +496,6 @@ pub fn gaps(typed: &infer::Typed) -> Vec<Diagnostic> {
         "a construct was noted that `RANK` does not list, so it would be dropped"
     );
     out
-}
-
-/// The span of some rule in a cycle, if the dependency graph has one.
-///
-/// A relation that reaches itself is recursive; a self-loop is the one-member
-/// case. An input relation is never a rule head, so it has no out-edge and
-/// cannot be in a cycle — which is why `semantics.md`'s "an input relation may
-/// not take part in recursion" needs no diagnostic.
-fn recursive(edges: &BTreeMap<&str, BTreeSet<&str>>, typed: &infer::Typed) -> Option<Span> {
-    for start in edges.keys() {
-        let mut seen: BTreeSet<&str> = BTreeSet::new();
-        let mut stack: Vec<&str> = edges.get(start).into_iter().flatten().copied().collect();
-        while let Some(r) = stack.pop() {
-            if r == *start {
-                return typed.decls.iter().find_map(|d| match d {
-                    infer::Decl::Rule(rule) if rule.rule.head.relation == *start => {
-                        Some(rule.rule.span)
-                    }
-                    _ => None,
-                });
-            }
-            if !seen.insert(r) {
-                continue;
-            }
-            stack.extend(edges.get(r).into_iter().flatten().copied());
-        }
-    }
-    None
 }
 
 // ---------------------------------------------------------------------------

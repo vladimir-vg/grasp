@@ -87,8 +87,7 @@ That is the whole rule. Nothing is `#[ignore]`d, so nothing quietly stops being
 parsed, and each run ends with the debt, grouped by what is blocking it:
 
 ```
-11 pending: recursion 5, aggregation 2, unnesting 2, negation 1,
-type assertions 1
+6 pending: aggregation 2, unnesting 2, negation 1, type assertions 1
 ```
 
 which is a work queue rather than a census — the largest number is the feature
@@ -413,7 +412,7 @@ been guarding — and unlike a snapshot it cannot rot.
 | `expressions.yaml` | what a body expression computes, and where it has no answer |
 | `desugar.yaml` | the desugaring table, as `equivalent_to` pairs |
 | `normalization.yaml` | statement and rule order do not change the emission — including the two component-ordering cases the optimizer's forest must respect |
-| `recursion.yaml` | the transitive closure worked example, end to end |
+| `recursion.yaml` | the transitive closure worked example end to end, plus the fixpoint's own shapes — facts seeding a component, mutual recursion, a component reading another |
 | `rules.yaml` | one rule over one atom, end to end — projection, filters, matches, wildcards, literal arguments, facts |
 | `joins.yaml` | atoms meeting on a shared variable, and crossing when they share none — chains, self-joins, a cyclic rule, propositions |
 | `unions.yaml` | several rules for one relation, and the `distinct` that makes the result a set |

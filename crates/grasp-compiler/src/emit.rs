@@ -28,8 +28,8 @@
 use crate::ast::{BinOp, Lit, Type, UnOp};
 use crate::core;
 use crate::key;
-use crate::plan::{Field, Node, Op, Plan, Relation, Rule, Source};
-use std::collections::BTreeSet;
+use crate::plan::{Field, Group, Node, Op, Plan, Relation, Rule, Source};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 /// The row binder every emitted function takes.
@@ -41,11 +41,140 @@ const ROW: &str = "row";
 pub fn emit(plan: &Plan) -> String {
     let mut names = Names::new(plan);
     let mut out = String::new();
-    for (i, relation) in plan.relations.iter().enumerate() {
+    for (i, group) in plan.groups.iter().enumerate() {
         if i > 0 {
             out.push('\n');
         }
-        emit_relation(&mut out, relation, &mut names);
+        if group.recursive {
+            emit_fixpoint(&mut out, group, &mut names);
+        } else {
+            for relation in &group.relations {
+                emit_relation(&mut out, relation, &mut names);
+            }
+        }
+    }
+    out
+}
+
+/// One strongly connected component: a `circuit` holding its relations, and the
+/// `fixpoint` that iterates it to convergence.
+///
+/// Three rules from `mapping.md`, all easy to get wrong and none of them
+/// visible in the answer if they are:
+///
+/// 1. **The recursive stream's typespec is always written.** grasp-dbsp infers
+///    a recursive type only through operators whose result type is one of their
+///    operands, and a Datalog rule ends in a `map`, which is not one of those.
+/// 2. **No `distinct` inside.** grasp-dbsp applies one to every recursive
+///    stream on every round — that is what makes the iteration terminate — so
+///    the union-of-rules rule has an exception here.
+/// 3. **Recursive streams start empty.** The call site passes `empty()` and the
+///    base case is in the body, as one of the summed rules.
+///
+/// And a fourth thing, which is why facts are emitted before the circuit rather
+/// than inside it: grasp-dbsp rejects a `constant` in a `fixpoint` body, where
+/// a source would fire once per *iteration* rather than once per transaction.
+/// It goes outside and comes in as an ordinary parameter — which is what an
+/// input relation already does, so it needs no special case.
+fn emit_fixpoint(out: &mut String, group: &Group, names: &mut Names) {
+    let first = names.node_of(&group.relations[0].name);
+    let circuit = names.reserve(&format!("{first}_scc"));
+    let instance = names.reserve(&format!("{first}_fp"));
+
+    // `label: internal`. A parameter is self-referential when a body node
+    // shares its *label*, so a recursive member's label is its node name and
+    // its internal name — the previous round's value — has to be another.
+    let mut params: Vec<(String, String, String)> = Vec::new();
+    for read in &group.reads {
+        let node = names.node_of(read);
+        let internal = names.reserve(&format!("{node}_in"));
+        params.push((node.clone(), internal, node));
+    }
+    let mut fact_param: BTreeMap<String, String> = BTreeMap::new();
+    for relation in &group.relations {
+        let Source::Derived { facts, .. } = &relation.source else {
+            continue;
+        };
+        if facts.is_empty() {
+            continue;
+        }
+        let node = names.node_of(&relation.name);
+        let outside = names.intermediate(&node);
+        let _ = writeln!(out, "{outside} :: {}", zset(&relation.columns));
+        let rows: Vec<String> = facts
+            .iter()
+            .map(|row| fact_row(row, &relation.columns))
+            .collect();
+        let _ = writeln!(out, "{outside} := constant([{}])", rows.join(", "));
+        let label = names.reserve(&format!("{node}_facts"));
+        let internal = names.reserve(&format!("{label}_in"));
+        fact_param.insert(relation.name.clone(), internal.clone());
+        params.push((label, internal, outside));
+    }
+    let mut recursive: Vec<(String, String)> = Vec::new();
+    for relation in &group.relations {
+        let node = names.node_of(&relation.name);
+        let internal = names.reserve(&format!("{node}_prev"));
+        recursive.push((relation.name.clone(), node.clone()));
+        params.push((node, internal, "empty()".to_string()));
+    }
+
+    // Inside the body a relation name means the parameter that carries it —
+    // the previous round for a member, the outer stream for anything else.
+    for (label, internal, _) in &params {
+        names.scope.insert(label.clone(), internal.clone());
+    }
+    let mut body = String::new();
+    for relation in &group.relations {
+        let node = names.node_of_unscoped(&relation.name);
+        let _ = writeln!(&mut body, "{node} :: {}", zset(&relation.columns));
+        let Source::Derived { rules, .. } = &relation.source else {
+            unreachable!("a recursive relation is derived by rules")
+        };
+        let mut operands: Vec<String> = Vec::new();
+        if let Some(p) = fact_param.get(&relation.name) {
+            operands.push(p.clone());
+        }
+        for rule in rules {
+            operands.push(emit_rule(&mut body, relation, rule, names));
+        }
+        let union = match operands.len() {
+            1 => operands.pop().expect("one operand"),
+            2 => format!("plus({}, {})", operands[0], operands[1]),
+            _ => format!("sum({})", operands.join(", ")),
+        };
+        // No `distinct`: grasp-dbsp applies one every round already.
+        let _ = writeln!(&mut body, "{node} := {union}");
+    }
+    names.scope.clear();
+
+    let decl: Vec<String> = params
+        .iter()
+        .map(|(label, internal, _)| format!("{label}: {internal}"))
+        .collect();
+    let _ = writeln!(out, "circuit {circuit}({}) {{", decl.join(", "));
+    out.push_str(&indent(&body));
+    let _ = writeln!(out, "}}");
+
+    let args: Vec<String> = params
+        .iter()
+        .map(|(label, _, arg)| format!("{label}: {arg}"))
+        .collect();
+    let _ = writeln!(
+        out,
+        "{instance} := fixpoint({circuit}({}))",
+        args.join(", ")
+    );
+    // "Only recursive members leave the fixpoint", read off as `fp.name`.
+    for (_, node) in &recursive {
+        let _ = writeln!(out, "{node} := {instance}.{node}");
+    }
+}
+
+fn indent(text: &str) -> String {
+    let mut out = String::new();
+    for line in text.lines() {
+        let _ = writeln!(&mut out, "    {line}");
     }
     out
 }
@@ -119,7 +248,10 @@ fn emit_relation(out: &mut String, relation: &Relation, names: &mut Names) {
 /// resolves as it goes. A `Scan` contributes no definition — it *is* the
 /// relation's stream, already named.
 fn emit_rule(out: &mut String, relation: &Relation, rule: &Rule, names: &mut Names) -> String {
-    let base = names.node_of(&relation.name);
+    // The relation's own name, not what it is called inside a circuit: an
+    // intermediate belongs to the relation whose rule it serves, and naming it
+    // after the parameter carrying the previous round would say otherwise.
+    let base = names.node_of_unscoped(&relation.name);
     let mut at: Vec<String> = Vec::new();
     for node in &rule.nodes {
         let name = match &node.op {
@@ -301,6 +433,8 @@ struct Names {
     taken: BTreeSet<String>,
     /// Every relation's grasp name to the node name it got.
     nodes: Vec<(String, String)>,
+    /// Node name to the name it goes by inside the circuit being emitted.
+    scope: BTreeMap<String, String>,
     next: usize,
 }
 
@@ -378,7 +512,7 @@ impl Names {
     fn new(plan: &Plan) -> Names {
         let mut taken = BTreeSet::new();
         let mut nodes = Vec::new();
-        for relation in &plan.relations {
+        for relation in plan.groups.iter().flat_map(|g| &g.relations) {
             let mut name = mangle(&relation.name);
             while !taken.insert(name.clone()) {
                 name.push('_');
@@ -388,16 +522,36 @@ impl Names {
         Names {
             taken,
             nodes,
+            scope: BTreeMap::new(),
             next: 0,
         }
     }
 
+    /// The node a relation's stream is called *here*.
+    ///
+    /// Inside a `circuit` body that is the parameter carrying it, which for a
+    /// recursive member is the previous round's value. Outside, it is the
+    /// relation's own node.
     fn node_of(&self, relation: &str) -> String {
+        let node = self.node_of_unscoped(relation);
+        self.scope.get(&node).cloned().unwrap_or(node)
+    }
+
+    fn node_of_unscoped(&self, relation: &str) -> String {
         self.nodes
             .iter()
             .find(|(name, _)| name == relation)
             .map(|(_, node)| node.clone())
             .expect("every relation a rule scans is declared")
+    }
+
+    /// Claim a name built from `base`, lengthening it until it is free.
+    fn reserve(&mut self, base: &str) -> String {
+        let mut name = base.to_string();
+        while !self.taken.insert(name.clone()) {
+            name.push('_');
+        }
+        name
     }
 
     fn intermediate(&mut self, base: &str) -> String {
@@ -658,5 +812,93 @@ fn binop_text(op: BinOp) -> &'static str {
         BinOp::Eq => "==",
         BinOp::Concat => unreachable!("`++` becomes `concat` in desugaring"),
         other => key::binop(other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// `mapping.md`'s four rules for a fixpoint, asserted against the text.
+    ///
+    /// They need a test of their own because **no fixture can see three of
+    /// them**. A redundant `distinct` on a recursive stream is semantically
+    /// identity, a missing typespec is a compile error rather than a wrong
+    /// answer, and both would pass every output case there is. The document
+    /// calls all of them easy to get wrong, and it is right: the only way one
+    /// of these surfaces is by reading the emitted program, so something has to
+    /// read it.
+    fn body_of(source: &str) -> String {
+        let text = crate::compile(source).expect("compiles");
+        let start = text.find('{').expect("a circuit");
+        let end = text.find('}').expect("a circuit");
+        text[start..end].to_string()
+    }
+
+    const TC: &str = "\
+edge :: relation(src: i64, dst: i64)
+edge(src:, dst:) <- input
+
+path(src: x, dst: y) <- edge(src: x, dst: y)
+path(src: x, dst: y) <-
+    path(src: x, dst: z)
+    edge(src: z, dst: y)
+";
+
+    #[test]
+    fn a_recursive_stream_is_not_deduplicated_by_hand() {
+        // "grasp-dbsp applies it to every recursive stream on every round —
+        //  that is what makes the iteration terminate. A hand-written one
+        //  lowers a redundant second `distinct`."
+        assert!(
+            !body_of(TC).contains("distinct"),
+            "a fixpoint body must not deduplicate: {}",
+            body_of(TC)
+        );
+    }
+
+    #[test]
+    fn a_recursive_stream_carries_its_typespec() {
+        // Inference follows only the operators whose result type is one of
+        // their operands, and a Datalog rule ends in a `map`, which is not one.
+        assert!(
+            body_of(TC).contains("path :: zset(record(dst: i64, src: i64))"),
+            "a recursive stream needs its type written: {}",
+            body_of(TC)
+        );
+    }
+
+    #[test]
+    fn a_recursive_stream_starts_empty() {
+        let text = crate::compile(TC).expect("compiles");
+        assert!(
+            text.contains("path: empty()"),
+            "the call site passes `empty()`, the base case being in the body: {text}"
+        );
+    }
+
+    #[test]
+    fn a_fact_is_emitted_outside_the_fixpoint() {
+        // "grasp-dbsp rejects `constant` inside a `fixpoint`, where a source
+        //  would fire once per iteration rather than once per transaction."
+        let source = "\
+step :: relation(from: i64, to: i64)
+step(from:, to:) <- input
+
+seen :: relation(node: i64)
+seen(node: 1)
+seen(node: b) <-
+    seen(node: a)
+    step(from: a, to: b)
+";
+        let body = body_of(source);
+        assert!(
+            !body.contains("constant"),
+            "a `constant` may not sit in a fixpoint body: {body}"
+        );
+        assert!(
+            crate::compile(source)
+                .expect("compiles")
+                .contains("constant("),
+            "the fact still has to be emitted, outside"
+        );
     }
 }
