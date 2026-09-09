@@ -14,7 +14,8 @@ tuple derivable by any of its rules, and nothing else.
 through one rule — appears once. This is the one place grasp and its target
 differ by default: grasp-dbsp's `plus` adds weights, so
 [`mapping.md`](mapping.md#rules-and-unions) emits a `distinct` to restore set
-semantics.
+semantics — at the relation, and wherever else multiplicity is *observable*,
+which is exactly an [aggregate](#aggregation).
 
 **Order does not exist.** Rules may be written in any order, body statements may
 be written in any order, and neither changes the program. A relation has no row
@@ -305,8 +306,48 @@ Aggregators are `sum`, `count`, `min`, `max` and `avg`.
 rest of the language: there is no `group by`, because the head already says what
 the result is keyed by.
 
+**An aggregate ranges over the set of satisfying assignments to the rule's body
+variables.** Not over derivations, and not over rows of any relation: an
+assignment gives every variable the body binds a value, and two assignments are
+the same when they agree everywhere.
+
+That settles the two questions "rows in the group" leaves open. A column an atom
+does not name binds nothing, so `r(b: 1)` over `r(b, c)` is *there is some `c`* —
+a proposition, which holds or does not, and cannot hold three times. And a
+variable that *is* bound but read nowhere else is still part of the assignment,
+so two employees differing only in a `name` the rule never uses are two
+assignments, and their salaries are summed twice.
+
+The consequence is worth stating outright, because it surprises. There is no way
+to say "once per row of `emp`" except to name enough columns to tell the rows
+apart — and `_` is the existential written down, so it does not help:
+
+```grasp
+# distinct salaries: `dept` is not named, so it is existential
+total(all: s) <-
+    emp(sal: r)
+    s := sum<r>
+
+# per (dept, salary): naming `dept` tells the rows apart
+total(all: s) <-
+    emp(dept: d, sal: r)
+    s := sum<r>
+```
+
+This is where grasp parts company with SQL, whose row identity is every column
+of every table named in `from`, so SQL's answer to the first is the second's.
+grasp's reading is the one that composes: under SQL's, adding a column to a
+relation's spec silently changes the answer of every aggregate rule that does
+not mention it.
+
 - **The argument may be an expression**: `sum<p * q>` aggregates the product.
-- **`count<>` takes no argument** and counts rows in the group.
+  An expression with no answer for some assignment — `sum<a / b>` where `b` is
+  zero — derives no row for it, so that assignment is not in the group at all,
+  and a second aggregate in the same rule does not see it either.
+- **`count<>` takes no argument** and counts the assignments in the group. Over
+  an unnest that means *distinct* elements: `(t) := *["x", "x"]` binds `t` to
+  `"x"`, once, however many elements produced it. `length(arr)` is what counts
+  elements.
 - **Several aggregates in one rule** share the group: `min<r>` and `max<r>`
   together give one row per group with both.
 - **An empty group produces no row.** A group exists because some row is in it;

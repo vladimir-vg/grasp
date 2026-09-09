@@ -412,6 +412,7 @@ operator each becomes, so a reader does not learn two names for one thing.
 | `map(f, in, out)` | compute `f` and bind it to `out` | input ∪ `{out}` |
 | `flat_map(f, in, out)` | one row in, many out | `out` |
 | `aggregate(agg, col, group, out)` | group and fold | `group ∪ {out}` |
+| `distinct(in)` | collapse every weight to one | unchanged |
 
 **`map` is also projection.** The Erlang design had a separate `project` node
 for dropping columns; both it and `map` lower to grasp-dbsp's one `map`
@@ -449,8 +450,9 @@ what those, and the forms that do not desugar, compile to.
 
 Two of these are worth spelling out.
 
-**An aggregate is three nodes, not one.** Grouping is the index key, so the
-group columns are indexed first, folded, then flattened back:
+**An aggregate is four nodes, not one.** It ranges over the body's satisfying
+assignments, so the assignment is deduplicated first; grouping is the index key,
+so the group columns are indexed next, folded, then flattened back:
 
 ```grasp
 payroll(dept: d, total: s) <-
@@ -459,10 +461,19 @@ payroll(dept: d, total: s) <-
 ```
 
 ```
-n1: map_index(emp, key=[d], val=[r])
-n2: aggregate(sum, col=r, group=[d], out=s)
-n3: map(→ [d, s])
+n1: distinct(emp)                                # over every variable bound
+n2: map_index(n1, key=[d], val=[r])
+n3: aggregate(sum, col=r, group=[d], out=s)
+n4: map(→ [d, s])
 ```
+
+The `distinct` is why nothing is projected away before an aggregate: liveness
+keeps every variable the body binds alive until `n1`, because two assignments
+differing only in a variable nothing reads are still two, and collapsing them
+first would lose the multiplicity a weight-scaled fold depends on. It also means
+the cost model has nothing to say about a rule with an aggregate — every rooting
+carries the same variables and so has the same peak — and the rooting falls to
+the [structural key](#determinism).
 
 **A dict unnest is a `flat_map` over its entries**, which is why entries come
 out in key order — a relation is a set, and the rows produced must not depend on

@@ -1,0 +1,296 @@
+# What an aggregate ranges over.
+#
+# "An aggregate ranges over the set of satisfying assignments to the rule's
+#  body variables." A column an atom does not name binds nothing, so it is
+# existential and contributes no multiplicity; a variable that *is* bound but
+# read nowhere else is still part of the assignment, so it does.
+#
+# Every other aggregate fixture names every column of every atom and has no
+# unnest — the class where set and bag semantics coincide, which is why this
+# question went unasked for so long.
+
+# The case the whole design turns on. Two employees differ only in `name`,
+# which the rule binds and never reads. They are two assignments, so the salary
+# is summed twice. A careless deduplication breaks exactly this.
+- name: a bound but unread variable still multiplies
+  source: |
+    emp :: relation(dept: string, name: string, sal: i64)
+    emp(dept:, name:, sal:) <- input
+
+    payroll(dept: d, total: s) <-
+        emp(dept: d, name: n, sal: r)
+        s := sum<r>
+
+  input:
+    - emp:
+        - [1, {dept: "eng", name: "ann", sal: 100}]
+        - [1, {dept: "eng", name: "bo", sal: 100}]
+
+  expected_exact_output:
+    - payroll:
+        - [1, {dept: "eng", total: 200}]
+
+# `r(b: 1)` over `r(b, c)` is `∃c. r(1, c)` — a proposition, which holds or
+# does not. It cannot hold three times.
+- name: an atom that binds nothing multiplies nothing
+  source: |
+    q :: relation(a: i64)
+    r :: relation(b: i64, c: string)
+    q(a:) <- input
+    r(b:, c:) <- input
+
+    total :: relation(t: i64)
+    total(t: s) <-
+        q(a: a)
+        r(b: 1)
+        s := sum<a>
+
+  input:
+    - q:
+        - [1, {a: 10}]
+        - [1, {a: 20}]
+      r:
+        - [1, {b: 1, c: "x"}]
+        - [1, {b: 1, c: "y"}]
+        - [1, {b: 1, c: "z"}]
+
+  expected_exact_output:
+    - total:
+        - [1, {t: 30}]
+
+- name: an atom that binds nothing is counted once
+  source: |
+    q :: relation(a: i64)
+    r :: relation(b: i64, c: string)
+    q(a:) <- input
+    r(b:, c:) <- input
+
+    n :: relation(k: i64)
+    n(k: c) <-
+        q(a: a)
+        r(b: 1)
+        c := count<>
+
+  input:
+    - q:
+        - [1, {a: 10}]
+      r:
+        - [1, {b: 1, c: "x"}]
+        - [1, {b: 1, c: "y"}]
+
+  expected_exact_output:
+    - n:
+        - [1, {k: 1}]
+
+# A wildcard is the existential written out, so it must behave exactly as an
+# omitted column does.
+- name: a wildcard column behaves as an omitted one
+  source: |
+    q :: relation(a: i64)
+    r :: relation(b: i64, c: string)
+    q(a:) <- input
+    r(b:, c:) <- input
+
+    total :: relation(t: i64)
+    total(t: s) <-
+        q(a: a)
+        r(b: 1, c: _)
+        s := sum<a>
+
+  input:
+    - q:
+        - [1, {a: 10}]
+      r:
+        - [1, {b: 1, c: "x"}]
+        - [1, {b: 1, c: "y"}]
+
+  expected_exact_output:
+    - total:
+        - [1, {t: 10}]
+
+# The sharp edge, pinned so that it is a decision rather than a drift. There is
+# no way to say "once per row of `emp`" other than naming enough columns to
+# make the rows distinct — `_` is the existential and does not help.
+- name: an omitted column sums distinct values
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    total :: relation(all: i64)
+    total(all: s) <-
+        emp(sal: r)
+        s := sum<r>
+
+  input:
+    - emp:
+        - [1, {dept: "eng", sal: 100}]
+        - [1, {dept: "ops", sal: 100}]
+
+  expected_exact_output:
+    - total:
+        - [1, {all: 100}]
+
+# Naming the column that distinguishes them is how you get both.
+- name: naming the distinguishing column sums both
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    total :: relation(all: i64)
+    total(all: s) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+
+  input:
+    - emp:
+        - [1, {dept: "eng", sal: 100}]
+        - [1, {dept: "ops", sal: 100}]
+
+  expected_exact_output:
+    - total:
+        - [1, {all: 200}]
+
+# `(t) := *["x", "x"]` binds `t` to `"x"` — one assignment, however many
+# elements produced it. `length` is what counts elements.
+- name: an unnest with a duplicate element is one assignment
+  source: |
+    person :: relation(name: string, tags: array(string))
+    person(name:, tags:) <- input
+
+    n :: relation(name: string, c: i64)
+    n(name: p, c: c) <-
+        person(name: p, tags: arr)
+        (t) := *arr
+        c := count<>
+
+  input:
+    - person:
+        - [1, {name: "ann", tags: ["x", "x"]}]
+
+  expected_exact_output:
+    - n:
+        - [1, {name: "ann", c: 1}]
+
+- name: length counts elements, an unnest counts assignments
+  source: |
+    person :: relation(name: string, tags: array(string))
+    person(name:, tags:) <- input
+
+    n :: relation(name: string, c: i64)
+    n(name: p, c: c) <-
+        person(name: p, tags: arr)
+        c := length(arr)
+
+  input:
+    - person:
+        - [1, {name: "ann", tags: ["x", "x"]}]
+
+  expected_exact_output:
+    - n:
+        - [1, {name: "ann", c: 2}]
+
+# An antijoin passes its left side's weights through unscaled, so negation
+# neither adds nor removes multiplicity.
+- name: a negated atom does not disturb the count
+  source: |
+    q :: relation(a: i64)
+    bad :: relation(a: i64)
+    r :: relation(b: i64, c: string)
+    q(a:) <- input
+    bad(a:) <- input
+    r(b:, c:) <- input
+
+    total :: relation(t: i64)
+    total(t: s) <-
+        q(a: a)
+        not bad(a: a)
+        r(b: 1)
+        s := sum<a>
+
+  input:
+    - q:
+        - [1, {a: 10}]
+        - [1, {a: 99}]
+      bad:
+        - [1, {a: 99}]
+      r:
+        - [1, {b: 1, c: "x"}]
+        - [1, {b: 1, c: "y"}]
+
+  expected_exact_output:
+    - total:
+        - [1, {t: 10}]
+
+# A partial operator inside an aggregate's argument must drop the row before it
+# is aggregated, exactly as it does anywhere else — so a sibling aggregate in
+# the same rule does not see a row grasp says was never derived.
+- name: a zero divisor inside an aggregate drops the assignment
+  source: |
+    r :: relation(g: string, a: i64, b: i64)
+    r(g:, a:, b:) <- input
+
+    q :: relation(g: string, lo: i64, t: i64)
+    q(g: g, lo: lo, t: t) <-
+        r(g: g, a: a, b: b)
+        lo := min<a>
+        t := sum<a / b>
+
+  input:
+    - r:
+        - [1, {g: "x", a: 10, b: 2}]
+        - [1, {g: "x", a: 3, b: 0}]
+
+  expected_exact_output:
+    - q:
+        - [1, {g: "x", lo: 10, t: 5}]
+
+- name: a group whose every row divides by zero produces no row
+  source: |
+    r :: relation(g: string, a: i64, b: i64)
+    src :: relation(v: i64)
+    r(g:, a:, b:) <- input
+    src(v:) <- input
+
+    q :: relation(g: string, t: i64)
+    q(g: g, t: t) <-
+        r(g: g, a: a, b: b)
+        t := sum<a / b>
+
+  input:
+    - r:
+        - [1, {g: "x", a: 10, b: 0}]
+      src:
+        - [1, {v: 1}]
+
+  expected_output:
+    - src:
+        - [1, {v: 1}]
+
+# An aggregate may sit in a rule of a recursive component so long as it reads a
+# strictly lower stratum — so the aggregate, and now its deduplication, are
+# emitted inside a `circuit` body.
+- name: an aggregate inside a fixpoint body
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    w :: relation(node: i64, v: i64)
+    edge(src:, dst:) <- input
+    w(node:, v:) <- input
+
+    reach :: relation(v: i64, n: i64)
+    reach(v: y, n: t) <-
+        w(node: y, v: q)
+        t := sum<q>
+    reach(v: y, n: t) <-
+        reach(v: x, n: t)
+        edge(src: x, dst: y)
+
+  input:
+    - w:
+        - [1, {node: 1, v: 5}]
+      edge:
+        - [1, {src: 1, dst: 2}]
+
+  expected_exact_output:
+    - reach:
+        - [1, {v: 1, n: 5}]
+        - [1, {v: 2, n: 5}]

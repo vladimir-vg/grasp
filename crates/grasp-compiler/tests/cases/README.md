@@ -418,6 +418,7 @@ been guarding — and unlike a snapshot it cannot rot.
 | `unions.yaml` | several rules for one relation, and the `distinct` that makes the result a set |
 | `negation.yaml` | the antijoin, and the stratification that gives it a meaning |
 | `aggregation.yaml` | implicit grouping, several aggregates sharing one group, and the stratum an aggregate may reach |
+| `multiplicity.yaml` | what an aggregate ranges over — which assignments count, and which do not |
 | `unnest.yaml` | one row per element, with the rest of the rule's bindings carried alongside each |
 | `assertions.yaml` | `v :: T` as a compile-time check, as a runtime filter, and where no check could pass |
 | `smoke.yaml` | the worked programs from the spec, end to end |

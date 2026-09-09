@@ -472,10 +472,25 @@ payroll(dept: d, total: s) <-
 ```
 
 ```
-by_dept := map_index(emp, function((r) -> record(key: r.dept, value: record(sal: r.sal))))
+rows    := distinct(map(emp, function((r) -> record(dept: r.dept, sal: r.sal))))
+by_dept := map_index(rows, function((r) -> record(key: record(dept: r.dept), value: record(sal: r.sal))))
 totals  := aggregate(by_dept, sum, function((v) -> v.sal))
-payroll := map(totals, function((k, total) -> record(dept: k, total: total)))
+payroll := distinct(map(totals, function((k, total) -> record(dept: k.dept, total: total))))
 ```
+
+**The `distinct` before the index is not tidiness either**, and it is the reason
+an aggregate is four operators rather than three. An aggregate is weight-scaled:
+a row of weight `w` contributes `w` times. That is right — and it is right
+*because* every other operator preserves the invariant it needs, that a row's
+weight is the number of satisfying assignments it stands for. Two operators
+establish that invariant only where the row is an injective encoding of the
+assignment: an atom that omits a column produces one row per witness rather than
+per assignment, and an unnest over equal elements produces several rows for one
+binding. So the whole assignment is deduplicated before it is folded, which is
+also why nothing is projected away before an aggregate.
+
+The trailing `distinct` is the ordinary relation-level one, from
+[above](#rules-and-unions).
 
 grasp's five aggregators — `sum`, `count`, `min`, `max`, `avg` — are
 grasp-dbsp's five, under the same names.

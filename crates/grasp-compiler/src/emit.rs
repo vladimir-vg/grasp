@@ -352,6 +352,11 @@ fn emit_rule(out: &mut String, relation: &Relation, rule: &Rule, names: &mut Nam
                 *kind,
                 &node.schema,
             ),
+            Op::Distinct { input } => {
+                let name = names.intermediate(&base);
+                let _ = writeln!(out, "{name} := distinct({})", at[*input]);
+                name
+            }
             Op::Aggregate { input, group, aggs } => {
                 emit_aggregate(out, &base, names, &at[*input], group, aggs, &node.schema)
             }
@@ -1252,10 +1257,17 @@ path(src: x, dst: y) <-
         // "grasp-dbsp applies it to every recursive stream on every round —
         //  that is what makes the iteration terminate. A hand-written one
         //  lowers a redundant second `distinct`."
+        // The recursive stream's own definition, not the whole body: an
+        // aggregate inside a fixpoint deduplicates the assignments it folds,
+        // which is a different `distinct` and a legitimate one.
+        let body = body_of(TC);
+        let definition = body
+            .lines()
+            .find(|l| l.trim_start().starts_with("path :="))
+            .expect("the recursive stream is defined");
         assert!(
-            !body_of(TC).contains("distinct"),
-            "a fixpoint body must not deduplicate: {}",
-            body_of(TC)
+            !definition.contains("distinct"),
+            "a recursive stream must not be deduplicated by hand: {definition}"
         );
     }
 

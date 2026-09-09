@@ -193,6 +193,24 @@ pub enum Op {
         left: usize,
         right: usize,
     },
+    /// Collapse every weight to one.
+    ///
+    /// Emitted in exactly one place: immediately before an aggregate. Every
+    /// other operator preserves the invariant an aggregate depends on — that a
+    /// row's weight is the number of satisfying assignments it stands for —
+    /// but two of them establish it only where the row is an *injective*
+    /// encoding of the assignment. An atom that omits a column, and an unnest
+    /// over equal elements, both produce several rows for one assignment, and
+    /// a weight-scaled `sum` would count them all.
+    ///
+    /// It is over every variable the body binds, which is why liveness carries
+    /// them all this far. A narrower dedup at each source would be cheaper and
+    /// would keep the optimiser discriminating; it is not here because the
+    /// answers have to be pinned before an optimisation can be judged against
+    /// them.
+    Distinct {
+        input: usize,
+    },
     /// Group, fold, and flatten back.
     ///
     /// One node for what `compilation.md` calls three, and for the same reason
@@ -265,6 +283,7 @@ impl Op {
             | Op::MapIndex { input, .. }
             | Op::Narrow { input, .. }
             | Op::Aggregate { input, .. }
+            | Op::Distinct { input }
             | Op::Unnest { input, .. } => vec![*input],
             Op::Join { left, right } | Op::Antijoin { left, right } => vec![*left, *right],
         }
@@ -386,9 +405,8 @@ pub fn plan(typed: infer::Typed) -> Result<Plan, Vec<Diagnostic>> {
 /// least fixpoint — neither `p` empty nor `p` full satisfies it — so the
 /// language forbids the shape rather than picking one of the answers.
 ///
-/// An aggregate marks an edge the same way and will be checked here too; it is
-/// absent only because aggregation is still reported unimplemented before a
-/// program reaches this far.
+/// An aggregate marks an edge the same way, for the same reason — it would read
+/// a partial value — and is checked here too.
 fn stratified(
     components: &[BTreeSet<String>],
     rules: &BTreeMap<String, Vec<&infer::TypedRule>>,
@@ -468,10 +486,8 @@ fn stratified(
 /// Each is a set of mutually recursive relations; a relation in no cycle is its
 /// own component. `semantics.md` names this as step 2 of stratification, and
 /// step 5 — rejecting a NEGATIVE edge internal to a component — belongs here
-/// too. It is absent because it cannot be reached: negation and aggregation are
-/// the only things that mark an edge negative, and both are reported
-/// unimplemented before a program gets this far. It lands with whichever
-/// arrives first.
+/// too, in [`stratified`], which negation and aggregation — the only two things
+/// that mark an edge negative — both feed.
 ///
 /// Everything iterates in name order, so the partition is a function of the
 /// program rather than of a traversal.
@@ -864,7 +880,24 @@ fn plan_rule(
         });
     }
 
-    let head_vars: BTreeSet<String> = rule.head.args.iter().flat_map(|(_, e)| free(e)).collect();
+    // What is still wanted when the body is done, which is what the cost model
+    // and the exit widths are measured against.
+    //
+    // An aggregate demands *everything*: it ranges over the body's assignments,
+    // so the deduplication before it is over every variable the body binds and
+    // nothing may be projected away first. Saying so here is what keeps the
+    // scoring honest — the alternative is a model that discriminates between
+    // rootings whose real peaks are identical. It also means the cost model has
+    // nothing to say about a rule with an aggregate, and the rooting falls to
+    // the structural key; deduplicating at the sources instead is what would
+    // give it its discrimination back.
+    let mut head_vars: BTreeSet<String> =
+        rule.head.args.iter().flat_map(|(_, e)| free(e)).collect();
+    if !aggs.is_empty() {
+        head_vars.extend(atoms.iter().flat_map(|a| a.vars.iter().cloned()));
+        head_vars.extend(deps.iter().flat_map(|d| d.binds.iter().cloned()));
+    }
+    let head_vars = head_vars;
 
     // The components of the weighted join graph, each planned and scored on its
     // own before any of them are crossed.
@@ -1347,9 +1380,26 @@ fn lower(
     let mut aggs = Some(aggs);
     for item in &trace {
         match item {
-            Item::Aggregate => steps.push(Step::Aggregate(
-                aggs.take().expect("one aggregate step per rule"),
-            )),
+            Item::Aggregate => {
+                // A partial operator in an aggregate's argument is lifted here
+                // as it is anywhere else, so a zero divisor removes the
+                // assignment *before* it is folded. Left inline it would keep
+                // the row in the group with an absent projection, and a
+                // sibling aggregate would see a row grasp never derived.
+                let mut lifted = Vec::new();
+                for a in aggs.take().expect("one aggregate step per rule") {
+                    let arg = match a.arg {
+                        Some(e) => {
+                            let (pre, e) = total(fresh, e);
+                            steps.extend(pre);
+                            Some(e)
+                        }
+                        None => None,
+                    };
+                    lifted.push(Agg { arg, ..a });
+                }
+                steps.push(Step::Aggregate(lifted));
+            }
             Item::Enter(a) => steps.push(Step::Enter(*a)),
             Item::Ground => steps.push(Step::Ground),
             Item::Join => steps.push(Step::Join),
@@ -1429,9 +1479,16 @@ fn lower(
     // equalities a spanning tree had to cut.
     let mut shapes: Vec<BTreeSet<String>> = Vec::new();
     let mut keys: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    // Every name the body binds — an aggregate's dedup key. Aggregate outputs
+    // are deliberately absent: they are produced *by* the aggregate, not by the
+    // body it ranges over.
+    let mut bound: BTreeSet<String> = BTreeSet::new();
     for (i, step) in steps.iter().enumerate() {
         match step {
-            Step::Enter(a) => shapes.push(atoms[*a].vars.clone()),
+            Step::Enter(a) => {
+                bound.extend(atoms[*a].vars.iter().cloned());
+                shapes.push(atoms[*a].vars.clone())
+            }
             Step::Ground => shapes.push(BTreeSet::new()),
             Step::Join | Step::Cross => {
                 let right = shapes.pop().expect("a stream to join");
@@ -1456,13 +1513,12 @@ fn lower(
                 shape.extend(aggs.iter().map(|a| a.out.clone()));
             }
             Step::Unnest { vars, .. } => {
+                bound.extend(vars.iter().cloned());
                 let shape = shapes.last_mut().expect("a stream");
                 shape.extend(vars.iter().cloned());
             }
-            Step::Bind(name, _) => {
-                shapes.last_mut().expect("a stream").insert(name.clone());
-            }
-            Step::Narrow { name, .. } => {
+            Step::Bind(name, _) | Step::Narrow { name, .. } => {
+                bound.insert(name.clone());
                 shapes.last_mut().expect("a stream").insert(name.clone());
             }
             Step::Row(fields) => {
@@ -1509,6 +1565,12 @@ fn lower(
                         want.extend(free(e));
                     }
                 }
+                // Everything the body binds reaches the aggregate, because the
+                // deduplication below is over the whole assignment: projecting
+                // first would collapse two assignments that differ only in a
+                // variable nothing reads, and a weight-scaled `sum` would then
+                // count them once.
+                want.extend(bound.iter().cloned());
             }
             Step::Bind(name, e) => {
                 want.remove(name);
@@ -1733,9 +1795,15 @@ fn lower(
             }
             Step::Aggregate(aggs) => {
                 let input = *stack.last().expect("a stream to group");
+                let schema = nodes[input].schema.clone();
+                let input = push(&mut nodes, Op::Distinct { input }, schema);
                 // What is still wanted and no aggregate produced: the group.
                 // `semantics.md` says "the head's non-aggregate columns", and
                 // liveness has already worked out which those are.
+                //
+                // `carry` is liveness *after* the aggregate, so widening the
+                // row before it does not widen the group. That is the whole
+                // reason the two are read from different places.
                 let outs: BTreeSet<&str> = aggs.iter().map(|a| a.out.as_str()).collect();
                 let group: Vec<String> = nodes[input]
                     .schema
