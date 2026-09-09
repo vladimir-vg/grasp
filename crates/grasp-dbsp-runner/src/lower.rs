@@ -467,9 +467,9 @@ macro_rules! operator_arms {
                 // linear path only `if (this.linearAllowed && !this.fp())`.
                 //
                 // The two paths must agree, because which one runs is invisible
-                // from the source: `sum` is absent only when the projection is
-                // optional and no row contributed, and `avg` whenever no row
-                // contributed. `count` is never floating point — it counts.
+                // from the source. `sum` and `avg` are absent under one rule: the
+                // projection is optional and no row contributed. `count` is never
+                // floating point — it counts.
                 Agg::Sum | Agg::Avg if projection.non_null() == &crate::value::TypeDesc::F64 => {
                     let proj = f.clone();
                     let agg = *agg;
@@ -506,9 +506,10 @@ macro_rules! operator_arms {
                 Agg::Sum | Agg::Avg | Agg::Count => {
                     let proj = f.clone();
                     let agg = *agg;
-                    // `sum`'s result type is optional exactly when its projection
-                    // is, so the node's own type says whether absence is legal.
-                    let sum_may_be_none =
+                    // A fold's result type is optional exactly when its
+                    // projection is, so the node's own type says whether absence
+                    // is legal.
+                    let may_be_none =
                         matches!(&$node.ty, BatchType::IndexedZSet(_, v) if v.is_optional());
                     Node::Indexed($dep(*input).indexed($node)?.aggregate_linear_postprocess(
                         move |v: &DynValue| match eval(&proj, &[v]) {
@@ -527,18 +528,21 @@ macro_rules! operator_arms {
                         },
                         move |acc: Acc| match agg {
                             Agg::Count => DynValue::I64(acc.rows),
-                            // A mean of no rows is undefined, which is why `avg`
-                            // is typed optional whatever the projection was.
-                            Agg::Avg if acc.rows == 0 => DynValue::None,
-                            // The division happens here, not in the accumulator, so
-                            // integer inputs still give a fractional mean.
-                            Agg::Avg => DynValue::F64(F64::new(acc.sum as f64 / acc.rows as f64)),
-                            // Only an all-`NONE` group has no sum to report, and
+                            // Only an all-`NONE` group has nothing to report, and
                             // that needs an optional projection to arise at all.
                             // With a definite projection the weighted sum is the
                             // answer even when the group's weights cancel — so
                             // this never returns absence in a column typed `i64`.
-                            Agg::Sum if acc.rows == 0 && sum_may_be_none => DynValue::None,
+                            //
+                            // Unconditional for `avg` all the same, since it is
+                            // also what keeps the division below total.
+                            Agg::Avg if acc.rows == 0 => DynValue::None,
+                            Agg::Sum if acc.rows == 0 && may_be_none => DynValue::None,
+                            // Integer division, so the mean of `i64`s truncates
+                            // toward zero. The division happens here rather than
+                            // in the accumulator, which is what keeps the fold
+                            // linear.
+                            Agg::Avg => DynValue::I64(acc.sum / acc.rows),
                             Agg::Sum => DynValue::I64(acc.sum),
                             Agg::Min | Agg::Max => unreachable!("handled above"),
                         },

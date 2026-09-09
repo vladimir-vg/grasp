@@ -409,8 +409,11 @@ not mention it.
   there is no set of keys to produce zeros against. A count that must show zero
   needs a second rule supplying it for the keys with nothing to count — which is
   an ordinary negated atom, and says what it means better than a default would.
-- **`avg` yields `f64`** whatever it was given, since a mean is not an integer.
-  Every other aggregator yields its argument's type.
+- **`count` is the only aggregator whose result type is fixed.** It is an `i64`;
+  every other one gives back its argument's type, `avg` included. So the mean of
+  `i64`s is an `i64`, and integer division **truncates toward zero**: the mean of
+  `-1` and `-2` is `-1`, not `-2`. That is the direction `/` takes everywhere
+  else in the language, which is the reason to prefer it.
 - **`sum` and `avg` need a numeric argument**, and **`min` and `max` need a
   scalar one** — the same rule `<` obeys, for the same reason:
   [ordering](types.md#comparison-and-ordering) is defined on scalars only, and any invention
@@ -418,7 +421,13 @@ not mention it.
 - **An `optional` argument is looked through.** Absence is skipped rather than
   folded, and the wrapper survives into the result: `sum` over an
   `optional(i64)` is an `optional(i64)`, absent only for a group with nothing to
-  add.
+  add. `avg` averages the values that are there, over how many there were rather
+  than how many assignments the group has.
+
+  That group is not the empty one. It has assignments; none of them has a value,
+  so it reports with every aggregate absent — where an empty group produces no
+  row at all. And since the aggregates share one row, they cannot disagree about
+  whether it exists.
 
 **Where an aggregate's result has a value, only the group does too.** An
 aggregate folds a whole group into one value, so a variable that varies within

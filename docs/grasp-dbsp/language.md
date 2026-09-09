@@ -287,14 +287,23 @@ aggregate(idx, max, function((v) -> v.salary))
 | `avg` | their mean |
 | `count` | the number of rows whose projected value is not absent, of whatever type |
 
-`sum` yields the projection's own type; `avg` always yields `optional(f64)`, so
-averaging integers does not truncate and a group with nothing to average is
-absent rather than missing.
+**`count` is the only one whose result type is fixed.** It is an `i64`; every
+other aggregator gives back the projection's own type, `A`, wrapper and all.
+
+So the mean of `i64`s is an `i64`, and integer division **truncates toward
+zero**: the mean of `-1` and `-2` is `-1`, not `-2`. That is the same direction
+`/` takes everywhere else here, which is the reason to prefer it — a language
+with two roundings in it has to say which one each place uses.
 
 **Every aggregator ignores absent projections, as SQL does.** `min` and `max`
 report the smallest and largest value that is there; `sum` adds the ones that
-are there; `count` counts them. A group in which *every* projection is absent
-still reports — with `NONE`, rather than disappearing.
+are there; `avg` averages them, over how many there were rather than how many
+rows the group has; `count` counts them. A group in which *every* projection is
+absent still reports — with `NONE`, rather than disappearing.
+
+Which is the only way a result is absent, and it needs an optional projection to
+arise at all: a group exists because a row is in it, so with a definite
+projection every group has something to fold.
 
 That is worth stating because it does not come for free. `NONE` sorts before
 every value, so the obvious lowering of `min` would report absence for a group

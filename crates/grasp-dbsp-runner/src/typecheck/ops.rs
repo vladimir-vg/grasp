@@ -414,7 +414,10 @@ fn check_source(name: &str, cx: &Ctx<'_>, env: Env<'_>) -> TResult<Option<(Batch
                 return err(
                     span,
                     format!(
-                        "`{name}` is inside a `fixpoint` body, where a source fires once                          per iteration rather than once per transaction. Declare it                          outside and pass it in as a circuit parameter, the way an input                          is passed in."
+                        "`{name}` is inside a `fixpoint` body, where a source fires once \
+                         per iteration rather than once per transaction. Declare it \
+                         outside and pass it in as a circuit parameter, the way an \
+                         input is passed in."
                     ),
                 );
             }
@@ -437,7 +440,9 @@ fn check_source(name: &str, cx: &Ctx<'_>, env: Env<'_>) -> TResult<Option<(Batch
                 return err(
                     span,
                     format!(
-                        "the rows of `{name}` are `{got}`, but it is declared `{spec}`.                          A bare numeric literal takes its own type — write `1.0` or                          `cast(1, f64)` for an `f64`."
+                        "the rows of `{name}` are `{got}`, but it is declared `{spec}`. \
+                         A bare numeric literal takes its own type — write `1.0` \
+                         or `cast(1, f64)` for an `f64`."
                     ),
                 );
             }
@@ -808,14 +813,14 @@ fn check_aggregate(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Plan
                     // incrementally maintained sum would depend on the order
                     // changes arrived in. That rules out the linear path, not
                     // the operation, which is the split Feldera makes too.
-                    // A mean of no contributing rows is undefined, so `avg` is
-                    // always optional and always yields f64 rather than
-                    // truncating. `sum` needs the same escape only when the
-                    // projection itself can be `NONE`: otherwise the weighted
-                    // sum is the answer even for a group whose weights cancel.
-                    if agg == Agg::Avg {
-                        optional(TypeDesc::F64)
-                    } else if optional_in {
+                    //
+                    // `sum` and `avg` answer absence the same way, and it is
+                    // the projection that decides: absent only where the
+                    // projection can be, since a group exists because a row is
+                    // in it and a definite projection makes every row count.
+                    // For a definite one the weighted sum is the answer even
+                    // when the group's weights cancel.
+                    if optional_in {
                         optional(out.non_null().clone())
                     } else {
                         out.non_null().clone()

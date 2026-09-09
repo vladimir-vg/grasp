@@ -573,42 +573,13 @@ fn emit_aggregate(
             (v.clone(), from)
         })
         .collect();
-    let mut flat = names.intermediate(base);
+    let flat = names.intermediate(base);
     let _ = writeln!(
         out,
         "{flat} := map({combined}, function((k, {VALUE}) -> {}))",
         record_text(&fields)
     );
 
-    for a in aggs {
-        if a.function != Aggregator::Avg || !schema.contains(&a.out) {
-            continue;
-        }
-        let present = names.intermediate(base);
-        let _ = writeln!(
-            out,
-            "{present} := filter({flat}, function(({ROW}) -> ({ROW}.{} != NONE)))",
-            a.out
-        );
-        let fields: Vec<(String, String)> = schema
-            .iter()
-            .map(|v| {
-                let value = if *v == a.out {
-                    format!("coalesce({ROW}.{v}, 0.0)")
-                } else {
-                    format!("{ROW}.{v}")
-                };
-                (v.clone(), value)
-            })
-            .collect();
-        let narrowed = names.intermediate(base);
-        let _ = writeln!(
-            out,
-            "{narrowed} := map({present}, function(({ROW}) -> {}))",
-            record_text(&fields)
-        );
-        flat = narrowed;
-    }
     flat
 }
 

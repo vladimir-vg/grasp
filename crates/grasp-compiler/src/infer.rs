@@ -874,7 +874,8 @@ impl Cx {
                         Pass::Infer,
                         expr.span(),
                         format!(
-                            "`{name}` is `{ty}` here, but column `{column}` of `{}` is                              `{want}`",
+                            "`{name}` is `{ty}` here, but column `{column}` of `{}` is \
+                             `{want}`",
                             rule.head.relation
                         ),
                     ),
@@ -975,11 +976,10 @@ impl Cx {
                         Some(Diagnostic::error(Pass::Infer, e.span(), message)),
                     );
                 }
+                // "Every aggregator but `count` gives back its argument's
+                //  type", `avg` included — the mean of `i64`s is an `i64`.
                 let ty = match function {
                     Aggregator::Count => Ty::I64,
-                    // "`avg` yields `f64` whatever it was given, since a mean
-                    //  is not an integer."
-                    Aggregator::Avg => Ty::F64,
                     _ => inner,
                 };
                 (ty, None)

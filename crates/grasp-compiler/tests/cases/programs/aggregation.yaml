@@ -85,12 +85,34 @@
     - billed:
         - [1, {order: "a", total: 22}]
 
-# "`avg` yields `f64` whatever it was given, since a mean is not an integer."
-# grasp-dbsp's yields `optional(f64)`, a mean of nothing being undefined, so
-# this is the one aggregator whose result has to be narrowed on the way out.
-- name: avg yields f64 over integers
+# "Every aggregator but `count` gives back its argument's type" — `avg`
+# included, so the mean of `i64`s is an `i64`, truncated toward zero. `-3 / 2`
+# is `-1` rather than `-2`, which is the direction and not only the rounding.
+- name: avg over integers is an integer, truncated toward zero
   source: |
     emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    mean :: relation(dept: string, m: i64)
+    mean(dept: d, m: a) <-
+        emp(dept: d, sal: r)
+        a := avg<r>
+
+  input:
+    - emp:
+        - [1, {dept: "eng", sal: 100}]
+        - [1, {dept: "eng", sal: 101}]
+        - [1, {dept: "owed", sal: -1}]
+        - [1, {dept: "owed", sal: -2}]
+
+  expected_exact_output:
+    - mean:
+        - [1, {dept: "eng", m: 100}]
+        - [1, {dept: "owed", m: -1}]
+
+- name: avg over floats is a float
+  source: |
+    emp :: relation(dept: string, sal: f64)
     emp(dept:, sal:) <- input
 
     mean :: relation(dept: string, m: f64)
@@ -100,8 +122,8 @@
 
   input:
     - emp:
-        - [1, {dept: "eng", sal: 100}]
-        - [1, {dept: "eng", sal: 101}]
+        - [1, {dept: "eng", sal: 100.0}]
+        - [1, {dept: "eng", sal: 101.0}]
 
   expected_exact_output:
     - mean:
@@ -341,3 +363,100 @@
   expected_exact_output:
     - q:
         - [1, {g: "a", m: "b"}]
+
+# "Absence is skipped rather than folded." Every case below puts an absent value
+# through an aggregate, which nothing did before — the two `optional` cases
+# above are both all-present, so the rule they cite was never exercised.
+- name: absence is skipped rather than folded
+  source: |
+    t :: relation(g: string, x: optional(i64))
+    t(g:, x:) <- input
+
+    q :: relation(g: string, s: optional(i64), m: optional(i64), a: optional(i64))
+    q(g: g, s: s, m: m, a: a) <-
+        t(g: g, x: x)
+        s := sum<x>
+        m := min<x>
+        a := avg<x>
+
+  input:
+    - t:
+        - [1, {g: "a", x: 1}]
+        - [1, {g: "a", x: null}]
+        - [1, {g: "a", x: 5}]
+
+  # The mean is over the two values that are there, not over the three rows.
+  expected_exact_output:
+    - q:
+        - [1, {g: "a", s: 6, m: 1, a: 3}]
+
+# "Absent only for a group with nothing to add." The group is not empty — it has
+# rows — so it reports, and every aggregate over it is absent. An empty group is
+# the different thing above: it produces no row at all.
+- name: a group with nothing present still reports
+  source: |
+    t :: relation(g: string, x: optional(i64))
+    t(g:, x:) <- input
+
+    q :: relation(g: string, s: optional(i64), m: optional(i64), a: optional(i64)) 
+    q(g: g, s: s, m: m, a: a) <-
+        t(g: g, x: x)
+        s := sum<x>
+        m := min<x>
+        a := avg<x>
+
+  input:
+    - t:
+        - [1, {g: "none", x: null}]
+        - [1, {g: "none", x: null}]
+
+  expected_exact_output:
+    - q:
+        - [1, {g: "none", s: null, m: null, a: null}]
+
+# Two aggregates share one group and one output row, so they cannot disagree
+# about whether it exists. `avg` used to be narrowed on the way out, and that
+# filter deleted the row `sum` had an answer for.
+- name: two aggregates over one optional report together
+  source: |
+    t :: relation(g: string, x: optional(i64))
+    t(g:, x:) <- input
+
+    q :: relation(g: string, s: optional(i64), a: optional(i64))
+    q(g: g, s: s, a: a) <-
+        t(g: g, x: x)
+        s := sum<x>
+        a := avg<x>
+
+  input:
+    - t:
+        - [1, {g: "some", x: 4}]
+        - [1, {g: "none", x: null}]
+
+  expected_exact_output:
+    - q:
+        - [1, {g: "some", s: 4, a: 4}]
+        - [1, {g: "none", s: null, a: null}]
+
+# `count<>` counts the **assignments** in the group, so absence does not reduce
+# it — the one place the two languages' aggregators mean different things, and
+# the projection of `0` is what reconciles them.
+- name: count counts the assignments, absent or not
+  source: |
+    t :: relation(g: string, x: optional(i64))
+    t(g:, x:) <- input
+
+    q :: relation(g: string, n: i64)
+    q(g: g, n: n) <-
+        t(g: g, x: x)
+        n := count<>
+
+  input:
+    - t:
+        - [1, {g: "a", x: 1}]
+        - [1, {g: "a", x: null}]
+        - [1, {g: "a", x: 5}]
+
+  expected_exact_output:
+    - q:
+        - [1, {g: "a", n: 3}]

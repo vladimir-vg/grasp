@@ -543,8 +543,16 @@ also why nothing is projected away before an aggregate.
 The trailing `distinct` is the ordinary relation-level one, from
 [above](#rules-and-unions).
 
-grasp's five aggregators — `sum`, `count`, `min`, `max`, `avg` — are
-grasp-dbsp's five, under the same names.
+**`count` is the one that needs translating.** grasp's counts the *assignments*
+in the group; grasp-dbsp's counts the rows whose projection is not absent. So it
+is emitted over a projection that is never absent — `function((v) -> 0)` — and
+the two then mean the same thing. It is also why `count<>` takes no argument in
+grasp: there is nothing for one to be.
+
+The other four are grasp-dbsp's under the same names *and* the same types, `avg`
+included. Each gives back its argument's type, absent exactly where the argument
+could be — so nothing is narrowed on the way out, and a group whose values are
+all absent reports in both languages rather than being dropped by one of them.
 
 ## Worked example
 

@@ -129,7 +129,11 @@
     - total:
         - [1, 10, 200]
 
-- name: avg over integers is fractional, not truncated
+# `avg` gives back the projection's type, as every aggregator but `count` does.
+# The mean of `i64`s is an `i64`, and integer division truncates **toward zero**
+# — so a negative group rounds up rather than down, which is the direction this
+# case exists to pin.
+- name: avg over integers truncates toward zero
   source: |
     emp := input("emp")
     emp :: zset(record(id: i64, dept_id: i64, salary: i64))
@@ -140,11 +144,37 @@
     - emp:
         - [1, {id: 1, dept_id: 10, salary: 100}]
         - [1, {id: 2, dept_id: 10, salary: 101}]
+        - [1, {id: 3, dept_id: 20, salary: -1}]
+        - [1, {id: 4, dept_id: 20, salary: -2}]
 
-  # 201 / 2 = 100.5, not 100.
+  # 201 / 2 is 100, and -3 / 2 is -1 rather than -2.
   expected_exact_output:
     - mean:
-        - [1, 10, 100.5]
+        - [1, 10, 100]
+        - [1, 20, -1]
+
+# The wrapper follows the projection, and absence is skipped rather than folded
+# — so the mean is over the values that are there.
+- name: avg over an optional projection skips what is absent
+  source: |
+    t := input("t")
+    t :: zset(record(g: string, n: optional(i64)))
+    idx := map_index(t, function((r) -> record(key: r.g, value: record(n: r.n))))
+    mean := aggregate(idx, avg, function((v) -> v.n))
+
+  input:
+    - t:
+        - [1, {g: "some", n: 10}]
+        - [1, {g: "some", n: null}]
+        - [1, {g: "some", n: 20}]
+        - [1, {g: "none", n: null}]
+        - [1, {g: "none", n: null}]
+
+  # 30 / 2, not 30 / 3 — and a group with nothing to average still reports.
+  expected_exact_output:
+    - mean:
+        - [1, "some", 15]
+        - [1, "none", null]
 
 - name: count ignores rows whose projection is null
   source: |
