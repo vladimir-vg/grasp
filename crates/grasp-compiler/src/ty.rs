@@ -295,6 +295,65 @@ pub fn impose(ty: &mut Ty, expected: &Ty) -> Result<(), Conflict> {
     }
 }
 
+/// What `v :: T` does, given what `v` already is — `types.md`, "Runtime
+/// filters".
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Narrowing {
+    /// The value is already a `T`. A compile-time check: nothing is emitted.
+    Already,
+    /// A check could settle it, so a filter drops the rows that do not match
+    /// and `v` is a definite `T` afterwards. `cast` says whether the value has
+    /// to be converted before it can be tested.
+    Filter { cast: bool },
+    /// A check could settle it, but this compiler cannot emit one.
+    ///
+    /// The three rows that keep their wrapper — `optional(A) :: optional(B)`,
+    /// `array(A) :: array(B)`, `dict(K,A) :: dict(K,B)` — need either an
+    /// absence-preserving test or a per-element one. grasp-dbsp has neither:
+    /// "records and arrays have no conversions", and a dict has none at all.
+    Unsupported,
+    /// No value of the source could ever be a `T`. An error, because a filter
+    /// that can never pass is a silently empty relation.
+    Never,
+}
+
+/// Which of the four `v :: T` is.
+pub fn narrows(from: &Ty, to: &Ty) -> Narrowing {
+    if assignable(from, to) {
+        return Narrowing::Already;
+    }
+    match (from, to) {
+        // "`optional(T)` :: `T` — drops the row when the value is absent." The
+        // common one, and the way to drop absent rows before a join.
+        (Ty::Optional(a), t) if !matches!(t, Ty::Optional(_)) => match narrows(a, t) {
+            Narrowing::Already => Narrowing::Filter { cast: false },
+            Narrowing::Filter { .. } => Narrowing::Filter { cast: true },
+            other => other,
+        },
+        // "`json` :: `T` — drops the row when the document does not hold a
+        // `T`." A document is converted by what is wanted, and every such
+        // conversion is fallible, which is exactly the test.
+        (Ty::Json, t) if holdable(t) => Narrowing::Filter { cast: true },
+        (Ty::Optional(a), Ty::Optional(b)) if narrows(a, b) != Narrowing::Never => {
+            Narrowing::Unsupported
+        }
+        (Ty::Array(a), Ty::Array(b)) if narrows(a, b) != Narrowing::Never => Narrowing::Unsupported,
+        (Ty::Dict(ka, a), Ty::Dict(kb, b)) if ka == kb && narrows(a, b) != Narrowing::Never => {
+            Narrowing::Unsupported
+        }
+        _ => Narrowing::Never,
+    }
+}
+
+/// Whether a document can be converted to this — the `cast` rows out of `json`,
+/// which are every scalar plus a record or an array asked for by name.
+fn holdable(t: &Ty) -> bool {
+    matches!(
+        t,
+        Ty::Boolean | Ty::I64 | Ty::F64 | Ty::String | Ty::Record(_) | Ty::Array(_)
+    )
+}
+
 /// Why a type could not be settled.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Open {

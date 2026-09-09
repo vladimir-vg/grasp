@@ -5,7 +5,7 @@
 //! structure that says how those sequences combine. Types are erased here:
 //! nothing below this point carries one.
 //!
-//! Four things about the shape of this pass are load-bearing.
+//! Three things about the shape of this pass are load-bearing.
 //!
 //! **A rule body is a set.** Body statements constrain; they do not sequence.
 //! Every ordering decision this pass makes is therefore its own, and must be a
@@ -19,12 +19,6 @@
 //! exactly one member. Writing "the atom, then the statements" instead would be
 //! shorter and would have to be taken apart again the moment joins land; the
 //! generality is cheap and the seam is where it belongs.
-//!
-//! **What this compiler cannot plan, it names.** [`gaps`] enumerates the
-//! constructs a program uses that this stage does not implement, and nothing
-//! reaches the rest of the pass unless that list is empty. There is no
-//! catch-all: `Diagnostic::UNIMPLEMENTED` holds one entry per construct, so a
-//! gap nobody named is a `debug_assert` failure rather than a silent pass.
 //!
 //! **Partial operators are lifted, not special-cased at emission.** `a / b` is
 //! `T` in grasp and `optional(T)` in grasp-dbsp — "all errors inside grasp rule
@@ -120,6 +114,19 @@ pub struct Rule {
 pub struct Node {
     pub op: Op,
     pub schema: BTreeSet<String>,
+}
+
+/// What a narrowing's `coalesce` falls back to — a value that is never read.
+///
+/// Two forms because two callers know different things. A division has its
+/// dividend to hand, which has exactly the type the division yields, so nothing
+/// has to work that type out. An assertion knows the type and has no value, so
+/// emission builds one — which it can, `mapping.md` listing a definite value of
+/// every type.
+#[derive(Debug)]
+pub enum Definite {
+    Like(core::Expr),
+    Of(Type),
 }
 
 /// One aggregate: a variable, the aggregator that fills it, and what it folds.
@@ -235,12 +242,16 @@ pub enum Op {
     /// is `coalesce`, which is grasp-dbsp's and has no spelling in grasp: the
     /// two languages meet at emission, not here.
     ///
-    /// `fallback` is never read, the filter having seen to that. It is carried
-    /// because grasp-dbsp typechecks it anyway.
+    /// The `coalesce` default is never read, the filter having seen to that.
+    /// It is carried because grasp-dbsp typechecks it anyway.
     Narrow {
         input: usize,
         name: String,
-        fallback: core::Expr,
+        /// The type to convert into before testing — `mapping.md`'s first
+        /// operator, needed for a `json` source and not for one that is already
+        /// the `optional(T)` the check produces.
+        cast: Option<Type>,
+        definite: Definite,
     },
 }
 
@@ -266,11 +277,6 @@ impl Op {
 
 /// Plan a typed program.
 pub fn plan(typed: infer::Typed) -> Result<Plan, Vec<Diagnostic>> {
-    let gaps = gaps(&typed);
-    if !gaps.is_empty() {
-        return Err(gaps);
-    }
-
     // Facts and rules, gathered per relation. `infer` hands them back in one
     // list because it had no reason to separate them; emission does.
     let mut facts: BTreeMap<String, Vec<&core::Fact>> = BTreeMap::new();
@@ -542,82 +548,6 @@ fn to_args(row: &[(String, core::Expr)]) -> Vec<(String, core::Arg)> {
 }
 
 // ---------------------------------------------------------------------------
-// What this stage cannot do yet
-// ---------------------------------------------------------------------------
-
-/// Every construct the program uses that this stage does not implement.
-///
-/// Ranked most-dependent first, because the harness attributes a case to the
-/// first diagnostic: a program blocked by both a join and recursion should
-/// count against recursion, since implementing joins alone would free nothing.
-/// The attribution re-settles on its own as constructs land.
-///
-/// This function is the reason `Diagnostic::UNIMPLEMENTED` has no catch-all.
-/// Every shape this stage cannot handle is named here or the `debug_assert` in
-/// `Diagnostic::unimplemented` fires.
-pub fn gaps(typed: &infer::Typed) -> Vec<Diagnostic> {
-    let mut found: BTreeMap<&'static str, Span> = BTreeMap::new();
-    let mut note = |construct: &'static str, span: Span| {
-        found.entry(construct).or_insert(span);
-    };
-
-    // A relation is recursive when it can reach itself. The graph is over
-    // relations, edge `head -> body relation`, exactly as `semantics.md`'s
-    // stratification algorithm builds it.
-    let mut edges: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    let mut rule_count: BTreeMap<&str, usize> = BTreeMap::new();
-    let mut has_fact: BTreeSet<&str> = BTreeSet::new();
-    for decl in &typed.decls {
-        match decl {
-            infer::Decl::Fact(f) => {
-                has_fact.insert(&f.relation);
-            }
-            infer::Decl::Rule(r) => {
-                *rule_count.entry(&r.rule.head.relation).or_default() += 1;
-                let out = edges.entry(&r.rule.head.relation).or_default();
-                for stmt in &r.rule.body {
-                    if let core::Stmt::Atom { relation, .. } = stmt {
-                        out.insert(relation);
-                    }
-                }
-            }
-        }
-    }
-    for decl in &typed.decls {
-        let infer::Decl::Rule(r) = decl else { continue };
-        let rule = &r.rule;
-
-        for stmt in &rule.body {
-            match stmt {
-                core::Stmt::Atom { .. } => {}
-                core::Stmt::Match { .. } => {}
-                // `infer` reports this one, so a program carrying it never
-                // reaches here — but naming it costs nothing and the day the
-                // assertion lands, this is where it stops being a gap.
-                core::Stmt::Assert { span, .. } => note("type assertions", *span),
-                core::Stmt::Filter { .. } | core::Stmt::Input { .. } => {}
-            }
-        }
-    }
-
-    // The rank. `Diagnostic::UNIMPLEMENTED` lists the plan constructs in this
-    // order too, so the two cannot drift far apart unnoticed.
-    const RANK: &[&str] = &["aggregation", "negation", "unnesting", "type assertions"];
-    let mut out = Vec::new();
-    for construct in RANK {
-        if let Some(span) = found.get(construct) {
-            out.push(Diagnostic::unimplemented(Pass::Plan, *span, *construct));
-        }
-    }
-    debug_assert_eq!(
-        out.len(),
-        found.len(),
-        "a construct was noted that `RANK` does not list, so it would be dropped"
-    );
-    out
-}
-
-// ---------------------------------------------------------------------------
 // The join graph
 // ---------------------------------------------------------------------------
 
@@ -737,6 +667,8 @@ enum Body {
         equal: Vec<(String, String)>,
         computed: Vec<(String, core::Expr)>,
     },
+    /// `v :: T`, where a check could settle it.
+    Assert(infer::Assert),
     /// `(v) := *arr` or `(k, v) := **d`.
     Unnest {
         over: core::Expr,
@@ -917,6 +849,19 @@ fn plan_rule(
                 });
             }
         }
+    }
+
+    // `v :: T` is a filter over a variable already bound, so it is a dependent
+    // like any other — placed as early as the variable exists, which is what
+    // makes "narrowed for everything after it" one type for the whole rule.
+    for assert in &typed.asserts {
+        deps.push(Dependent {
+            kind: Kind::Filter,
+            binds: Vec::new(),
+            consumes: [assert.variable.clone()].into_iter().collect(),
+            key: format!("{} :: {}", assert.variable, assert.ty),
+            body: Body::Assert(assert.clone()),
+        });
     }
 
     let head_vars: BTreeSet<String> = rule.head.args.iter().flat_map(|(_, e)| free(e)).collect();
@@ -1336,7 +1281,11 @@ enum Step {
     /// Bind one name, keeping everything else that is still live.
     Bind(String, core::Expr),
     /// See [`Op::Narrow`].
-    Narrow(String, core::Expr),
+    Narrow {
+        name: String,
+        cast: Option<Type>,
+        definite: Definite,
+    },
     /// The head: replace the row wholesale.
     Row(Vec<(String, core::Expr, Option<Type>)>),
     /// See [`Op::Aggregate`]. The group is worked out from liveness.
@@ -1416,6 +1365,11 @@ fn lower(
                         e.clone(),
                     )
                 }
+                Body::Assert(a) => steps.push(Step::Narrow {
+                    name: a.variable.clone(),
+                    cast: a.cast.then(|| a.ty.clone()),
+                    definite: Definite::Of(a.ty.clone()),
+                }),
                 Body::Unnest { over, vars, kind } => {
                     let (vars, kind) = (vars.clone(), *kind);
                     push_total(
@@ -1505,7 +1459,10 @@ fn lower(
                 let shape = shapes.last_mut().expect("a stream");
                 shape.extend(vars.iter().cloned());
             }
-            Step::Bind(name, _) | Step::Narrow(name, _) => {
+            Step::Bind(name, _) => {
+                shapes.last_mut().expect("a stream").insert(name.clone());
+            }
+            Step::Narrow { name, .. } => {
                 shapes.last_mut().expect("a stream").insert(name.clone());
             }
             Step::Row(fields) => {
@@ -1557,9 +1514,11 @@ fn lower(
                 want.remove(name);
                 want.extend(free(e));
             }
-            Step::Narrow(name, fallback) => {
+            Step::Narrow { name, definite, .. } => {
                 want.insert(name.clone());
-                want.extend(free(fallback));
+                if let Definite::Like(e) = definite {
+                    want.extend(free(e));
+                }
             }
             Step::Row(fields) => {
                 want.clear();
@@ -1796,7 +1755,11 @@ fn lower(
                 let n = push(&mut nodes, Op::Filter { input, expr }, schema);
                 *stack.last_mut().expect("a stream") = n;
             }
-            Step::Narrow(name, fallback) => {
+            Step::Narrow {
+                name,
+                cast,
+                definite,
+            } => {
                 let input = *stack.last().expect("a stream to narrow");
                 let schema = nodes[input].schema.clone();
                 let n = push(
@@ -1804,7 +1767,8 @@ fn lower(
                     Op::Narrow {
                         input,
                         name,
-                        fallback,
+                        cast,
+                        definite,
                     },
                     schema,
                 );
@@ -1934,7 +1898,11 @@ fn lift(fresh: &mut Fresh, steps: &mut Vec<Step>, e: core::Expr) -> core::Expr {
             }
             let name = fresh.next();
             steps.push(Step::Bind(name.clone(), joined));
-            steps.push(Step::Narrow(name.clone(), lhs));
+            steps.push(Step::Narrow {
+                name: name.clone(),
+                cast: None,
+                definite: Definite::Like(lhs),
+            });
             core::Expr::Var { name, span }
         }
         core::Expr::Unary { op, operand, span } => core::Expr::Unary {

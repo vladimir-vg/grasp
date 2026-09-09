@@ -28,7 +28,7 @@
 use crate::ast::{Aggregator, BinOp, Lit, Type, UnOp};
 use crate::core;
 use crate::key;
-use crate::plan::{Agg, Field, Group, Node, Op, Plan, Relation, Rule, Source};
+use crate::plan::{Agg, Definite, Field, Group, Node, Op, Plan, Relation, Rule, Source};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
@@ -358,8 +358,18 @@ fn emit_rule(out: &mut String, relation: &Relation, rule: &Rule, names: &mut Nam
             Op::Narrow {
                 input,
                 name: v,
-                fallback,
-            } => emit_narrow(out, &base, names, node, v, fallback, &at[*input]),
+                cast,
+                definite,
+            } => emit_narrow(
+                out,
+                &base,
+                names,
+                node,
+                v,
+                cast.as_ref(),
+                definite,
+                &at[*input],
+            ),
         };
         at.push(name);
     }
@@ -678,26 +688,58 @@ fn row_record(vars: &[String]) -> String {
 /// `coalesce` would invent a value for a row that has none, which is exactly
 /// the row a zero divisor produces and exactly the row grasp says must not
 /// appear.
+#[allow(clippy::too_many_arguments)]
 fn emit_narrow(
     out: &mut String,
     base: &str,
     names: &mut Names,
     node: &Node,
     v: &str,
-    fallback: &core::Expr,
+    cast: Option<&Type>,
+    definite: &Definite,
     previous: &str,
 ) -> String {
+    // The first of `mapping.md`'s three operators, where one is needed: bind
+    // the value at the `optional(T)` the check produces. A `json` source needs
+    // it; a value that is already an `optional(T)`, as a division's result is,
+    // does not.
+    let mut previous = previous.to_string();
+    if let Some(ty) = cast {
+        let bound = names.intermediate(base);
+        let fields: Vec<(String, String)> = node
+            .schema
+            .iter()
+            .map(|f| {
+                let value = if f == v {
+                    format!("cast({ROW}.{v}, optional({}))", ty_text(ty))
+                } else {
+                    format!("{ROW}.{f}")
+                };
+                (f.clone(), value)
+            })
+            .collect();
+        let _ = writeln!(
+            out,
+            "{bound} := map({previous}, function(({ROW}) -> {}))",
+            record_text(&fields)
+        );
+        previous = bound;
+    }
     let present = names.intermediate(base);
     let _ = writeln!(
         out,
         "{present} := filter({previous}, function(({ROW}) -> ({ROW}.{v} != NONE)))"
     );
+    let default = match definite {
+        Definite::Like(e) => expr_text(e, None),
+        Definite::Of(ty) => definite_value(ty),
+    };
     let fields: Vec<(String, String)> = node
         .schema
         .iter()
         .map(|f| {
             let value = if f == v {
-                format!("coalesce({ROW}.{v}, {})", expr_text(fallback, None))
+                format!("coalesce({ROW}.{v}, {default})")
             } else {
                 format!("{ROW}.{f}")
             };
@@ -711,6 +753,40 @@ fn emit_narrow(
         record_text(&fields)
     );
     name
+}
+
+/// Some definite value of a type, for a `coalesce` whose default is never read.
+///
+/// "An emitter needs some definite value of every type, which is `0`, `0.0`,
+/// `\"\"`, `false`, `cast([], array(T))`, `cast({}, dict(K,V))`, or a record
+/// built from those." A document takes one the same way, out of an integer.
+fn definite_value(ty: &Type) -> String {
+    match ty {
+        Type::Boolean => "false".to_string(),
+        Type::I64 => "0".to_string(),
+        Type::F64 => "0.0".to_string(),
+        Type::String => "\"\"".to_string(),
+        Type::Json => "cast(0, json)".to_string(),
+        Type::Optional(_) => "NONE".to_string(),
+        // An empty container has no element type of its own, so it is said.
+        Type::Array(_) | Type::Dict(..) => {
+            let empty = if matches!(ty, Type::Array(_)) {
+                "[]"
+            } else {
+                "{}"
+            };
+            format!("cast({empty}, {})", ty_text(ty))
+        }
+        Type::Record(fields) => {
+            let mut sorted: Vec<&(String, Type)> = fields.iter().collect();
+            sorted.sort_by(|a, b| a.0.cmp(&b.0));
+            let text: Vec<(String, String)> = sorted
+                .iter()
+                .map(|(n, t)| (n.clone(), definite_value(t)))
+                .collect();
+            record_text(&text)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

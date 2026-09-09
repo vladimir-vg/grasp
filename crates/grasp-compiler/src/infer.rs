@@ -34,7 +34,7 @@
 use crate::ast::{Aggregator, BinOp, Lit, Type, UnOp};
 use crate::core;
 use crate::diag::{Diagnostic, Pass, Span};
-use crate::ty::{Open, Ty, assignable, compose, impose, settle};
+use crate::ty::{Narrowing, Open, Ty, assignable, compose, impose, narrows, settle};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The typed core.
@@ -70,11 +70,30 @@ pub enum Decl {
     Rule(TypedRule),
 }
 
+/// One `v :: T` that became a runtime filter.
+///
+/// An assertion the value already satisfied leaves none of these: it was a
+/// compile-time check and there is nothing to emit. `infer` is where the
+/// narrowing table is read, so it is where the decision belongs — the plan
+/// needs the answer, not the reasoning.
+#[derive(Debug, Clone)]
+pub struct Assert {
+    pub variable: String,
+    pub ty: Type,
+    /// Whether the value has to be converted before it can be tested — a
+    /// `json` source, and not an `optional(T)` one, which is already the shape
+    /// the check produces.
+    pub cast: bool,
+    pub span: Span,
+}
+
 #[derive(Debug)]
 pub struct TypedRule {
     pub rule: core::Rule,
     /// Every variable the rule binds, and its type.
     pub vars: BTreeMap<String, Type>,
+    /// The assertions that became runtime filters, in body order.
+    pub asserts: Vec<Assert>,
 }
 
 pub fn infer(program: core::Program) -> Result<Typed, Vec<Diagnostic>> {
@@ -260,6 +279,7 @@ impl Cx {
 /// What typing one rule produced.
 struct RuleTypes {
     vars: BTreeMap<String, Ty>,
+    filters: Vec<Assert>,
     head: BTreeMap<String, Ty>,
     /// The first thing wrong, which is the only thing reported.
     fault: Option<Diagnostic>,
@@ -278,6 +298,8 @@ impl Cx {
     fn type_rule(&self, rule: &core::Rule) -> RuleTypes {
         let mut vars: BTreeMap<String, Ty> = BTreeMap::new();
         let mut fault: Option<Diagnostic> = None;
+        let mut asserts: Vec<(&String, &Type, Span)> = Vec::new();
+        let mut filters: Vec<Assert> = Vec::new();
         let note = |d: Diagnostic, fault: &mut Option<Diagnostic>| {
             if fault.is_none() {
                 *fault = Some(d);
@@ -447,14 +469,62 @@ impl Cx {
                     }
                 }
 
-                core::Stmt::Assert { span, .. } => {
-                    note(
-                        Diagnostic::unimplemented(Pass::Infer, *span, "type assertions"),
-                        &mut fault,
-                    );
+                // Applied after the walk: an assertion is a claim about a
+                // variable, not a contribution to it, and it has to see what
+                // everything else concluded before it can override that.
+                core::Stmt::Assert { variable, ty, span } => {
+                    asserts.push((variable, ty, *span));
                 }
 
                 core::Stmt::Input { .. } => {}
+            }
+        }
+
+        // Assertions, now that every other statement has had its say.
+        //
+        // An assertion *replaces* a variable's type rather than composing with
+        // it: `n : optional(string)` from the atom and `n :: string` do not
+        // meet in the lattice, they are a narrowing — and after it, "`n` is
+        // `string` for everything below". A rule body being a set, "below" is
+        // wherever the filter lands, and the filter lands as early as the
+        // variable is bound; so one type for the whole rule is the truth.
+        for (variable, ty, span) in asserts {
+            let want = Ty::known(ty);
+            let Some(have) = vars.get_mut(variable) else {
+                // Unbound: the safety check reports it, and saying so twice
+                // would be two diagnostics for one fault.
+                continue;
+            };
+            match narrows(have, &want) {
+                Narrowing::Already => *have = want,
+                Narrowing::Filter { cast } => {
+                    filters.push(Assert {
+                        variable: variable.clone(),
+                        ty: ty.clone(),
+                        cast,
+                        span,
+                    });
+                    *have = want;
+                }
+                Narrowing::Unsupported => note(
+                    Diagnostic::unimplemented(
+                        Pass::Infer,
+                        span,
+                        "narrowing that keeps its wrapper",
+                    ),
+                    &mut fault,
+                ),
+                Narrowing::Never => note(
+                    Diagnostic::error(
+                        Pass::Infer,
+                        span,
+                        format!(
+                            "no `{have}` value is a `{ty}`: this assertion would discard \
+                             every row"
+                        ),
+                    ),
+                    &mut fault,
+                ),
             }
         }
 
@@ -498,7 +568,12 @@ impl Cx {
             head.insert(column.clone(), ty);
         }
 
-        RuleTypes { vars, head, fault }
+        RuleTypes {
+            vars,
+            head,
+            fault,
+            filters,
+        }
     }
 
     fn rhs_ty(&self, rhs: &core::Rhs, vars: &BTreeMap<String, Ty>) -> (Ty, Option<Diagnostic>) {
@@ -1211,6 +1286,21 @@ impl Cx {
                         return Some(d);
                     }
                 }
+                // "An assertion binds nothing — the variable must already
+                // exist." Unreachable until assertions were implemented, which
+                // is why it was not here.
+                core::Stmt::Assert { variable, span, .. } => {
+                    if !bound.contains(variable.as_str()) {
+                        return Some(Diagnostic::error(
+                            Pass::Infer,
+                            *span,
+                            format!(
+                                "variable `{variable}` appears in an assertion, which binds \
+                                 nothing, but nothing in the body binds it"
+                            ),
+                        ));
+                    }
+                }
                 _ => {}
             }
         }
@@ -1390,6 +1480,7 @@ impl Cx {
             decls.push(Decl::Rule(TypedRule {
                 rule: rule.clone(),
                 vars,
+                asserts: typed.filters,
             }));
         }
         for fact in &self.facts {

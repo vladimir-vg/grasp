@@ -1,0 +1,153 @@
+# `v :: T` — "a compile-time check where the value is already known to be a
+# `T`, and a runtime filter where a check could settle it, dropping the rows
+# that do not match and narrowing `v` to `T` for everything after it."
+#
+# The rule body is a set, so "after it" is wherever the filter lands, and it
+# lands as early as the variable is bound. One type for the whole rule.
+
+# "`optional(T) :: T` is the common one — the way to drop absent rows before a
+#  join when you do not want absence to participate."
+- name: an optional narrows by dropping the absent rows
+  source: |
+    person :: relation(name: optional(string))
+    person(name:) <- input
+
+    named :: relation(name: string)
+    named(name: n) <-
+        person(name: n)
+        n :: string
+
+  input:
+    - person:
+        - [1, {name: "ann"}]
+        - [1, {name: null}]
+        - [1, {name: "bo"}]
+
+  expected_exact_output:
+    - named:
+        - [1, {name: "ann"}]
+        - [1, {name: "bo"}]
+
+# Narrowed, the variable is an ordinary definite value: it joins, and absence
+# never had to participate.
+- name: a narrowed variable joins
+  source: |
+    person :: relation(id: i64, name: optional(string))
+    title :: relation(name: string, t: string)
+    person(id:, name:) <- input
+    title(name:, t:) <- input
+
+    titled(id: i, t: t) <-
+        person(id: i, name: n)
+        n :: string
+        title(name: n, t: t)
+
+  input:
+    - person:
+        - [1, {id: 1, name: "ann"}]
+        - [1, {id: 2, name: null}]
+      title:
+        - [1, {name: "ann", t: "dr"}]
+
+  expected_exact_output:
+    - titled:
+        - [1, {id: 1, t: "dr"}]
+
+# "`json :: T` — drops the row when the document does not hold a `T`." A
+# document is converted by what is wanted, and that conversion is the test.
+- name: a document narrows to what it holds
+  source: |
+    doc :: relation(k: string, d: json)
+    doc(k:, d:) <- input
+
+    num :: relation(k: string, v: i64)
+    num(k: k, v: x) <-
+        doc(k: k, d: x)
+        x :: i64
+
+  input:
+    - doc:
+        - [1, {k: "a", d: 7}]
+        - [1, {k: "b", d: "not a number"}]
+
+  expected_exact_output:
+    - num:
+        - [1, {k: "a", v: 7}]
+
+# "It is a compile-time check where the value is already known to be a `T`" —
+# so nothing is emitted, and every row survives.
+- name: an assertion a value already satisfies drops nothing
+  source: |
+    r :: relation(a: i64)
+    r(a:) <- input
+
+    s(v: x) <-
+        r(a: x)
+        x :: i64
+
+  input:
+    - r:
+        - [1, {a: 1}]
+        - [1, {a: 2}]
+
+  expected_exact_output:
+    - s:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+
+# "Where no check could help it is a compile error, because a filter that can
+#  never pass is a silently empty relation."
+- name: an assertion no value could satisfy is an error
+  source: |
+    r :: relation(a: i64)
+    r(a:) <- input
+
+    s(v: x) <-
+        r(a: x)
+        x :: string
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "this assertion would discard every row"
+
+# "An assertion binds nothing — the variable must already exist."
+- name: an assertion may not mention an unbound variable
+  source: |
+    r :: relation(a: i64)
+    r(a:) <- input
+
+    s(v: x) <-
+        r(a: x)
+        y :: i64
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "an assertion, which binds nothing"
+
+# "`array(A)` :: `array(B)` — drops the row when any element is not a `B`."
+#
+# Pending, and it will stay pending until grasp-dbsp can express it: records
+# and arrays have no conversions and a dict has none at all, so this needs
+# either a per-element test or an absence-preserving one, and the target has
+# neither. What it should compute is here so that whatever closes the gap has
+# to satisfy it.
+- name: narrowing inside an array drops the rows an element fails
+  source: |
+    r :: relation(k: string, a: array(json))
+    r(k:, a:) <- input
+
+    s :: relation(k: string, v: array(i64))
+    s(k: k, v: x) <-
+        r(k: k, a: x)
+        x :: array(i64)
+
+  input:
+    - r:
+        - [1, {k: "ok", a: [1, 2]}]
+        - [1, {k: "no", a: [1, "two"]}]
+
+  expected_exact_output:
+    - s:
+        - [1, {k: "ok", v: [1, 2]}]

@@ -328,6 +328,17 @@ see that, not because a value was chosen — so an emitter needs some definite
 value of every type, which is `0`, `0.0`, `""`, `false`, `cast([], array(T))`,
 `cast({}, dict(K,V))`, or a record built from those.
 
+**Three rows of that table cannot be emitted yet**, and it is grasp-dbsp that
+is short rather than the rule. `optional(A) :: optional(B)` has to keep absence
+and drop only a present value that fails, and `array(A) :: array(B)` and
+`dict(K,A) :: dict(K,B)` have to test every element. grasp-dbsp offers neither:
+"records and arrays have no conversions", a dict has none at all, and testing
+per element would need a reduction over an array, which
+[`select`](../grasp-dbsp/language.md#select) deliberately is not. The compiler
+says `not implemented: narrowing that keeps its wrapper` rather than guessing,
+and `programs/assertions.yaml` carries what the array row should compute so that
+whatever closes the gap has to satisfy it.
+
 **Division needs no rule of its own.** `/` and `%` are `optional(T)` in
 grasp-dbsp and `T` in grasp, so every `q := a / b` carries an implicit `q :: T`
 and emits by exactly the rule above.
