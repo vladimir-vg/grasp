@@ -1,0 +1,84 @@
+# What a builtin or an aggregator gives back, which `inference.md` calls phase 4:
+#
+# "A call's result type is the signature's, once its arguments have composed."
+#
+# A signature that returns the wrong thing is invisible to `expected_ok` — the
+# program still typechecks, it just means something else.
+
+# "`count<>` takes no argument and counts rows" — so its result is `i64` with no
+# operand to take it from. "`avg` yields `f64` whatever it was given, since a
+# mean is not an integer": here it was given `i64` and still gives `f64`.
+- name: count is i64 and avg is f64 whatever it aggregates
+  source: |
+    score :: relation(who: string, points: i64)
+    score(who:, points:) <- input
+
+    summary(who: w, n: rows, mean: m) <-
+        score(who: w, points: p)
+        rows := count<>
+        m := avg<p>
+  expected_types:
+    summary:   {who: string, n: i64, mean: f64}
+    summary:0: {p: i64, rows: i64, m: f64}
+
+# The aggregators that are not `count` or `avg` give back what they were given —
+# "`v` is the aggregator's result for `e`'s type" — and the argument may be an
+# expression rather than a bare variable, which aggregates the expression's type.
+- name: sum, min and max keep the type they aggregate
+  source: |
+    line :: relation(order: string, price: f64, qty: i64)
+    line(order:, price:, qty:) <- input
+
+    totals(order: o, total: t, cheapest: lo, most: n) <-
+        line(order: o, price: p, qty: q)
+        t := sum<p + p>
+        lo := min<p>
+        n := max<q>
+  expected_types:
+    totals:   {order: string, total: f64, cheapest: f64, most: i64}
+    totals:0: {o: string, p: f64, q: i64, t: f64, lo: f64, n: i64}
+
+# "`(k, v) := **d` — `d` is `dict(K,V)`; `k` is `K`, `v` is `V`". The dict is
+# never written down: the unnest is what says `m` is one, and the spec is what
+# says which.
+- name: a dict unnest binds the key and value types
+  source: |
+    conf :: relation(m: dict(string, i64))
+    conf(m:) <- input
+
+    setting(key: k, value: v) <-
+        conf(m: m)
+        (k, v) := **m
+  expected_types:
+    setting:   {key: string, value: i64}
+    setting:0: {m: "dict(string, i64)", k: string, v: i64}
+
+# "`(v) := *arr` — `arr` is `array(E)`; `v` is `E`", and the element type is
+# itself a container, which is what makes the canonical spelling worth pinning.
+- name: an array unnest gives back the element type
+  source: |
+    bag :: relation(items: array(array(string)))
+    bag(items:) <- input
+
+    row(one: e) <-
+        bag(items: xs)
+        (e) := *xs
+  expected_types:
+    row:   {one: "array(string)"}
+    row:0: {xs: "array(array(string))", e: "array(string)"}
+
+# `length` is a builtin over more than one argument type, and returns `i64` for
+# each — the result is not the argument's type, which is the thing a signature
+# table gets wrong.
+- name: length is i64 whatever it measures
+  source: |
+    doc :: relation(title: string, tags: array(string))
+    doc(title:, tags:) <- input
+
+    sizes(chars: a, tags: b) <-
+        doc(title: t, tags: g)
+        a := length(t)
+        b := length(g)
+  expected_types:
+    sizes:   {chars: i64, tags: i64}
+    sizes:0: {t: string, g: "array(string)", a: i64, b: i64}

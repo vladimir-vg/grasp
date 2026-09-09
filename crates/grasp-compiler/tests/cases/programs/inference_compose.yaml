@@ -1,0 +1,93 @@
+# Composition, `inference.md`'s "Composing types" — what happens when two paths
+# give one name two types:
+#
+# "`T` and `optional(T)` compose to `optional(T)`. A variable that some path
+#  leaves absent is optional everywhere."
+#
+# "everywhere" is about the *column*. The variables keep what their own rule
+# gave them, and that asymmetry is exactly what `rel:N` exists to show: the
+# relation and its rules disagree here on purpose.
+
+- name: a definite value under an optional column stays definite in its rule
+  source: |
+    certain :: relation(v: i64)
+    certain(v:) <- input
+    maybe :: relation(v: optional(i64))
+    maybe(v:) <- input
+
+    both(v: x) <- certain(v: x)
+    both(v: x) <- maybe(v: x)
+  expected_types:
+    both:   {v: "optional(i64)"}
+    both:0: {x: i64}
+    both:1: {x: "optional(i64)"}
+
+# Two rules, identical types — the trivial composition, and the control for the
+# case above. Here the column and both rules agree.
+- name: identical types compose to that type
+  source: |
+    a :: relation(v: string)
+    a(v:) <- input
+    b :: relation(v: string)
+    b(v:) <- input
+
+    either(v: x) <- a(v: x)
+    either(v: x) <- b(v: x)
+  expected_types:
+    either:   {v: string}
+    either:0: {x: string}
+    either:1: {x: string}
+
+# "Same constructor composes elementwise." Neither rule declares the array; the
+# element type is what has to meet, one layer down.
+- name: same constructor composes one layer down
+  source: |
+    p :: relation(xs: array(i64))
+    p(xs:) <- input
+    q :: relation(xs: array(i64))
+    q(xs:) <- input
+
+    lists(xs: v) <- p(xs: v)
+    lists(xs: v) <- q(xs: v)
+  expected_types:
+    lists: {xs: "array(i64)"}
+
+# A negated atom binds nothing, but it still constrains: `x` gets its type from
+# the positive atom and `not b(v: x)` has to agree, which is why negation is in
+# the typing walk at all.
+- name: a negated atom types the variable it does not bind
+  source: |
+    a :: relation(v: i64)
+    a(v:) <- input
+    b :: relation(v: i64)
+    b(v:) <- input
+
+    only_a(v: x) <-
+        a(v: x)
+        not b(v: x)
+  expected_types:
+    only_a:   {v: i64}
+    only_a:0: {x: i64}
+
+# A wildcard is not a name, so the column it stands in constrains nothing and
+# binds nothing. `x` still gets `i64` from the column beside it.
+- name: a wildcard binds no variable
+  source: |
+    r :: relation(a: i64, b: string)
+    r(a:, b:) <- input
+
+    s(v: x) <- r(a: x, b: _)
+  expected_types:
+    s:0: {x: i64}
+
+# A record composes field by field, and its canonical spelling sorts them —
+# which is what every diagnostic quotes and what nothing else pins.
+- name: a record type renders with its fields sorted
+  source: |
+    who :: relation(person: record(name: string, age: i64))
+    who(person:) <- input
+
+    named(p: r) <- who(person: r)
+  expected_types:
+    named:   {p: "record(age: i64, name: string)"}
+    named:0: {r: "record(age: i64, name: string)"}

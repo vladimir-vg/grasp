@@ -1,0 +1,72 @@
+# The program-level loop of `inference.md`, "The fixpoint":
+#
+# "A rule contributes only when every relation in its body is known."
+#
+# What that buys is types crossing relations that never carry a spec. Nothing
+# else in the corpus can see a schema that was inferred rather than declared —
+# `expected_ok` passes either way, and emission has erased the types by then.
+
+# A schema travelling two relations from the one spec in the program. Neither
+# `mid` nor `out` says anything about itself; both are known only because `src`
+# was, and only after two rounds.
+- name: a schema crosses two undeclared relations
+  source: |
+    src :: relation(a: i64, b: string)
+    src(a:, b:) <- input
+
+    mid(x: p, y: q) <- src(a: p, b: q)
+    out(one: u, two: v) <- mid(x: u, y: v)
+  expected_types:
+    mid:   {x: i64, y: string}
+    out:   {one: i64, two: string}
+    mid:0: {p: i64, q: string}
+    out:0: {u: i64, v: string}
+
+# "Recursive relations settle in this loop like any other." The recursive rule
+# cannot contribute on the first round — `reachable` is not yet known — so `m`
+# and `n` have nothing to take a type from until the base rule has run. A
+# one-round implementation gets this wrong and no other mode notices.
+- name: a recursive rule types on the round after its base case
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src:, dst:) <- input
+
+    reachable(node: x) <- edge(src: x)
+    reachable(node: n) <-
+        reachable(node: m)
+        edge(src: m, dst: n)
+  expected_types:
+    reachable:   {node: i64}
+    reachable:0: {x: i64}
+    reachable:1: {m: i64, n: i64}
+
+# A fact is what makes the relation known, and the recursive rule reads its type
+# from that rather than from any spec.
+- name: a fact seeds the type a recursive rule reads back
+  source: |
+    step :: relation(from: i64, to: i64)
+    step(from:, to:) <- input
+
+    seen(node: 1)
+    seen(node: b) <-
+        seen(node: a)
+        step(from: a, to: b)
+  expected_types:
+    seen:   {node: i64}
+    seen:0: {a: i64, b: i64}
+
+# Two rules for one relation, each knowing half the schema. Neither alone
+# determines `pair`; the relation is the union of what both contributed.
+- name: two rules contribute different columns to one relation
+  source: |
+    lhs :: relation(v: i64)
+    lhs(v:) <- input
+    rhs :: relation(w: string)
+    rhs(w:) <- input
+
+    pair(left: x, right: "?") <- lhs(v: x)
+    pair(left: 0, right: y) <- rhs(w: y)
+  expected_types:
+    pair:   {left: i64, right: string}
+    pair:0: {x: i64}
+    pair:1: {y: string}

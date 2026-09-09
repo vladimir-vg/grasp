@@ -26,7 +26,7 @@ Where a case goes follows from what it asserts:
 |---|---|
 | a `pass: parse` diagnostic | `syntax/` |
 | a diagnostic from any later pass | `programs/` |
-| `equivalent_to`, or an output mode | `programs/` |
+| `equivalent_to`, an output mode, or `expected_types` | `programs/` |
 | `expected_ok` | wherever its topic lives |
 
 The last row is the one that needs saying. `expected_ok` is **not** a
@@ -51,6 +51,7 @@ prefix is the convention: if it asserts something, it is called
 | `equivalent_to` | another grasp program; both emit identical grasp-dbsp |
 | `expected_output` | these output deltas appear; extras are ignored |
 | `expected_exact_output` | the output deltas are exactly these |
+| `expected_types` | inference gave these relations and rules these types |
 
 `name` is required — at three hundred cases, `errors::47` tells you nothing.
 
@@ -79,6 +80,12 @@ that would free the most fixtures.
 `expected_ok` is the exception, and stays live: it claims only that nothing
 *rejects* the program, and an unimplemented construct does not reject it. That is
 what makes it the floor, and why it silently demands more as the compiler grows.
+
+`expected_types` is blocked by a *shorter* pipeline, because it reads inference's
+output and stops there: parse, desugar and infer can block it, and the stages
+after them cannot. That distinction is not cosmetic — every program is
+unimplemented at `plan` today, so a case judged against the whole pipeline would
+be pending forever and pass while asserting nothing.
 
 **There is nothing to remember.** A case goes live the moment the compiler stops
 saying it cannot — no marker to add, none to remove, and so no check needed
@@ -187,6 +194,59 @@ at all.
 **Its weakness, which every file using it must cover: `equivalent_to` proves the
 two programs agree, not that either is right.** A file that uses it must also
 carry at least one `expected_ok` or output case over one of the two sources.
+
+## `expected_types`
+
+```yaml
+- name: transitive closure infers i64 throughout
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src:, dst:) <- input
+
+    path(dst: d) <- edge(dst: d)
+    path(dst: d) <-
+        path(dst: m)
+        edge(src: m, dst: d)
+  expected_types:
+    path:   {dst: i64}
+    path:0: {d: i64}
+    path:1: {d: i64, m: i64}
+```
+
+The only mode that can see what inference concluded. Every other one reads what
+the compiler **emitted** or **rejected**, and both erase types — two programs
+that differ only in the type a variable was given are the same program to them.
+
+**Keys.** A bare name is a relation, and its map is column to type. `rel:N` is
+the Nth rule, **counting from zero in source order**, whose head names `rel`, and
+its map is variable to type. No relation can be called `rel:0` — a namespace
+segment needs a letter after the colon — so the two never collide, and the key
+needs no quoting in YAML.
+
+**Variables are rule-scoped.** `path:0` and `path:1` above have their own maps,
+and that is the point of the ordinal: a relation's column may be `optional(i64)`
+while the variable filling it in one rule is plainly `i64`.
+
+**Types are compared as strings**, against the canonical spelling a diagnostic
+would quote — `dict(string, i64)`, `record(age: i64, name: string)` with the
+fields sorted. Nothing else pins that spelling. Quote the value in YAML when it
+contains a comma.
+
+**Naming is partial; a name is not.** A column or variable the case does not
+mention is not checked, and neither is a relation it does not mention, so a case
+may pin one variable of one rule and say nothing else. But naming something that
+does not exist is a failure: leaving a key out is a choice, getting one wrong is
+a typo.
+
+Two things it is not for:
+
+- **It is not a way to un-pend a case.** If the claim is observable in the
+  output, write the output case — this mode reaches into the middle of the
+  compiler, and that is only worth doing for something the ends cannot see.
+- **It asserts what inference *concluded*, not what the program *declared*.**
+  Pinning the columns of a relation that has a spec, on its own, tests the
+  parser: a declared relation is never widened by its rules, so those columns are
+  the spec read back. Pin the rules, or a relation that has no spec.
 
 ## Output cases
 
@@ -318,15 +378,18 @@ been guarding — and unlike a snapshot it cannot rot.
 | `normalization.yaml` | statement and rule order do not change the emission — including the two component-ordering cases the optimizer's forest must respect |
 | `recursion.yaml` | the transitive closure worked example, end to end |
 | `smoke.yaml` | the worked programs from the spec, end to end |
+| `inference_fixpoint.yaml` | schemas crossing relations that have no spec, and the round a recursive rule types on |
+| `inference_compose.yaml` | two rules giving one name two types, and where the column and the rule differ |
+| `inference_literals.yaml` | what an untyped literal settles as, and what told it |
+| `inference_overloads.yaml` | what a builtin or an aggregator gives back |
 
 Still to write, a little ahead of the code that satisfies them — named here so a
 spec change has an obvious fixture home. All of them are `programs/`, since
 `syntax/` is as complete as the grammar is:
 
 - **desugar** — the `expected_core` half of `patterns.yaml`.
-- **infer** — `optional`, `json`, `runtime_filters`, `comparison`,
-  `inference_fixpoint`, `inference_compose`, `inference_literals`,
-  `inference_overloads`, `specs`, and more of `safety` and `assignability`.
+- **infer** — `optional`, `json`, `runtime_filters`, `comparison`, `specs`, and
+  more of `safety` and `assignability`.
 - **plan** — `optimizer`, `stratification`, and the diagnostic halves of
   `negation`, `aggregation`, `input_relations`.
 - **emit** — `rules`, `joins`, `builtins`, `unions`, more of `expressions`, and

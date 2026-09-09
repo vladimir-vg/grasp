@@ -1364,11 +1364,29 @@ impl Cx {
         let mut decls = Vec::new();
         for rule in &self.rules {
             let typed = self.type_rule(rule);
-            let vars = typed
-                .vars
-                .iter()
-                .filter_map(|(n, t)| settle(t).ok().map(|t| (n.clone(), t)))
-                .collect();
+            let mut vars = BTreeMap::new();
+            for (name, ty) in &typed.vars {
+                match settle(ty) {
+                    Ok(t) => {
+                        vars.insert(name.clone(), t);
+                    }
+                    // Unreachable for the same reason as the column arm above —
+                    // `check_rule` settles every variable before this runs — and
+                    // worth the same treatment. A dropped variable reads to
+                    // anything downstream as a rule that never bound it, which
+                    // is a harder thing to recognise than an error saying so.
+                    Err(_) => {
+                        return Err(vec![Diagnostic::error(
+                            Pass::Infer,
+                            rule.span,
+                            format!(
+                                "rule for `{}` variable `{name}` has no type",
+                                rule.head.relation
+                            ),
+                        )]);
+                    }
+                }
+            }
             decls.push(Decl::Rule(TypedRule {
                 rule: rule.clone(),
                 vars,

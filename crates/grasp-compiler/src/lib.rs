@@ -26,9 +26,24 @@ pub mod ty;
 
 use crate::diag::{Diagnostic, Pass};
 
+/// Check a grasp program, and return what inference concluded about it.
+///
+/// The front half of [`compile`] — parse, desugar, infer — stopping where the
+/// types are still visible. Everything after this point erases them, so a
+/// caller that wants to know what a column or a variable was given has to stop
+/// here or not ask at all. The `expected_types` fixtures are that caller.
+///
+/// This is not a second door into the pipeline: [`compile`] is defined as this
+/// plus the stages that follow, so a pass inserted here is picked up by both.
+pub fn check(source: &str) -> Result<infer::Typed, Vec<Diagnostic>> {
+    let program = parse::parse(source).map_err(|d| vec![d])?;
+    let core = desugar::desugar(&program)?;
+    infer::infer(core)
+}
+
 /// Compile a grasp program to grasp-dbsp.
 ///
-/// The one door into the pipeline, as `grasp_dbsp_runner::compile` is for the
+/// The one door to grasp-dbsp, as `grasp_dbsp_runner::compile` is for the
 /// runner: as passes are added they go here, and every caller picks them up.
 /// Returns a vector because a pass will eventually report more than one
 /// problem — today it always holds exactly one.
@@ -39,9 +54,7 @@ use crate::diag::{Diagnostic, Pass};
 /// to tell a fixture waiting on unwritten code from a fixture the compiler gets
 /// wrong.
 pub fn compile(source: &str) -> Result<String, Vec<Diagnostic>> {
-    let program = parse::parse(source).map_err(|d| vec![d])?;
-    let core = desugar::desugar(&program)?;
-    let _typed = infer::infer(core)?;
+    let _typed = check(source)?;
     Err(vec![Diagnostic::unimplemented(
         Pass::Plan,
         None,

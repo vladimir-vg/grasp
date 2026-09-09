@@ -14,7 +14,7 @@
 //! - **Cases outrun the compiler.** A fixture asserting something only a later
 //!   pass can produce is expected to fail, and is reported as *pending* rather
 //!   than as a failure. The compiler is what says so, through
-//!   `Diagnostic::unimplemented`; see [`unimplemented_reason`].
+//!   `Diagnostic::unimplemented`; see [`first_unimplemented`].
 //! - **What it emits must be executable.** Any case that reaches emission hands
 //!   the text to `grasp_dbsp_runner::compile`, whatever it asserts, so a
 //!   program the target rejects is caught without a fixture having to ask.
@@ -108,7 +108,7 @@ struct Case {
     #[serde(default)]
     input: Vec<Epoch>,
 
-    // Exactly one of these five.
+    // Exactly one of these six.
     #[serde(default)]
     expected_ok: Option<bool>,
     #[serde(default)]
@@ -119,6 +119,10 @@ struct Case {
     expected_output: Option<Vec<Epoch>>,
     #[serde(default)]
     expected_exact_output: Option<Vec<Epoch>>,
+    /// Relation and rule names to the types inference gave them. See
+    /// [`check_types`] for the key grammar.
+    #[serde(default)]
+    expected_types: Option<BTreeMap<String, BTreeMap<String, String>>>,
 
     /// Only for constructs blocked on named future work; the reason must name a
     /// section of `docs/grasp/overview.md#future-work`. A case blocked merely on
@@ -260,7 +264,19 @@ fn slug(s: &str) -> String {
 /// compiler stops saying it cannot, so there is no marker to remove and nothing
 /// to forget.
 fn unimplemented_reason(source: &str) -> Option<String> {
-    match grasp_compiler::compile(source) {
+    first_unimplemented(&grasp_compiler::compile(source))
+}
+
+/// What pending means, defined once: the first thing a result says the compiler
+/// cannot do.
+///
+/// Which result is handed to it is the caller's question, and it is not the same
+/// question for every mode. `grasp_compiler::compile` always ends in "the stages
+/// after inference", so a mode that only needs the front half must ask
+/// `grasp_compiler::check` instead — otherwise it is pending on a stage it never
+/// wanted, forever, and passes while asserting nothing.
+fn first_unimplemented<T>(result: &Result<T, Vec<Diagnostic>>) -> Option<String> {
+    match result {
         Ok(_) => None,
         Err(diags) => diags.iter().find_map(|d| d.unimplemented.clone()),
     }
@@ -274,7 +290,14 @@ fn run_trial(case: &Case, _name: &str, where_: &str) -> Result<(), String> {
     // tolerates one, which is what makes it the floor it is meant to be. Every
     // other mode needs the compiler to produce something in particular, and
     // cannot be judged until it can.
-    if case.expected_ok.is_none() {
+    if case.expected_types.is_some() {
+        // This mode reads inference's output and stops there, so the stages
+        // after it cannot block it — and must not, since they block everything.
+        if let Some(reason) = first_unimplemented(&grasp_compiler::check(&case.source)) {
+            PENDING.lock().expect("pending").push(reason);
+            return Ok(());
+        }
+    } else if case.expected_ok.is_none() {
         // `equivalent_to` is a second program and blocks the case just as its
         // own source would.
         let sources = std::iter::once(&case.source).chain(case.equivalent_to.iter());
@@ -299,6 +322,7 @@ fn check_shape(case: &Case, where_: &str) -> Result<(), String> {
             "expected_exact_output",
             case.expected_exact_output.is_some(),
         ),
+        ("expected_types", case.expected_types.is_some()),
     ];
     let present: Vec<&str> = modes.iter().filter(|(_, p)| *p).map(|(n, _)| *n).collect();
     match present.len() {
@@ -337,6 +361,16 @@ fn check_shape(case: &Case, where_: &str) -> Result<(), String> {
              write the diagnostics you expect instead"
         ));
     }
+    // `rel: {}` is a legitimate claim — a relation may have no columns — so the
+    // emptiness that means nothing is the outer map.
+    if let Some(types) = &case.expected_types
+        && types.is_empty()
+    {
+        return Err(format!(
+            "{where_}: `expected_types` is empty; a case that asserts nothing \
+             about types wants `expected_ok: true`"
+        ));
+    }
     let has_output = case.expected_output.is_some() || case.expected_exact_output.is_some();
     if !case.input.is_empty() && !has_output {
         return Err(format!(
@@ -357,6 +391,9 @@ fn run_case(case: &Case, where_: &str) -> Result<(), String> {
     if let Some(other) = &case.equivalent_to {
         return check_equivalent(case, other, where_);
     }
+    if let Some(types) = &case.expected_types {
+        return check_types(case, types, where_);
+    }
     let exact = case.expected_exact_output.is_some();
     let expected = case
         .expected_exact_output
@@ -364,6 +401,174 @@ fn run_case(case: &Case, where_: &str) -> Result<(), String> {
         .or(case.expected_output.as_ref())
         .expect("checked by check_shape");
     check_output(case, expected, exact, where_)
+}
+
+/// `expected_types` — the types inference gave a relation's columns and a rule's
+/// variables.
+///
+/// The only mode that can see inference's output. Every other one reads what the
+/// compiler *emitted* or *rejected*, and both erase types: two programs that
+/// differ only in the type a variable was given are the same program to them.
+///
+/// **Keys.** A bare name is a relation, and its map is column name to type.
+/// `rel:N` is the Nth rule, counting from zero in source order, whose head names
+/// `rel`, and its map is variable name to type. A key is split at its last `:`
+/// when what follows is all digits, which is total: `lex.rs` takes a namespace
+/// segment only when a letter follows the colon, so `rel:0` is not a name grasp
+/// can spell and no relation can be called that.
+///
+/// **Partial.** A column or variable the case does not name is not checked, and
+/// neither is a relation it does not name — a case may pin one variable of one
+/// rule and say nothing else. Naming something that does not exist is still a
+/// failure: leaving a key out is a choice, getting one wrong is a typo.
+///
+/// **Types are compared as strings**, against `ast::Type`'s `Display`, with no
+/// normalisation. That pins the canonical spelling as well as the type, which is
+/// the vocabulary every diagnostic quotes.
+fn check_types(
+    case: &Case,
+    expected: &BTreeMap<String, BTreeMap<String, String>>,
+    where_: &str,
+) -> Result<(), String> {
+    let typed = grasp_compiler::check(&case.source).map_err(|d| {
+        format!(
+            "{where_}: expected the program to typecheck, but:\n{}",
+            indent(&render(&d))
+        )
+    })?;
+
+    for (key, wanted) in expected {
+        match split_rule_key(key) {
+            Some((relation, index)) => {
+                let rules: Vec<&grasp_compiler::infer::TypedRule> = typed
+                    .decls
+                    .iter()
+                    .filter_map(|d| match d {
+                        grasp_compiler::infer::Decl::Rule(r)
+                            if r.rule.head.relation == relation =>
+                        {
+                            Some(r)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                // A bad relation name must say so, rather than blaming the
+                // ordinal it happens to carry.
+                if !typed.relations.contains_key(relation) {
+                    return Err(unknown_relation(&typed, relation, where_));
+                }
+                let Some(rule) = rules.get(index) else {
+                    return Err(format!(
+                        "{where_}: {}",
+                        no_such_rule(&rules, relation, index)
+                    ));
+                };
+                let at = format!("rule `{key}` (line {})", rule.rule.span.line);
+                compare(&rule.vars, wanted, &at, "variable", "binds no", where_)?;
+            }
+            None => {
+                let Some(relation) = typed.relations.get(key) else {
+                    return Err(unknown_relation(&typed, key, where_));
+                };
+                let columns: BTreeMap<String, grasp_compiler::ast::Type> =
+                    relation.columns.iter().cloned().collect();
+                let at = format!("relation `{key}`");
+                compare(&columns, wanted, &at, "column", "has no", where_)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `rel:N` into `(rel, N)`, or `None` for a plain relation name.
+///
+/// Splits at the *last* colon so a qualified relation name keeps its namespace:
+/// `a:b:0` is rule 0 of `a:b`.
+fn split_rule_key(key: &str) -> Option<(&str, usize)> {
+    let (relation, index) = key.rsplit_once(':')?;
+    if index.is_empty() || !index.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((relation, index.parse().ok()?))
+}
+
+/// One map of settled types against what the case named, reporting the first
+/// disagreement — with the whole inferred map beneath it, because a table
+/// assertion is not debuggable from a single key.
+fn compare(
+    actual: &BTreeMap<String, grasp_compiler::ast::Type>,
+    wanted: &BTreeMap<String, String>,
+    at: &str,
+    // `column` or `variable`, and `has no` or `binds no` — a relation has
+    // columns, a rule binds variables, and the message should say so.
+    noun: &str,
+    absent: &str,
+    where_: &str,
+) -> Result<(), String> {
+    let inferred = || {
+        let rows: Vec<String> = actual
+            .iter()
+            .map(|(n, t)| format!("{n}: {t}"))
+            .collect::<Vec<_>>();
+        let body = if rows.is_empty() {
+            "(nothing)".to_string()
+        } else {
+            rows.join("\n")
+        };
+        format!("\n{}", indent(&format!("inferred:\n{}", indent(&body))))
+    };
+    for (name, want) in wanted {
+        let Some(got) = actual.get(name) else {
+            return Err(format!(
+                "{where_}: {at} {absent} {noun} `{name}`{}",
+                inferred()
+            ));
+        };
+        let got = got.to_string();
+        if &got != want {
+            return Err(format!(
+                "{where_}: {at} {noun} `{name}` is `{got}`, expected `{want}`{}",
+                inferred()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn unknown_relation(typed: &grasp_compiler::infer::Typed, name: &str, where_: &str) -> String {
+    format!(
+        "{where_}: `expected_types` names relation `{name}`, which the program \
+         does not define; it defines: {}",
+        typed
+            .relations
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn no_such_rule(
+    rules: &[&grasp_compiler::infer::TypedRule],
+    relation: &str,
+    index: usize,
+) -> String {
+    if rules.is_empty() {
+        return format!(
+            "`expected_types` names rule `{relation}:{index}`, but `{relation}` has no rules"
+        );
+    }
+    let keys: Vec<String> = rules
+        .iter()
+        .enumerate()
+        .map(|(i, r)| format!("`{relation}:{i}` (line {})", r.rule.span.line))
+        .collect();
+    format!(
+        "`expected_types` names rule `{relation}:{index}`, but `{relation}` has {} rule{}: {}",
+        rules.len(),
+        if rules.len() == 1 { "" } else { "s" },
+        keys.join(", ")
+    )
 }
 
 /// Compile, and hold the result to the always-on invariant: whatever grasp-dbsp

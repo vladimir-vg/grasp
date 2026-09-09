@@ -1,0 +1,56 @@
+# Literals have no type of their own — `inference.md`, "Untyped literals":
+#
+# "An integer literal is not an `i64` until something says so."
+#
+# Nothing but `expected_types` can see the difference. Every case here is a
+# program every other mode calls fine.
+
+# The pair. Same body, same literals, two answers — and the only thing that
+# separates them is the spec, reaching down into the head expression and back up
+# into the variable that fills it.
+- name: a spec settles an integer literal as i64
+  source: |
+    answer :: relation(v: i64)
+    answer(v: n) <- n := 6 * 7
+  expected_types:
+    answer:   {v: i64}
+    answer:0: {n: i64}
+
+- name: the same literals settle as f64 under an f64 spec
+  source: |
+    answer :: relation(v: f64)
+    answer(v: n) <- n := 6 * 7
+  expected_types:
+    answer:   {v: f64}
+    answer:0: {n: f64}
+
+# "composes with anything it can inhabit, and defers". The `1` never forced
+# `i64` on anything: it took `f64` from the column beside it.
+- name: an integer literal takes its type from its operand
+  source: |
+    r :: relation(a: f64)
+    r(a:) <- input
+
+    s :: relation(b: f64)
+    s(b: y) <-
+        r(a: x)
+        y := x + 1
+  expected_types:
+    s:0: {x: f64, y: f64}
+
+# A float spells its own type, so nothing needs to say so.
+- name: a float literal needs no spec
+  source: |
+    answer(v: x) <- x := 1.5
+  expected_types:
+    answer:   {v: f64}
+    answer:0: {x: f64}
+
+# `NONE` "takes `optional(T)` from wherever it sits", and here the spec is the
+# only thing that says which `T`.
+- name: NONE takes its element type from the column it fills
+  source: |
+    answer :: relation(v: optional(string))
+    answer(v: x) <- x := NONE
+  expected_types:
+    answer:0: {x: optional(string)}
