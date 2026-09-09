@@ -703,6 +703,19 @@ enum Body {
     },
     /// `v :: T`, where a check could settle it.
     Assert(infer::Assert),
+    /// A binding whose value has to be narrowed before anything reads it.
+    ///
+    /// One dependent rather than a `Bind` and an `Assert`, because a narrow
+    /// only *consumes* its variable — it binds nothing, so nothing orders it
+    /// before another consumer, and `place_ready` may put a second
+    /// destructure's size check between the two. That check then reads an
+    /// `optional(T)` and grasp-dbsp refuses it. Keeping them one dependent is
+    /// what makes "bound" mean bound *and* narrowed.
+    Bound {
+        name: String,
+        value: core::Expr,
+        ty: Type,
+    },
     /// `(v) := *arr` or `(k, v) := **d`.
     Unnest {
         over: core::Expr,
@@ -1355,33 +1368,27 @@ fn destructure(
             ],
             span,
         };
+        // `record:get` gives the field's type; `dict:get` gives `optional(V)`,
+        // and the pattern's promise is that the key is there — so the row
+        // without it is dropped, which is `optional(V) :: V`. The narrowing is
+        // part of the binding rather than a dependent of its own; see
+        // [`Body::Bound`].
+        let key = format!("{var} := {}", key::expr(&get));
         deps.push(Dependent {
             kind: Kind::Match,
             binds: vec![var.clone()],
             consumes: consumes.clone(),
-            key: format!("{var} := {}", key::expr(&get)),
-            body: Body::Bind(var.clone(), get),
+            key,
+            body: if record {
+                Body::Bind(var.clone(), get)
+            } else {
+                Body::Bound {
+                    name: var.clone(),
+                    value: get,
+                    ty: settled(typed, var),
+                }
+            },
         });
-
-        // `record:get` gives the field's type; `dict:get` gives `optional(V)`,
-        // and the pattern's promise is that the key is there — so the row
-        // without it is dropped, which is `optional(V) :: V`.
-        if !record {
-            let ty = settled(typed, var);
-            deps.push(Dependent {
-                kind: Kind::Filter,
-                binds: Vec::new(),
-                consumes: [var.clone()].into_iter().collect(),
-                key: format!("{var} :: {ty}"),
-                body: Body::Assert(infer::Assert {
-                    variable: var.clone(),
-                    ty,
-                    cast: false,
-                    shape: Shape::Value,
-                    span,
-                }),
-            });
-        }
     }
 
     // A dict's remainder is not known until the program runs, so it is the
@@ -1508,30 +1515,20 @@ fn destructure_array(
         span,
     };
     for (i, var) in elems.iter().enumerate() {
+        // The size filter has already made the position good, but the type does
+        // not know that: `array:get` is `optional(E)` and the variable is an
+        // `E`. Same shape as a dict pattern's, and for the same reason.
         let get = at(i);
         deps.push(Dependent {
             kind: Kind::Match,
             binds: vec![var.clone()],
             consumes: consumes.clone(),
             key: format!("{var} := {}", key::expr(&get)),
-            body: Body::Bind(var.clone(), get),
-        });
-        // The size filter has already made the position good, but the type
-        // does not know that: `array:get` is `optional(E)` and the variable is
-        // an `E`. Same shape as a dict pattern's, and for the same reason.
-        let ty = settled(typed, var);
-        deps.push(Dependent {
-            kind: Kind::Filter,
-            binds: Vec::new(),
-            consumes: [var.clone()].into_iter().collect(),
-            key: format!("{var} :: {ty}"),
-            body: Body::Assert(infer::Assert {
-                variable: var.clone(),
-                ty,
-                cast: false,
-                shape: Shape::Value,
-                span,
-            }),
+            body: Body::Bound {
+                name: var.clone(),
+                value: get,
+                ty: settled(typed, var),
+            },
         });
     }
 
@@ -1748,6 +1745,20 @@ fn lower(
                 // `infer` decided which row of the table this is, the target
                 // type not being enough to tell: `json :: array(i64)` and
                 // `array(json) :: array(i64)` ask for the same type.
+                Body::Bound { name, value, ty } => {
+                    let bound = name.clone();
+                    push_total(
+                        &mut steps,
+                        fresh,
+                        move |e| Step::Bind(bound.clone(), e),
+                        value.clone(),
+                    );
+                    steps.push(Step::Narrow {
+                        name: name.clone(),
+                        cast: None,
+                        into: Narrowed::Definite(Definite::Of(ty.clone())),
+                    });
+                }
                 Body::Assert(a) => steps.push(Step::Narrow {
                     name: a.variable.clone(),
                     cast: a.cast.then(|| a.ty.clone()),

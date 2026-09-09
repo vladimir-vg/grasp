@@ -401,3 +401,54 @@
   expected_exact_output:
     - out:
         - [1, {a: 1, b: 2, left: {c: 3, d: 4}}]
+
+# A destructure binds *and* narrows in one step, so anything reading the
+# variable is placed after both. These three all emitted grasp-dbsp the runner
+# refused while the narrowing was a dependent of its own: the inner pattern's
+# size check landed between the bind and the narrow and read an `optional`.
+- name: a nested array destructure
+  source: |
+    src :: relation(xs: array(array(i64)))
+    src(xs:) <- input
+    out(v: b) <-
+        src(xs: xs)
+        [inner] := xs
+        [b] := inner
+  input:
+    - src:
+        - [1, {xs: [[5]]}]
+        - [1, {xs: [[6, 7]]}]
+  expected_exact_output:
+    - out:
+        - [1, {v: 5}]
+
+- name: a nested dict destructure
+  source: |
+    src :: relation(d: dict(string, dict(string, i64)))
+    src(d:) <- input
+    out(v: b) <-
+        src(d: d)
+        {a:, **} := d
+        {b:, **} := a
+  input:
+    - src:
+        - [1, {d: {"a": {"b": 9}}}]
+  expected_exact_output:
+    - out:
+        - [1, {v: 9}]
+
+- name: a destructured array feeds an unnest
+  source: |
+    src :: relation(xs: array(array(i64)))
+    src(xs:) <- input
+    out(v: v) <-
+        src(xs: xs)
+        [inner, *] := xs
+        (v) := *inner
+  input:
+    - src:
+        - [1, {xs: [[1, 2]]}]
+  expected_exact_output:
+    - out:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
