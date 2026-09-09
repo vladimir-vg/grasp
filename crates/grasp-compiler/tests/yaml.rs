@@ -363,13 +363,28 @@ fn check_shape(case: &Case, where_: &str) -> Result<(), String> {
     }
     // `rel: {}` is a legitimate claim — a relation may have no columns — so the
     // emptiness that means nothing is the outer map.
-    if let Some(types) = &case.expected_types
-        && types.is_empty()
-    {
-        return Err(format!(
-            "{where_}: `expected_types` is empty; a case that asserts nothing \
-             about types wants `expected_ok: true`"
-        ));
+    if let Some(types) = &case.expected_types {
+        if types.is_empty() {
+            return Err(format!(
+                "{where_}: `expected_types` is empty; a case that asserts nothing \
+                 about types wants `expected_ok: true`"
+            ));
+        }
+        // Spelling is checked here, not at comparison time, because a case that
+        // goes pending never reaches the comparison — and a typo'd expectation
+        // sitting unnoticed inside one until its construct lands is exactly the
+        // silence this mode was built to remove.
+        for map in types.values() {
+            for (name, ty) in map {
+                if let Some(bad) = uncanonical(ty) {
+                    return Err(format!(
+                        "{where_}: `expected_types` gives `{name}` the type `{ty}`, which \
+                         is not how a type is spelled: {bad}. This mode pins the spelling \
+                         a diagnostic would quote, so it has to be exact"
+                    ));
+                }
+            }
+        }
     }
     let has_output = case.expected_output.is_some() || case.expected_exact_output.is_some();
     if !case.input.is_empty() && !has_output {
@@ -480,6 +495,63 @@ fn check_types(
     Ok(())
 }
 
+/// What is wrong with how a type is written, spelled as the end of a sentence.
+///
+/// A partial check, and honestly so: it has no parser, so it catches the
+/// separators and not the shape. `compare` catches everything else — including a
+/// record whose fields are out of order — for any case that actually runs, and
+/// this exists for the ones that do not.
+fn uncanonical(ty: &str) -> Option<String> {
+    let bytes = ty.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        if (*b == b',' || *b == b':') && bytes.get(i + 1) != Some(&b' ') {
+            return Some(format!(
+                "a type writes a space after every `,` and `:`, and this one does not at \
+                 column {}",
+                i + 1
+            ));
+        }
+        if *b == b' ' && bytes.get(i + 1) == Some(&b' ') {
+            return Some(format!("it has two spaces at column {}", i + 1));
+        }
+    }
+    if ty.trim() != ty {
+        return Some("it has leading or trailing space".to_string());
+    }
+    None
+}
+
+/// Two type spellings side by side, with a caret under the first byte that
+/// differs.
+///
+/// Only worth drawing when they nearly match: `i64` against `f64` needs no
+/// diagram, but `dict(string, i64)` against `dict(string,i64)` is invisible
+/// without one, and that is the mistake this mode invites.
+fn near_miss(got: &str, want: &str) -> Option<String> {
+    let at = got
+        .bytes()
+        .zip(want.bytes())
+        .position(|(a, b)| a != b)
+        .unwrap_or(got.len().min(want.len()));
+    if at < 2 {
+        return None;
+    }
+    let squeeze = |s: &str| s.split_whitespace().collect::<String>();
+    let note = if squeeze(got) == squeeze(want) {
+        " — they differ only in spacing"
+    } else {
+        ""
+    };
+    Some(format!(
+        "they differ at column {}{note}:\n{}",
+        at + 1,
+        indent(&format!(
+            "inferred  {got}\nexpected  {want}\n          {}^",
+            " ".repeat(at)
+        ))
+    ))
+}
+
 /// `rel:N` into `(rel, N)`, or `None` for a plain relation name.
 ///
 /// Splits at the *last* colon so a qualified relation name keeps its namespace:
@@ -526,8 +598,12 @@ fn compare(
         };
         let got = got.to_string();
         if &got != want {
+            let marker = match near_miss(&got, want) {
+                Some(m) => format!("\n{}", indent(&m)),
+                None => String::new(),
+            };
             return Err(format!(
-                "{where_}: {at} {noun} `{name}` is `{got}`, expected `{want}`{}",
+                "{where_}: {at} {noun} `{name}` is `{got}`, expected `{want}`{marker}{}",
                 inferred()
             ));
         }

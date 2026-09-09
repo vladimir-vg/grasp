@@ -15,18 +15,25 @@ cargo test -p grasp-compiler --test yaml -- --list       # the inventory
 ## Two directories
 
 **`syntax/` asks whether the text is grasp at all; `programs/` asks what the
-program means and what it computes.** A semantic rejection and an execution case
-are both answers to the second question — one says a program is wrong, the other
-says what a correct one does — so they live together rather than being split
-again by how far down the pipeline they get.
+program means and what it computes; `inference/` asks what the compiler concluded
+about it.** A semantic rejection and an execution case are both answers to the
+second question — one says a program is wrong, the other says what a correct one
+does — so they live together rather than being split again by how far down the
+pipeline they get.
+
+`inference/` is the exception to that, and it earns it by asking a different
+question. Its cases reach into the middle of the compiler: they read the types
+`infer` settled on, or the rejections only `infer` can make. Nothing there is
+about what a program computes, and nothing in `programs/` can see a type.
 
 Where a case goes follows from what it asserts:
 
 | a case asserting | goes to |
 |---|---|
 | a `pass: parse` diagnostic | `syntax/` |
+| `expected_types`, or a `pass: infer` diagnostic | `inference/` |
 | a diagnostic from any later pass | `programs/` |
-| `equivalent_to`, an output mode, or `expected_types` | `programs/` |
+| `equivalent_to`, or an output mode | `programs/` |
 | `expected_ok` | wherever its topic lives |
 
 The last row is the one that needs saying. `expected_ok` is **not** a
@@ -34,6 +41,15 @@ parser-level assertion — it compiles the program and hands the result to
 `grasp-dbsp-runner` — so it belongs with the subject it illustrates rather than
 with a stage. An operator-precedence case that happens to be accepted is a
 syntax case; a case about what a fact means is a program case.
+
+**And a rejection written to contrast with an acceptance stays beside it**, which
+is the same principle one row up. `relations.yaml` keeps its `pass: infer`
+diagnostics for that reason: *"a relation with a typespec and no rules is
+declared"* is accepted and *"a relation needs a non-recursive rule or a typespec"*
+is rejected, and the pair is the lesson — filing them apart by stage would leave
+two halves of an argument in different directories. `syntax/lexical.yaml` holds
+the corpus's one `pass: desugar` diagnostic on the same grounds: the case exists
+to show the text *parses*.
 
 The harness is [`tests/yaml.rs`](../yaml.rs). The language these exercise is
 grasp, specified in [`docs/grasp/`](../../../../docs/grasp/).
@@ -229,8 +245,23 @@ while the variable filling it in one rule is plainly `i64`.
 
 **Types are compared as strings**, against the canonical spelling a diagnostic
 would quote — `dict(string, i64)`, `record(age: i64, name: string)` with the
-fields sorted. Nothing else pins that spelling. Quote the value in YAML when it
-contains a comma.
+fields sorted, a space after every `,` and `:`.
+
+**A non-canonical spelling cannot pass.** The comparison is byte equality against
+that spelling, with no normalising and no parsing the expectation back into a
+type, so this mode pins how a type is *written* as well as which type it is.
+Nothing else in the corpus does, and a fixture's own `source:` cannot: the type
+parser accepts `dict(string,i64)` and an unsorted `record`, and only `Display`
+decides the one spelling out of those that is canonical.
+
+Two things follow for anyone writing a case. Spacing is checked when the file is
+read rather than when the types are compared, because a case that goes pending
+never reaches the comparison, and a typo sitting unnoticed inside one is the
+silence this mode exists to remove. And **a compound type is quoted, a bare name
+is not** — `i64` plain, `"optional(i64)"` and `"dict(string, i64)"` quoted. That
+is a rule rather than a taste: these maps are written in YAML flow style, where an
+unquoted `{m: dict(string, i64)}` quietly becomes *two* entries and surfaces as a
+parse error blaming the file.
 
 **Naming is partial; a name is not.** A column or variable the case does not
 mention is not checked, and neither is a relation it does not mention, so a case
@@ -371,25 +402,30 @@ been guarding — and unlike a snapshot it cannot rot.
 | file | covers |
 |---|---|
 | `relations.yaml` | facts, rules with no atom, relations with no columns — and the rejections the spec states verbatim |
-| `safety.yaml` | a variable the body does not bind |
-| `assignability.yaml` | what a value of one type may be used as |
 | `expressions.yaml` | what a body expression computes, and where it has no answer |
 | `desugar.yaml` | the desugaring table, as `equivalent_to` pairs |
 | `normalization.yaml` | statement and rule order do not change the emission — including the two component-ordering cases the optimizer's forest must respect |
 | `recursion.yaml` | the transitive closure worked example, end to end |
 | `smoke.yaml` | the worked programs from the spec, end to end |
-| `inference_fixpoint.yaml` | schemas crossing relations that have no spec, and the round a recursive rule types on |
-| `inference_compose.yaml` | two rules giving one name two types, and where the column and the rule differ |
-| `inference_literals.yaml` | what an untyped literal settles as, and what told it |
-| `inference_overloads.yaml` | what a builtin or an aggregator gives back |
+
+`inference/`, covering [`inference.md`](../../../../docs/grasp/inference.md):
+
+| file | covers |
+|---|---|
+| `fixpoint.yaml` | schemas crossing relations that have no spec, and the round a recursive rule types on |
+| `compose.yaml` | two rules giving one name two types, and where the column and the rule differ |
+| `literals.yaml` | what an untyped literal settles as, and what told it |
+| `overloads.yaml` | what a builtin or an aggregator gives back |
+| `safety.yaml` | a variable the body does not bind |
+| `assignability.yaml` | what a value of one type may be used as |
 
 Still to write, a little ahead of the code that satisfies them — named here so a
-spec change has an obvious fixture home. All of them are `programs/`, since
-`syntax/` is as complete as the grammar is:
+spec change has an obvious fixture home. `syntax/` is as complete as the grammar
+is, so these are all `inference/` or `programs/`:
 
-- **desugar** — the `expected_core` half of `patterns.yaml`.
+- **desugar** — the `expected_core` half of `patterns.yaml`, in `programs/`.
 - **infer** — `optional`, `json`, `runtime_filters`, `comparison`, `specs`, and
-  more of `safety` and `assignability`.
+  more of `safety` and `assignability`, all in `inference/`.
 - **plan** — `optimizer`, `stratification`, and the diagnostic halves of
   `negation`, `aggregation`, `input_relations`.
 - **emit** — `rules`, `joins`, `builtins`, `unions`, more of `expressions`, and

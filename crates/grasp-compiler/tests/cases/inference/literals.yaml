@@ -53,4 +53,4 @@
     answer :: relation(v: optional(string))
     answer(v: x) <- x := NONE
   expected_types:
-    answer:0: {x: optional(string)}
+    answer:0: {x: "optional(string)"}
