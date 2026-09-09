@@ -104,11 +104,18 @@ that construct being implemented — a join case that also negates moves from
 *rejects* the program, and an unimplemented construct does not reject it. That is
 what makes it the floor, and why it silently demands more as the compiler grows.
 
+**Live is not the same as uncounted.** A case the compiler cannot yet satisfy is
+recorded in the burn-down whatever its mode does with it — `expected_ok` runs
+anyway, every other mode stands down, and both are counted. That is a repair: for
+as long as destructuring did not exist, its six `expected_ok` cases passed while
+asserting nothing and the burn-down said one feature was missing when three were.
+A mode that tolerates a gap without counting it hides the gap.
+
 `expected_types` is blocked by a *shorter* pipeline, because it reads inference's
 output and stops there: parse, desugar and infer can block it, and the stages
-after them cannot. That distinction is not cosmetic — every program is
-unimplemented at `plan` today, so a case judged against the whole pipeline would
-be pending forever and pass while asserting nothing.
+after them cannot. That distinction is not cosmetic — a case judged against the
+whole pipeline would be pending on a stage it never wanted and pass while
+asserting nothing.
 
 **There is nothing to remember.** A case goes live the moment the compiler stops
 saying it cannot — no marker to add, none to remove, and so no check needed
@@ -341,15 +348,10 @@ asserted removes nothing and leaves a debt that the next assertion pays off
 rather than answering. [`semantics.md`](../../../../docs/grasp/semantics.md#time)
 is the rule; `programs/time.yaml` is what pins it.
 
-**Facts are specified now, but no output case can use one yet.** grasp-dbsp gained
-`constant` for exactly this, and
+**A fact-only program feeds nothing**, so its `input` is `[{}]` — one
+transaction, no rows — and the facts arrive in it.
 [`docs/grasp/mapping.md`](../../../../docs/grasp/mapping.md#facts) says what a
-fact emits — but the pipeline stops well short of emission, so such a case would
-be pending like any other. Until then, declare data with `:: relation(...)` and
-`<- input`. What facts *are* is covered in `relations.yaml`.
-
-When emission does land: a fact-only program feeds nothing, so its `input` is
-`[{}]` — one transaction, no rows — and the facts arrive in it.
+fact emits; what facts *are* is covered in `relations.yaml`.
 
 ## Every relation must be declared
 

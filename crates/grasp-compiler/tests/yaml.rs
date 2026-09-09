@@ -285,27 +285,34 @@ fn first_unimplemented<T>(result: &Result<T, Vec<Diagnostic>>) -> Option<String>
 fn run_trial(case: &Case, _name: &str, where_: &str) -> Result<(), String> {
     check_shape(case, where_)?;
 
-    // `expected_ok` claims only that nothing *rejects* the program, and an
-    // unimplemented construct does not reject it — so that mode stays live and
-    // tolerates one, which is what makes it the floor it is meant to be. Every
-    // other mode needs the compiler to produce something in particular, and
-    // cannot be judged until it can.
-    if case.expected_types.is_some() {
+    // What the compiler has not got to yet, asked of the half of the pipeline
+    // this mode reads. `equivalent_to` is a second program and blocks the case
+    // just as its own source would.
+    let blocked = if case.expected_types.is_some() {
         // This mode reads inference's output and stops there, so the stages
         // after it cannot block it — and must not, since they block everything.
-        if let Some(reason) = first_unimplemented(&grasp_compiler::check(&case.source)) {
-            PENDING.lock().expect("pending").push(reason);
+        first_unimplemented(&grasp_compiler::check(&case.source))
+    } else {
+        std::iter::once(&case.source)
+            .chain(case.equivalent_to.iter())
+            .find_map(|source| unimplemented_reason(source))
+    };
+
+    if let Some(reason) = blocked {
+        // Recorded whatever the mode does with it. Counting and asserting are
+        // two different things, and a mode that tolerates a gap without
+        // counting it hides the gap: `expected_ok` alone covered destructuring
+        // for as long as destructuring did not exist, and the burn-down said
+        // one feature was missing when three were.
+        PENDING.lock().expect("pending").push(reason);
+
+        // `expected_ok` claims only that nothing *rejects* the program, and an
+        // unimplemented construct does not reject it — so that mode stays live
+        // and runs anyway, which is what makes it the floor it is meant to be.
+        // Every other mode needs the compiler to produce something in
+        // particular, and cannot be judged until it can.
+        if case.expected_ok.is_none() {
             return Ok(());
-        }
-    } else if case.expected_ok.is_none() {
-        // `equivalent_to` is a second program and blocks the case just as its
-        // own source would.
-        let sources = std::iter::once(&case.source).chain(case.equivalent_to.iter());
-        for source in sources {
-            if let Some(reason) = unimplemented_reason(source) {
-                PENDING.lock().expect("pending").push(reason);
-                return Ok(());
-            }
         }
     }
     run_case(case, where_)
