@@ -514,12 +514,17 @@ through the same shape, and `select` is what puts the row back beside each entry
 - **`select` is an expression.** `x := select(a, f)` is not a node definition;
   it belongs inside a function body.
 
-There is deliberately no `fold`. A fold can express a filter, and overlaps
-`length` and `sum` — a redundancy an emitter would have to choose between with
-no information. An array `filter` is a different matter: `select` cannot change
-an array's length and the `filter` *operator* works on rows, so it would be a
-genuinely new capability rather than a second way to write one. It is not here
-because nothing needs it yet.
+`select` is the only thing that maps an array. Two neighbours it does not have,
+and what stands in the way of each:
+
+- **An array `filter`** would be a new capability, not a second spelling:
+  `select` cannot change an array's length, and the `filter` *operator* works on
+  rows rather than on an array inside one. Nothing has needed it.
+- **A `fold`** would be a new capability too — nothing here reduces an array to
+  a scalar. But it would subsume `length`, and "exactly one way to write each
+  thing" wants that answered rather than left: either `length` goes, or the two
+  coexist and an emitter is given a rule for choosing. Nothing has needed a fold
+  either, so nothing has answered it.
 
 ### Builtins
 
