@@ -1126,7 +1126,14 @@ fn spanning_tree(atoms: &[Atom], comp: &[usize], root: usize) -> BTreeMap<usize,
                     continue;
                 }
                 // Heaviest wins; ties by the structural key of the atom being
-                // added, then of the one it attaches to. Never by position.
+                // added.
+                //
+                // **Known problem:** and there it stops. The parent is not in
+                // the comparison, so when one atom ties against two visited
+                // parents the winner is whichever `visited` yields first — a
+                // set of atom indices, which is body source order. That is the
+                // same leak `Fresh` has, in the same pass, and
+                // `compilation.md`'s "never by position" covers both.
                 let candidate = (weight, atoms[*u].key.as_str(), *u, *v);
                 let better = match &best {
                     None => true,
@@ -1432,9 +1439,18 @@ fn free(e: &core::Expr) -> BTreeSet<String> {
 
 /// A source of names no grasp program can be using.
 ///
-/// Numbered rather than derived from the expression, because the number comes
-/// from position in the plan — which is already a function of the program — and
-/// a name built from an expression would be unbounded in length.
+/// Numbered rather than derived from the expression, because a name built from
+/// an expression would be unbounded in length.
+///
+/// **Known problem: the number comes from position in the body.** `plan_rule`
+/// hands these out walking `rule.body` in source order, so two atoms carrying
+/// non-variable arguments take `v0` and `v1` by which was written first. Those
+/// names reach the emitted record fields, and — through `key::expr` over the
+/// equality each becomes — the dependent's structural key as well, which is the
+/// one place `compilation.md` says source position may never reach. Two
+/// programs that mean the same then emit different text. No wrong answer comes
+/// of it, and `normalization.yaml` has no case with two such atoms, which is
+/// why it does not show.
 struct Fresh {
     taken: BTreeSet<String>,
     next: usize,
@@ -1634,9 +1650,16 @@ fn lower(
     // equalities a spanning tree had to cut.
     let mut shapes: Vec<BTreeSet<String>> = Vec::new();
     let mut keys: BTreeMap<usize, Vec<String>> = BTreeMap::new();
-    // Every name the body binds — an aggregate's dedup key. Aggregate outputs
-    // are deliberately absent: they are produced *by* the aggregate, not by the
-    // body it ranges over.
+    // Every name the body binds — an aggregate's dedup key. `Step::Aggregate`
+    // deliberately adds nothing: its outputs are produced *by* the aggregate,
+    // not by the body it ranges over.
+    //
+    // **Known problem:** the pass is forward and flat, so a `Bind` or `Narrow`
+    // standing *after* the aggregate — a filter's lifted temporary, a narrowing
+    // on a result — joins the set anyway, which is the opposite of what the
+    // paragraph above claims. It is harmless only by accident: every consumer
+    // intersects this with a real node schema, so a name no upstream stream
+    // carries is dropped rather than looked up.
     let mut bound: BTreeSet<String> = BTreeSet::new();
     for (i, step) in steps.iter().enumerate() {
         match step {

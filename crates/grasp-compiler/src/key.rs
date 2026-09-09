@@ -56,8 +56,13 @@ pub fn lit(value: &Lit) -> String {
 /// that round-trips, which is what both printers want.
 pub fn float(f: f64) -> String {
     let s = format!("{f:?}");
-    // `{:?}` gives `inf` and `NaN`, which no literal spells — a program cannot
-    // contain one, so this is unreachable rather than a case to handle.
+    // `{:?}` gives `inf` and `NaN`, which no literal spells.
+    //
+    // **Known problem:** a program can contain one anyway. `lex` reads a float
+    // with Rust's `f64` parse, which returns `Ok(inf)` on overflow rather than
+    // an error, so `1.0e400` lexes to a non-finite `Lit::Float`. In a debug
+    // build this fires; in a release one it renders `inf`, which grasp-dbsp
+    // cannot lex. The fix belongs in `lex`, where the range is known.
     debug_assert!(f.is_finite(), "a literal float is finite");
     s
 }
@@ -116,6 +121,15 @@ fn write_expr(out: &mut String, e: &core::Expr) {
             // be literals, so there is nothing to sort them by that is not
             // itself this rendering — and two entries with one key is a runtime
             // question, not a structural one.
+            //
+            // **Known problem:** `semantics.md` says a literal's entries are
+            // "sorted by key and deduplicated, so two literals naming the same
+            // entries in different orders build one value". They do build one
+            // value — grasp-dbsp sorts them — but they key differently here and
+            // so emit different text, which is the property `equivalent_to`
+            // exists to hold. A pattern's fields are sorted in `desugar` for
+            // exactly this reason; a literal's cannot be, while its keys may be
+            // computed.
             out.push('{');
             for (i, (k, v)) in entries.iter().enumerate() {
                 if i > 0 {
