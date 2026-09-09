@@ -124,3 +124,65 @@
   expected_exact_output:
     - titled:
         - [1, {name: "ann", title: "eks"}]
+
+# `(i, v) := *arr` — the third unnest shape, and the one that needed the target
+# to grow: `map_array`'s function binds the element's index beside it.
+- name: an indexed array unnest binds the position
+  source: |
+    person :: relation(name: string, tags: array(string))
+    person(name:, tags:) <- input
+
+    item(name: n, at: i, tag: v) <-
+        person(name: n, tags: arr)
+        (i, v) := *arr
+
+  input:
+    - person:
+        - [1, {name: "ann", tags: ["x", "y", "z"]}]
+        - [1, {name: "bo", tags: ["q"]}]
+
+  expected_exact_output:
+    - item:
+        - [1, {name: "ann", at: 0, tag: "x"}]
+        - [1, {name: "ann", at: 1, tag: "y"}]
+        - [1, {name: "ann", at: 2, tag: "z"}]
+        - [1, {name: "bo", at: 0, tag: "q"}]
+
+# The index is an `i64` whatever the array holds, so it is an ordinary operand.
+- name: an unnest index is an ordinary i64
+  source: |
+    person :: relation(name: string, tags: array(string))
+    person(name:, tags:) <- input
+
+    later(name: n, tag: v) <-
+        person(name: n, tags: arr)
+        (i, v) := *arr
+        i > 0
+
+  input:
+    - person:
+        - [1, {name: "ann", tags: ["x", "y"]}]
+
+  expected_exact_output:
+    - later:
+        - [1, {name: "ann", tag: "y"}]
+
+# Two rows unnesting alike still appear once — the index is part of the row, so
+# equal elements at different positions are different rows.
+- name: an index tells equal elements apart
+  source: |
+    person :: relation(name: string, tags: array(string))
+    person(name:, tags:) <- input
+
+    item(at: i, tag: v) <-
+        person(tags: arr)
+        (i, v) := *arr
+
+  input:
+    - person:
+        - [1, {name: "ann", tags: ["x", "x"]}]
+
+  expected_exact_output:
+    - item:
+        - [1, {at: 0, tag: "x"}]
+        - [1, {at: 1, tag: "x"}]

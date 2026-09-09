@@ -94,9 +94,11 @@ which are referenced below only as history.
 This is the first cut, and it is narrower than the Erlang implementation the
 design comes from. What is missing is missing on purpose.
 
-- **Element access.** `arr[0]` and slicing have no grasp-dbsp equivalent — array
-  element access is future work there too. Indexed unnest, `(i, v) := *arr`,
-  follows it; plain `(v) := *arr` works today.
+- **Element access and slicing.** `arr[0]` and `arr[2:]` have no spelling in
+  grasp. grasp-dbsp can do both now — `get` reads an element and `filter_array`
+  over the index is a slice — so what is missing is grasp's own syntax, not the
+  capability. Indexed unnest, `(i, v) := *arr`, no longer waits on it and works
+  today.
 
 - **Array destructure, and a dict's remainder.** `[x, y] := arr` reads elements
   by position, which is the element access above; `[x, y, *r]` needs a slice

@@ -201,7 +201,6 @@ impl Diagnostic {
         "narrowing inside a container",
         "array destructuring",
         "binding a dict's remaining entries",
-        "indexed unnest",
         "keyword arguments",
     ];
 

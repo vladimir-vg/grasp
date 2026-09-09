@@ -70,6 +70,7 @@ For each variable in a rule, collect every constraint on it, then compose them.
 | literal in an atom `rel(col: 3)` | the column's type must accept the literal |
 | match `v := expr` | `v` is `expr`'s type |
 | unnest `(v) := *arr` | `arr` is `array(E)`; `v` is `E` |
+| unnest `(i, v) := *arr` | and `i` is `i64`, whatever `E` is |
 | unnest `(k, v) := **d` | `d` is `dict(K,V)`; `k` is `K`, `v` is `V` |
 | destructure `[x, y] := arr` | `arr` is `array(E)`; `x` and `y` are `E` |
 | destructure `{a:} := d` | `d` is `dict(string, V)`; `a` is `V`, definite |

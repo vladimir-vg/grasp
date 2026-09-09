@@ -44,6 +44,9 @@ const VALUE: &str = "v";
 /// The binder a `map_array` gives one element of the collection being unnested.
 const ELEMENT: &str = "e";
 
+/// The binder it gives that element's index, where the unnest asked for one.
+const INDEX: &str = "i";
+
 /// Where each grasp variable is found in the grasp-dbsp being written.
 ///
 /// Almost always a field of one row — every rule variable is — and for a long
@@ -649,20 +652,30 @@ fn emit_unnest(
         core::UnnestKind::Dict => format!("entries({})", expr_text(over, None)),
     };
     // What the unnested variables are called on the element, which is the whole
-    // of the difference between the two kinds.
+    // of the difference between the three shapes. Only the indexed one needs
+    // the second binder, so only it names one — an unnamed slot is bound all
+    // the same, and writing it would only be noise in the emitted text.
     let mut bound: BTreeMap<String, String> = BTreeMap::new();
+    let mut params = ELEMENT.to_string();
     match (kind, binds) {
         (core::UnnestKind::Array, [v]) => {
             bound.insert(v.clone(), ELEMENT.to_string());
+        }
+        (core::UnnestKind::Array, [i, v]) => {
+            bound.insert(i.clone(), INDEX.to_string());
+            bound.insert(v.clone(), ELEMENT.to_string());
+            params = format!("{ELEMENT}, {INDEX}");
         }
         (core::UnnestKind::Dict, [k, v]) => {
             bound.insert(k.clone(), format!("{ELEMENT}.key"));
             bound.insert(v.clone(), format!("{ELEMENT}.value"));
         }
-        // `infer::check_unnest` is what makes this total: an array unnest of two
-        // is legal and reported unimplemented there, and every other arity is
-        // rejected there. Without it a grammatical `(k) := **d` reaches here.
-        _ => unreachable!("`check_unnest` admits one variable, or a key and a value"),
+        // `infer::check_unnest` is what makes this total: it admits these three
+        // shapes and rejects every other arity. Without it a grammatical
+        // `(k) := **d` reaches here.
+        _ => unreachable!(
+            "`check_unnest` admits a value, an index and a value, or a key and a value"
+        ),
     }
     let scope = Scope {
         row: ROW,
@@ -673,7 +686,7 @@ fn emit_unnest(
     let _ = writeln!(
         out,
         "{name} := flat_map({input}, function(({ROW}) -> \
-         map_array({array}, function(({ELEMENT}) -> {}))))",
+         map_array({array}, function(({params}) -> {}))))",
         record_text(&fields)
     );
     name

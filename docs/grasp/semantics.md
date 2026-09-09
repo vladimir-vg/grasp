@@ -519,11 +519,22 @@ The **unnests** do not desugar to filters — they are generative, and become a
 | written | means |
 |---|---|
 | `(v) := *arr` | one row per element of `arr`, with `v` bound to it |
+| `(i, v) := *arr` | as above, and `i` is the element's 0-based position |
 | `(k, v) := **d` | one row per entry of `d`, with `k` and `v` bound |
 
 `(k, v) := **d` iterates entries **in key order**, because a dict is stored
 sorted — so the rows it produces are the same set every time, which is what a
 relation requires.
+
+There are three shapes and no others: a value, an index and a value, or a key
+and a value. The marker says which container is being taken apart and the arity
+says what is wanted from it, so `(k) := **d` is not a shorter dict unnest but a
+mistake — write `(k, _v)`.
+
+An index is an `i64` and an ordinary operand. It also tells equal elements
+apart: `["x", "x"]` unnests to one row without one and to two rows with it,
+which is the [set](#programs-and-relations) rule doing what it always does
+rather than an exception to it.
 
 Two forms named above are not yet available: `arr[i]` and `arr[2:]` need array
 element access, and `dict:without_keys` needs its builtin. Both are

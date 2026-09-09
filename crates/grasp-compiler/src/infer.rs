@@ -593,8 +593,18 @@ impl Cx {
                                         Ty::Error
                                     }
                                 };
-                                if let Some(v) = names.first() {
-                                    constrain(&mut vars, v, elem, *ps, &mut fault);
+                                // `(v)` binds the element; `(i, v)` binds its
+                                // index first, which is an `i64` whatever the
+                                // array holds.
+                                match names.as_slice() {
+                                    [v] => constrain(&mut vars, v, elem, *ps, &mut fault),
+                                    [i, v] => {
+                                        constrain(&mut vars, i, Ty::I64, *ps, &mut fault);
+                                        constrain(&mut vars, v, elem, *ps, &mut fault);
+                                    }
+                                    // `check_unnest` admits no other arity, and
+                                    // reports before this pass runs.
+                                    _ => {}
                                 }
                             }
                             core::UnnestKind::Dict => {
@@ -1522,18 +1532,7 @@ impl Cx {
                 continue;
             };
             match (kind, vars.len()) {
-                (core::UnnestKind::Array, 1) | (core::UnnestKind::Dict, 2) => {}
-                // Legal, and with nothing to lower it to: grasp-dbsp's `map_array`
-                // maps an array element by element with no index, its `get`
-                // covers a document and a dict but not an array, and it has no
-                // `enumerate`. Producing the index needs one of those.
-                (core::UnnestKind::Array, 2) => {
-                    return Some(Diagnostic::unimplemented(
-                        Pass::Infer,
-                        *span,
-                        "indexed unnest",
-                    ));
-                }
+                (core::UnnestKind::Array, 1 | 2) | (core::UnnestKind::Dict, 2) => {}
                 (core::UnnestKind::Array, _) => {
                     return Some(Diagnostic::error(
                         Pass::Infer,
