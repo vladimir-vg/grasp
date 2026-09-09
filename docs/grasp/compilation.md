@@ -112,9 +112,22 @@ Prim's algorithm, always taking the heaviest edge from the visited set. For an
 acyclic rule it coincides with a classical join tree; for a cyclic one it is the
 best tree-shaped approximation, cutting the lightest edges to break cycles.
 
+Nothing is lost by the cut. A join takes **every** variable its two sides share,
+not only the ones on the tree edge that brought them together, so an equality
+the tree could not carry is still enforced where the two atoms finally meet.
+That is why a cyclic rule needs no repair pass: the tree decides the *order*,
+and the join conditions follow from the schemas.
+
 The optimizer tries **every atom in the component as root**. For each, a
 post-order traversal of the rooted tree gives an evaluation order: children
 before parents, each parent joining its children's results with its own stream.
+
+The parent joins them **one at a time**, folding each child's result into what
+it has so far, rather than holding all of its children and joining at the end.
+Both evaluate the same tree; the fold is what keeps exactly one stream live at
+every step, which is what the cost model below counts. So the order is a stack
+machine: an atom pushes a stream, a join pops two and pushes one, and a
+dependent node rewrites the top.
 The component's own dependent nodes are placed into that order before it is
 scored — a match produces a variable, so a component's peak is not its own
 number until its matches are in it — and an order violating the dependency

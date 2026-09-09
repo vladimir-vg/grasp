@@ -1,0 +1,144 @@
+# Several rules for one relation, and the `distinct` that makes the result a
+# set. "grasp-dbsp's `plus` adds weights — it is bag union, so a tuple derived
+# by both rules would come out with weight 2. Datalog relations are sets, and
+# `distinct` is what makes them so."
+
+- name: two rules for one head are a union
+  source: |
+    a :: relation(v: i64)
+    b :: relation(v: i64)
+    a(v:) <- input
+    b(v:) <- input
+
+    both(v: x) <- a(v: x)
+    both(v: x) <- b(v: x)
+
+  input:
+    - a:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+      b:
+        - [1, {v: 3}]
+
+  expected_exact_output:
+    - both:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+        - [1, {v: 3}]
+
+# The case the `distinct` exists for: without it this row would arrive at
+# weight 2, and a relation is a set.
+- name: a row derived by both rules appears once
+  source: |
+    a :: relation(v: i64)
+    b :: relation(v: i64)
+    a(v:) <- input
+    b(v:) <- input
+
+    both(v: x) <- a(v: x)
+    both(v: x) <- b(v: x)
+
+  input:
+    - a:
+        - [1, {v: 7}]
+      b:
+        - [1, {v: 7}]
+
+  expected_exact_output:
+    - both:
+        - [1, {v: 7}]
+
+# Beyond two, `sum` is n-ary and saves the nesting.
+- name: three rules for one head
+  source: |
+    a :: relation(v: i64)
+    b :: relation(v: i64)
+    c :: relation(v: i64)
+    a(v:) <- input
+    b(v:) <- input
+    c(v:) <- input
+
+    any(v: x) <- a(v: x)
+    any(v: x) <- b(v: x)
+    any(v: x) <- c(v: x)
+
+  input:
+    - a:
+        - [1, {v: 1}]
+      b:
+        - [1, {v: 2}]
+      c:
+        - [1, {v: 3}]
+
+  expected_exact_output:
+    - any:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+        - [1, {v: 3}]
+
+# Facts and rules define one relation together: the facts are one `constant`,
+# and it is an operand of the union like any rule.
+- name: facts and a rule define one relation together
+  source: |
+    seed :: relation(v: i64)
+    seed(v:) <- input
+
+    known :: relation(v: i64)
+    known(v: 1)
+    known(v: 2)
+    known(v: x) <- seed(v: x)
+
+  input:
+    - seed:
+        - [1, {v: 3}]
+
+  expected_exact_output:
+    - known:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+        - [1, {v: 3}]
+
+# A fact and a rule deriving the same row still yield one.
+- name: a fact and a rule deriving alike appear once
+  source: |
+    seed :: relation(v: i64)
+    seed(v:) <- input
+
+    known :: relation(v: i64)
+    known(v: 1)
+    known(v: x) <- seed(v: x)
+
+  input:
+    - seed:
+        - [1, {v: 1}]
+
+  expected_exact_output:
+    - known:
+        - [1, {v: 1}]
+
+# Two rules whose bodies differ but whose heads agree, so the union's operands
+# have to be ordered by something — and it is the rule's structural key, not the
+# order they were written in.
+- name: rules with different bodies union into one relation
+  source: |
+    person :: relation(name: string, age: i64)
+    person(name:, age:) <- input
+
+    notable(name: n) <-
+        person(name: n, age: a)
+        a > 60
+
+    notable(name: n) <-
+        person(name: n, age: a)
+        a < 10
+
+  input:
+    - person:
+        - [1, {name: "elder", age: 70}]
+        - [1, {name: "mid", age: 30}]
+        - [1, {name: "kid", age: 5}]
+
+  expected_exact_output:
+    - notable:
+        - [1, {name: "elder"}]
+        - [1, {name: "kid"}]

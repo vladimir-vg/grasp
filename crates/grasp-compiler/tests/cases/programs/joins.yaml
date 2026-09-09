@@ -1,0 +1,198 @@
+# Joins and cross products, end to end. The optimizer chooses a shape here —
+# which atom roots the tree, which order the components run in — and the only
+# way to tell it chose a *correct* one is to run the circuit and look at the
+# rows. `normalization.yaml` asserts the choice is stable; this file asserts it
+# is right.
+
+- name: two atoms sharing a variable join on it
+  source: |
+    emp :: relation(name: string, dept: i64)
+    dept :: relation(id: i64, title: string)
+    emp(name:, dept:) <- input
+    dept(id:, title:) <- input
+
+    titled(name: n, title: t) <-
+        emp(name: n, dept: d)
+        dept(id: d, title: t)
+
+  input:
+    - emp:
+        - [1, {name: "ann", dept: 1}]
+        - [1, {name: "bo", dept: 2}]
+      dept:
+        - [1, {id: 1, title: "eng"}]
+        - [1, {id: 2, title: "ops"}]
+
+  expected_exact_output:
+    - titled:
+        - [1, {name: "ann", title: "eng"}]
+        - [1, {name: "bo", title: "ops"}]
+
+# "Several `map_index` nodes may read the same relation with different keys.
+#  That is what a self-join needs."
+- name: a self join is two occurrences of one relation
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src:, dst:) <- input
+
+    two_hop(src: x, dst: z) <-
+        edge(src: x, dst: y)
+        edge(src: y, dst: z)
+
+  input:
+    - edge:
+        - [1, {src: 1, dst: 2}]
+        - [1, {src: 2, dst: 3}]
+        - [1, {src: 3, dst: 4}]
+
+  expected_exact_output:
+    - two_hop:
+        - [1, {src: 1, dst: 3}]
+        - [1, {src: 2, dst: 4}]
+
+# Three atoms in a chain: whichever atom roots the tree, the middle one is the
+# only thing joining the ends, so a wrong traversal shows up as rows that should
+# not be there.
+- name: three atoms chain through their shared variables
+  source: |
+    a :: relation(p: i64, q: i64)
+    b :: relation(q: i64, r: i64)
+    c :: relation(r: i64, s: i64)
+    a(p:, q:) <- input
+    b(q:, r:) <- input
+    c(r:, s:) <- input
+
+    chain(p: p, s: s) <-
+        a(p: p, q: q)
+        b(q: q, r: r)
+        c(r: r, s: s)
+
+  input:
+    - a:
+        - [1, {p: 1, q: 10}]
+        - [1, {p: 2, q: 20}]
+      b:
+        - [1, {q: 10, r: 100}]
+        - [1, {q: 20, r: 200}]
+      c:
+        - [1, {r: 100, s: 7}]
+
+  expected_exact_output:
+    - chain:
+        - [1, {p: 1, s: 7}]
+
+# A cyclic rule: the spanning tree has to cut one of the three edges, and the
+# equality it cut must still hold. A join takes *every* variable its two sides
+# share, so the cut edge is enforced where the two atoms finally meet — and a
+# triangle that only matched two of its three edges would show up here as the
+# extra row this case does not expect.
+- name: a cyclic rule still enforces the edge its tree cut
+  source: |
+    r1 :: relation(x: i64, y: i64)
+    r2 :: relation(y: i64, z: i64)
+    r3 :: relation(x: i64, z: i64)
+    r1(x:, y:) <- input
+    r2(y:, z:) <- input
+    r3(x:, z:) <- input
+
+    tri(x: x) <-
+        r1(x: x, y: y)
+        r2(y: y, z: z)
+        r3(x: x, z: z)
+
+  input:
+    - r1:
+        - [1, {x: 1, y: 2}]
+        - [1, {x: 9, y: 2}]
+      r2:
+        - [1, {y: 2, z: 3}]
+      r3:
+        - [1, {x: 1, z: 3}]
+
+  expected_exact_output:
+    - tri:
+        - [1, {x: 1}]
+
+# Two atoms sharing nothing cannot be joined at all, so they are crossed — "a
+# cross product is a `join` on the unit key", every row of one meeting every row
+# of the other.
+- name: two atoms sharing no variable are crossed
+  source: |
+    left :: relation(x: i64)
+    right :: relation(y: string)
+    left(x:) <- input
+    right(y:) <- input
+
+    pair(x: x, y: y) <-
+        left(x: x)
+        right(y: y)
+
+  input:
+    - left:
+        - [1, {x: 1}]
+        - [1, {x: 2}]
+      right:
+        - [1, {y: "a"}]
+        - [1, {y: "b"}]
+
+  expected_exact_output:
+    - pair:
+        - [1, {x: 1, y: "a"}]
+        - [1, {x: 1, y: "b"}]
+        - [1, {x: 2, y: "a"}]
+        - [1, {x: 2, y: "b"}]
+
+# A relation with no columns binds no variable, so it is always a component of
+# its own — "not a degenerate case to be tolerated: guarding a rule with a
+# proposition is what such a relation is for". Empty, it admits nothing.
+- name: a proposition guards a rule
+  source: |
+    config :: relation(mode: string)
+    account :: relation(id: i64)
+    config(mode:) <- input
+    account(id:) <- input
+
+    ready :: relation()
+    ready() <-
+        config(mode: "on")
+
+    active(id: i) <-
+        ready()
+        account(id: i)
+
+  input:
+    - config:
+        - [1, {mode: "on"}]
+      account:
+        - [1, {id: 7}]
+        - [1, {id: 8}]
+
+  expected_exact_output:
+    - active:
+        - [1, {id: 7}]
+        - [1, {id: 8}]
+
+- name: an unsatisfied proposition admits nothing
+  source: |
+    config :: relation(mode: string)
+    account :: relation(id: i64)
+    config(mode:) <- input
+    account(id:) <- input
+
+    ready :: relation()
+    ready() <-
+        config(mode: "on")
+
+    active(id: i) <-
+        ready()
+        account(id: i)
+
+  input:
+    - config:
+        - [1, {mode: "off"}]
+      account:
+        - [1, {id: 7}]
+
+  expected_output:
+    - config:
+        - [1, {mode: "off"}]

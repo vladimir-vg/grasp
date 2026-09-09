@@ -112,17 +112,19 @@ fn emit_relation(out: &mut String, relation: &Relation, names: &mut Names) {
     }
 }
 
-/// One rule's chain of nodes. Returns the name of its last, which is the rule's
+/// One rule's nodes. Returns the name of the last, which is the rule's
 /// contribution to its relation.
+///
+/// Nodes reference each other by index, so this keeps a name per index and
+/// resolves as it goes. A `Scan` contributes no definition — it *is* the
+/// relation's stream, already named.
 fn emit_rule(out: &mut String, relation: &Relation, rule: &Rule, names: &mut Names) -> String {
     let base = names.node_of(&relation.name);
-    let mut previous = String::new();
+    let mut at: Vec<String> = Vec::new();
     for node in &rule.nodes {
-        match &node.op {
-            // A scan is not a node of its own: it is the relation's stream,
-            // already defined under its own name.
+        let name = match &node.op {
             Op::Scan { relation } => {
-                previous = names.node_of(relation);
+                at.push(names.node_of(relation));
                 continue;
             }
             Op::Ground => {
@@ -132,33 +134,115 @@ fn emit_rule(out: &mut String, relation: &Relation, rule: &Rule, names: &mut Nam
                 let name = names.intermediate(&base);
                 let _ = writeln!(out, "{name} :: zset(record())");
                 let _ = writeln!(out, "{name} := constant([record()])");
-                previous = name;
-                continue;
+                name
             }
-            Op::Filter { expr } => {
+            Op::Filter { input, expr } => {
                 let name = names.intermediate(&base);
                 let _ = writeln!(
                     out,
-                    "{name} := filter({previous}, function(({ROW}) -> {}))",
+                    "{name} := filter({}, function(({ROW}) -> {}))",
+                    at[*input],
                     expr_text(expr, None)
                 );
-                previous = name;
+                name
             }
-            Op::Map { fields } => {
+            Op::Map { input, fields } => {
                 let name = names.intermediate(&base);
                 let _ = writeln!(
                     out,
-                    "{name} := map({previous}, function(({ROW}) -> {}))",
+                    "{name} := map({}, function(({ROW}) -> {}))",
+                    at[*input],
                     record(fields)
                 );
-                previous = name;
+                name
             }
-            Op::Narrow { name: v, fallback } => {
-                previous = emit_narrow(out, &base, names, node, v, fallback, &previous);
+            Op::MapIndex { input, key, val } => {
+                let name = names.intermediate(&base);
+                let _ = writeln!(
+                    out,
+                    "{name} := map_index({}, function(({ROW}) -> record(key: {}, value: {})))",
+                    at[*input],
+                    row_record(key),
+                    row_record(val)
+                );
+                name
             }
-        }
+            Op::Join { left, right } => {
+                emit_join(out, &base, names, rule, &at, *left, *right, &node.schema)
+            }
+            Op::Narrow {
+                input,
+                name: v,
+                fallback,
+            } => emit_narrow(out, &base, names, node, v, fallback, &at[*input]),
+        };
+        at.push(name);
     }
-    previous
+    at.pop().expect("a rule has at least one node")
+}
+
+/// A `join`, and the two sides' `map_index` calls have already been emitted.
+///
+/// The output record is assembled from three places: a key variable comes from
+/// the key parameter, and every other from whichever side carried it. The two
+/// sides cannot disagree, because a join takes *all* the variables they share
+/// as its key — so nothing is left in both values.
+#[allow(clippy::too_many_arguments)]
+fn emit_join(
+    out: &mut String,
+    base: &str,
+    names: &mut Names,
+    rule: &Rule,
+    at: &[String],
+    left: usize,
+    right: usize,
+    schema: &BTreeSet<String>,
+) -> String {
+    let key = match &rule.nodes[left].op {
+        Op::MapIndex { key, .. } => key.clone(),
+        _ => unreachable!("a join reads two indexed streams"),
+    };
+    let side = |i: usize| match &rule.nodes[i].op {
+        Op::MapIndex { val, .. } => val.clone(),
+        _ => unreachable!("a join reads two indexed streams"),
+    };
+    let (l_val, r_val) = (side(left), side(right));
+    let fields: Vec<(String, String)> = schema
+        .iter()
+        .map(|v| {
+            let from = if key.contains(v) {
+                format!("k.{v}")
+            } else if l_val.contains(v) {
+                format!("a.{v}")
+            } else {
+                debug_assert!(r_val.contains(v), "a join's output comes from its inputs");
+                format!("b.{v}")
+            };
+            (v.clone(), from)
+        })
+        .collect();
+    let name = names.intermediate(base);
+    let _ = writeln!(
+        out,
+        "{name} := join({}, {}, function((k, a, b) -> {}))",
+        at[left],
+        at[right],
+        record_text(&fields)
+    );
+    name
+}
+
+/// A record of variables read straight off the row — a `map_index`'s key or
+/// value, which are always projections and never computations.
+///
+/// A key with no variables is `record()`, which is the unit key a cross product
+/// joins on: every row of one side meets every row of the other.
+fn row_record(vars: &[String]) -> String {
+    let fields: Vec<(String, String)> = vars
+        .iter()
+        .map(|v| (v.clone(), format!("{ROW}.{v}")))
+        .collect();
+    record_text(&fields)
 }
 
 /// The tail of `mapping.md`'s narrowing: drop the rows with no value, then

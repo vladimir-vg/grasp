@@ -129,12 +129,35 @@ pub enum Op {
     /// The unit relation: one empty row, which grounds a rule with no atom.
     Ground,
     Filter {
+        input: usize,
         expr: core::Expr,
     },
     /// The complete output row. This is projection as well as binding: a
     /// variable absent from `fields` is gone.
     Map {
+        input: usize,
         fields: Vec<Field>,
+    },
+    /// Index a stream by the variables the join ahead of it needs.
+    ///
+    /// The only entry to a join, and the second place projection happens: `val`
+    /// is what is still live, so anything the rest of the rule has finished
+    /// with is dropped here rather than carried through the join.
+    MapIndex {
+        input: usize,
+        key: Vec<String>,
+        val: Vec<String>,
+    },
+    /// Equi-join two indexed streams on the key they were indexed by.
+    ///
+    /// An empty key is a **cross product**, and needs nothing else: both sides
+    /// indexed on nothing means every row of one meets every row of the other.
+    /// `compilation.md` chose an empty key over a constant column precisely so
+    /// that a cross would need no new node kind — "every key variable of a
+    /// `join` is in both input schemas" holds vacuously of no key at all.
+    Join {
+        left: usize,
+        right: usize,
     },
     /// `mapping.md`'s narrowing, minus its first operator: drop the rows where
     /// `name` has no value, then rebind it as a definite one.
@@ -148,9 +171,24 @@ pub enum Op {
     /// `fallback` is never read, the filter having seen to that. It is carried
     /// because grasp-dbsp typechecks it anyway.
     Narrow {
+        input: usize,
         name: String,
         fallback: core::Expr,
     },
+}
+
+impl Op {
+    /// The nodes this one reads, for the invariant that inputs precede use.
+    fn inputs(&self) -> Vec<usize> {
+        match self {
+            Op::Scan { .. } | Op::Ground => Vec::new(),
+            Op::Filter { input, .. }
+            | Op::Map { input, .. }
+            | Op::MapIndex { input, .. }
+            | Op::Narrow { input, .. } => vec![*input],
+            Op::Join { left, right } => vec![*left, *right],
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -297,28 +335,6 @@ pub fn gaps(typed: &infer::Typed) -> Vec<Diagnostic> {
         // atom is a join if it meets the first, and a cross product if it does
         // not — different machinery, landing in different slices, which is why
         // they are counted apart rather than as "more than one atom".
-        if atoms.len() > 1 {
-            let construct = if components(&atoms).len() > 1 {
-                "cross products"
-            } else {
-                "joins"
-            };
-            note(construct, rule.span);
-        }
-    }
-
-    for (relation, count) in &rule_count {
-        if *count > 1 || (*count == 1 && has_fact.contains(*relation)) {
-            let span = typed
-                .decls
-                .iter()
-                .find_map(|d| match d {
-                    infer::Decl::Rule(r) if r.rule.head.relation == **relation => Some(r.rule.span),
-                    _ => None,
-                })
-                .unwrap_or(Span::new(1, 1, 0));
-            note("unions of rules", span);
-        }
     }
 
     // The rank. `Diagnostic::UNIMPLEMENTED` lists the plan constructs in this
@@ -327,10 +343,7 @@ pub fn gaps(typed: &infer::Typed) -> Vec<Diagnostic> {
         "recursion",
         "aggregation",
         "negation",
-        "cross products",
-        "joins",
         "unnesting",
-        "unions of rules",
         "type assertions",
     ];
     let mut out = Vec::new();
@@ -387,13 +400,9 @@ fn recursive(edges: &BTreeMap<&str, BTreeSet<&str>>, typed: &infer::Typed) -> Op
 /// partition is what decides join against cross product, and it is what the
 /// optimizer will plan and order — so it exists at one atom, where it always
 /// returns a single component, rather than being introduced later.
-fn components<'a>(atoms: &[&'a core::Stmt]) -> Vec<Vec<&'a core::Stmt>> {
-    let vars: Vec<BTreeSet<&str>> = atoms.iter().map(|a| atom_vars(a)).collect();
-    let mut owner: Vec<usize> = (0..atoms.len()).collect();
-    // Union-find, flattened by hand: the sets are tiny and this keeps the
-    // iteration order a function of position in `atoms`, which is itself a
-    // function of the body's own order — settled by the caller.
-    for i in 0..atoms.len() {
+fn components(vars: &[BTreeSet<String>]) -> Vec<Vec<usize>> {
+    let mut owner: Vec<usize> = (0..vars.len()).collect();
+    for i in 0..vars.len() {
         for j in 0..i {
             if !vars[i].is_disjoint(&vars[j]) {
                 let (a, b) = (owner[i], owner[j]);
@@ -406,23 +415,11 @@ fn components<'a>(atoms: &[&'a core::Stmt]) -> Vec<Vec<&'a core::Stmt>> {
             }
         }
     }
-    let mut groups: BTreeMap<usize, Vec<&core::Stmt>> = BTreeMap::new();
-    for (i, atom) in atoms.iter().enumerate() {
-        groups.entry(owner[i]).or_default().push(atom);
+    let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (i, o) in owner.iter().enumerate() {
+        groups.entry(*o).or_default().push(i);
     }
     groups.into_values().collect()
-}
-
-fn atom_vars(stmt: &core::Stmt) -> BTreeSet<&str> {
-    let mut out = BTreeSet::new();
-    if let core::Stmt::Atom { args, .. } = stmt {
-        for (_, arg) in args {
-            if let core::Arg::Expr(e) = arg {
-                collect_vars(e, &mut out);
-            }
-        }
-    }
-    out
 }
 
 fn collect_vars<'a>(e: &'a core::Expr, out: &mut BTreeSet<&'a str>) {
@@ -452,15 +449,33 @@ fn collect_vars<'a>(e: &'a core::Expr, out: &mut BTreeSet<&'a str>) {
 // Planning one rule
 // ---------------------------------------------------------------------------
 
+/// One occurrence of a positive atom, with its own constraints lifted out.
+///
+/// After lifting, an atom **consumes nothing**: a column bound to a plain
+/// variable binds it, and every other argument — a literal, an expression, a
+/// repeat — has become an equality filter over a fresh name. That is what
+/// `mapping.md` requires anyway, since nothing can push a computed value into a
+/// relation scan, and it has a consequence worth stating: with no atom
+/// consuming anything, `compilation.md`'s dependency partial order over atoms
+/// is empty. Every rooting is valid and no component precedes another, so the
+/// two rejections the optimizer is specified to make — "no valid rooting" and
+/// "a cycle in the lifted order" — cannot arise. They are unreachable rather
+/// than unimplemented.
+struct Atom {
+    relation: String,
+    /// Column to the variable it binds.
+    entry: Vec<(String, String)>,
+    vars: BTreeSet<String>,
+    key: String,
+}
+
 /// A statement that is not a positive atom: it consumes variables and may
 /// produce one, but it is not in the spanning tree and has to be placed.
 struct Dependent {
     kind: Kind,
-    /// What it produces, if anything.
     binds: Option<String>,
     consumes: BTreeSet<String>,
     key: String,
-    /// The work itself, already lowered to the ops it becomes.
     body: Body,
 }
 
@@ -478,54 +493,72 @@ enum Body {
     Bind(String, core::Expr),
 }
 
+/// One step of the sequence a rule becomes, as a stack machine over streams:
+/// [`Item::Enter`] and [`Item::Ground`] push one, [`Item::Join`] and
+/// [`Item::Cross`] pop two and push one, and a [`Item::Dep`] rewrites the top.
+///
+/// Linear, but it describes a tree — which is the point. A post-order traversal
+/// is exactly a stack machine, so the tree the optimizer chose survives as an
+/// order without a second structure to keep in step with it.
+#[derive(Clone, Copy)]
+enum Item {
+    Enter(usize),
+    Ground,
+    Join,
+    Cross,
+    Dep(usize),
+}
+
 fn plan_rule(
     typed: &infer::TypedRule,
     columns: &[(String, Type)],
 ) -> Result<Rule, Vec<Diagnostic>> {
     let rule = &typed.rule;
     let mut fresh = Fresh::new(typed);
-
-    let atoms: Vec<&core::Stmt> = rule
-        .body
-        .iter()
-        .filter(|s| matches!(s, core::Stmt::Atom { negated: false, .. }))
-        .collect();
-
-    let mut dependents: Vec<Dependent> = Vec::new();
-
-    // The atom's own constraints. A column bound to a plain variable binds it;
-    // anything else — a literal, an expression, a repeat of a variable this
-    // atom already bound — is an equality filter over a fresh name, which is
-    // the same machinery competing producers use.
-    let mut entry: Vec<(String, String)> = Vec::new(); // (column, name)
-    if let Some(core::Stmt::Atom { args, .. }) = atoms.first().copied() {
-        let mut bound: BTreeSet<String> = BTreeSet::new();
-        for (column, arg) in args {
-            match arg {
-                core::Arg::Wildcard(_) => {}
-                core::Arg::Expr(core::Expr::Var { name, .. }) if bound.insert(name.clone()) => {
-                    entry.push((column.clone(), name.clone()));
-                }
-                core::Arg::Expr(e) => {
-                    let name = fresh.next();
-                    entry.push((column.clone(), name.clone()));
-                    let eq = equals(&name, e, e.span());
-                    dependents.push(Dependent {
-                        kind: Kind::Filter,
-                        binds: None,
-                        consumes: free(&eq),
-                        key: key::expr(&eq),
-                        body: Body::Filter(eq),
-                    });
-                }
-            }
-        }
-    }
+    let mut atoms: Vec<Atom> = Vec::new();
+    let mut deps: Vec<Dependent> = Vec::new();
 
     for stmt in &rule.body {
         match stmt {
+            core::Stmt::Atom {
+                relation,
+                args,
+                negated: false,
+                ..
+            } => {
+                let mut entry = Vec::new();
+                let mut bound: BTreeSet<String> = BTreeSet::new();
+                for (column, arg) in args {
+                    match arg {
+                        core::Arg::Wildcard(_) => {}
+                        core::Arg::Expr(core::Expr::Var { name, .. })
+                            if bound.insert(name.clone()) =>
+                        {
+                            entry.push((column.clone(), name.clone()));
+                        }
+                        core::Arg::Expr(e) => {
+                            let name = fresh.next();
+                            entry.push((column.clone(), name.clone()));
+                            let eq = equals(&name, e, e.span());
+                            deps.push(Dependent {
+                                kind: Kind::Filter,
+                                binds: None,
+                                consumes: free(&eq),
+                                key: key::expr(&eq),
+                                body: Body::Filter(eq),
+                            });
+                        }
+                    }
+                }
+                atoms.push(Atom {
+                    relation: relation.clone(),
+                    vars: entry.iter().map(|(_, n)| n.clone()).collect(),
+                    entry,
+                    key: key::stmt(stmt),
+                });
+            }
             core::Stmt::Atom { .. } | core::Stmt::Input { .. } | core::Stmt::Assert { .. } => {}
-            core::Stmt::Filter { expr, .. } => dependents.push(Dependent {
+            core::Stmt::Filter { expr, .. } => deps.push(Dependent {
                 kind: Kind::Filter,
                 binds: None,
                 consumes: free(expr),
@@ -539,7 +572,7 @@ fn plan_rule(
                 let core::Rhs::Expr(e) = rhs else {
                     unreachable!("an aggregate is reported by `gaps`")
                 };
-                dependents.push(Dependent {
+                deps.push(Dependent {
                     kind: Kind::Match,
                     binds: Some(name.clone()),
                     consumes: free(e),
@@ -550,58 +583,348 @@ fn plan_rule(
         }
     }
 
-    // Placement: earliest point where every input is bound, ties by kind then
-    // by structural key. With one component the "post-order" is the atom alone,
-    // so this loop is the whole ordering — and it is the same loop that will
-    // place these nodes among several atoms.
-    let mut available: BTreeSet<String> = entry.iter().map(|(_, n)| n.clone()).collect();
-    let mut order: Vec<Dependent> = Vec::new();
-    let mut pending = dependents;
-    while !pending.is_empty() {
-        let mut ready: Vec<usize> = (0..pending.len())
-            .filter(|i| pending[*i].consumes.is_subset(&available))
-            .collect();
-        if ready.is_empty() {
-            // Every remaining node wants a variable nothing produces. `infer`'s
-            // safety check rejects that before here, so this is unreachable —
-            // and a rule silently missing its filters would be worse than a
-            // panic in a debug build.
-            unreachable!("a body statement consumes a variable nothing binds");
-        }
-        ready.sort_by(|a, b| {
-            (&pending[*a].kind, &pending[*a].key).cmp(&(&pending[*b].kind, &pending[*b].key))
-        });
-        let chosen = pending.remove(ready[0]);
-        if let Some(v) = &chosen.binds {
-            available.insert(v.clone());
-        }
-        order.push(chosen);
+    let head_vars: BTreeSet<String> = rule.head.args.iter().flat_map(|(_, e)| free(e)).collect();
+
+    // The components of the weighted join graph, each planned and scored on its
+    // own before any of them are crossed.
+    // A rule with no atom is grounded on the unit relation, which is then its
+    // join graph's root — so it is one component holding no atom rather than a
+    // case beside the others.
+    let mut comps = components(&atoms.iter().map(|a| a.vars.clone()).collect::<Vec<_>>());
+    if comps.is_empty() {
+        comps.push(Vec::new());
     }
 
-    // Competing producers. "The primary producer is whichever comes first in
-    // the post-order. Every other producer becomes an equality filter."
-    let mut produced: BTreeSet<String> = BTreeSet::new();
-    for node in order.iter_mut() {
-        let Some(name) = node.binds.clone() else {
-            continue;
-        };
-        if produced.insert(name.clone()) {
-            continue;
-        }
-        let Body::Bind(_, e) = &node.body else {
-            continue;
-        };
-        let eq = equals(&name, e, e.span());
-        node.kind = Kind::Filter;
-        node.binds = None;
-        node.consumes = free(&eq);
-        node.key = key::expr(&eq);
-        node.body = Body::Filter(eq);
+    // Which component can satisfy each dependent by itself. One that no single
+    // component can satisfy spans them, and is placed after the cross that
+    // brings its last input into one stream.
+    let produced: Vec<BTreeSet<String>> = comps
+        .iter()
+        .map(|comp| closure(&atoms, comp, &deps))
+        .collect();
+    let owners: Vec<Option<usize>> = deps
+        .iter()
+        .map(|d| (0..comps.len()).find(|c| d.consumes.is_subset(&produced[*c])))
+        .collect();
+    let spanning: BTreeSet<String> = deps
+        .iter()
+        .zip(&owners)
+        .filter(|(_, o)| o.is_none())
+        .flat_map(|(d, _)| d.consumes.clone())
+        .collect();
+
+    // Plan and score each component. Its peak is the cost of its own plan; its
+    // exit width is how many of its variables are still live when it ends —
+    // those in the head, and those a node placed after the cross consumes.
+    let mut planned: Vec<Component> = Vec::new();
+    for (ci, comp) in comps.iter().enumerate() {
+        let own: Vec<usize> = (0..deps.len()).filter(|d| owners[*d] == Some(ci)).collect();
+        let exit_vars: BTreeSet<String> = produced[ci]
+            .iter()
+            .filter(|v| head_vars.contains(*v) || spanning.contains(*v))
+            .cloned()
+            .collect();
+        let trace = plan_component(&atoms, comp, &deps, &own, &head_vars, &spanning);
+        let peak = cost(&trace, &atoms, &deps, &head_vars);
+        let mut keys: Vec<&str> = comp.iter().map(|a| atoms[*a].key.as_str()).collect();
+        keys.sort();
+        planned.push(Component {
+            trace,
+            peak,
+            exit: exit_vars.len(),
+            key: keys.join("; "),
+        });
     }
+
+    // "Components are ordered by descending headroom", where headroom is
+    // `peak - exit`: how far a component swells above what it leaves behind.
+    // A component with exit width 0 goes first — it leaves nothing behind, so
+    // its position is free on the peak. Ties by ascending exit, then by key.
+    planned.sort_by(|a, b| {
+        (a.exit > 0, -(a.peak as i64 - a.exit as i64), a.exit, &a.key).cmp(&(
+            b.exit > 0,
+            -(b.peak as i64 - b.exit as i64),
+            b.exit,
+            &b.key,
+        ))
+    });
+
+    let mut trace: Vec<Item> = Vec::new();
+    let mut placed = vec![false; deps.len()];
+    for (i, d) in deps.iter().enumerate() {
+        let _ = d;
+        if owners[i].is_some() {
+            // Its own component's plan already placed it.
+            placed[i] = true;
+        }
+    }
+    let spanning_deps: Vec<usize> = (0..deps.len()).filter(|d| owners[*d].is_none()).collect();
+    let mut avail: BTreeSet<String> = BTreeSet::new();
+    for (i, component) in planned.iter().enumerate() {
+        trace.extend(component.trace.iter().copied());
+        for item in &component.trace {
+            if let Item::Enter(a) = item {
+                avail.extend(atoms[*a].vars.iter().cloned());
+            }
+            if let Item::Dep(d) = item
+                && let Some(v) = &deps[*d].binds
+            {
+                avail.insert(v.clone());
+            }
+        }
+        if i > 0 {
+            trace.push(Item::Cross);
+        }
+        place_ready(&mut avail, &deps, &spanning_deps, &mut placed, &mut trace);
+    }
+
+    debug_assert!(
+        placed.iter().all(|p| *p),
+        "a body statement consumes a variable nothing binds, which `infer`'s \
+         safety check rejects before here"
+    );
 
     Ok(lower(
-        rule, &atoms, entry, order, &mut fresh, typed, columns,
+        rule, &atoms, &mut deps, trace, &mut fresh, typed, columns,
     ))
+}
+
+/// One component, planned and scored.
+struct Component {
+    trace: Vec<Item>,
+    peak: usize,
+    exit: usize,
+    key: String,
+}
+
+/// Everything a component can bind on its own: its atoms' variables, plus what
+/// its own dependents produce from those, to a fixpoint.
+fn closure(atoms: &[Atom], comp: &[usize], deps: &[Dependent]) -> BTreeSet<String> {
+    let mut out: BTreeSet<String> = comp
+        .iter()
+        .flat_map(|a| atoms[*a].vars.iter().cloned())
+        .collect();
+    loop {
+        let mut grew = false;
+        for d in deps {
+            if let Some(v) = &d.binds
+                && !out.contains(v)
+                && d.consumes.is_subset(&out)
+            {
+                out.insert(v.clone());
+                grew = true;
+            }
+        }
+        if !grew {
+            return out;
+        }
+    }
+}
+
+/// Plan one component: try every atom as root, and keep the cheapest.
+///
+/// "The optimizer tries every atom in the component as root. For each, a
+/// post-order traversal of the rooted tree gives an evaluation order: children
+/// before parents, each parent joining its children's results with its own
+/// stream." The component's own dependents are placed into that order *before*
+/// it is scored — a match produces a variable, so a component's peak is not its
+/// own number until its matches are in it.
+fn plan_component(
+    atoms: &[Atom],
+    comp: &[usize],
+    deps: &[Dependent],
+    own: &[usize],
+    head_vars: &BTreeSet<String>,
+    spanning: &BTreeSet<String>,
+) -> Vec<Item> {
+    let mut needed = head_vars.clone();
+    needed.extend(spanning.iter().cloned());
+    if comp.is_empty() {
+        let mut trace = vec![Item::Ground];
+        let mut placed = vec![false; deps.len()];
+        let mut avail = BTreeSet::new();
+        place_ready(&mut avail, deps, own, &mut placed, &mut trace);
+        return trace;
+    }
+    let mut best: Option<(usize, String, Vec<Item>)> = None;
+    for root in comp {
+        let tree = spanning_tree(atoms, comp, *root);
+        let mut trace = Vec::new();
+        let mut placed = vec![false; deps.len()];
+        let mut avail = BTreeSet::new();
+        walk(
+            atoms,
+            &tree,
+            *root,
+            deps,
+            own,
+            &mut placed,
+            &mut avail,
+            &mut trace,
+        );
+        let c = cost(&trace, atoms, deps, &needed);
+        let k = trace_key(&trace, atoms, deps);
+        if best.as_ref().is_none_or(|(bc, bk, _)| (c, &k) < (*bc, bk)) {
+            best = Some((c, k, trace));
+        }
+    }
+    best.expect("a component holds at least one atom").2
+}
+
+/// A maximum-weight spanning tree of one component, rooted at `root` — Prim's
+/// algorithm, always taking the heaviest edge from the visited set.
+///
+/// For an acyclic rule it coincides with a classical join tree; for a cyclic
+/// one it is the best tree-shaped approximation, cutting the lightest edges to
+/// break cycles. Nothing is lost by the cut: a join takes *every* variable its
+/// two sides share, so an equality the tree does not carry is still enforced
+/// where the two atoms finally meet.
+fn spanning_tree(atoms: &[Atom], comp: &[usize], root: usize) -> BTreeMap<usize, Vec<usize>> {
+    let mut children: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    let mut visited: BTreeSet<usize> = BTreeSet::new();
+    visited.insert(root);
+    while visited.len() < comp.len() {
+        let mut best: Option<(usize, &str, usize, usize)> = None;
+        for u in comp.iter().filter(|u| !visited.contains(u)) {
+            for v in visited.iter() {
+                let weight = atoms[*u].vars.intersection(&atoms[*v].vars).count();
+                if weight == 0 {
+                    continue;
+                }
+                // Heaviest wins; ties by the structural key of the atom being
+                // added, then of the one it attaches to. Never by position.
+                let candidate = (weight, atoms[*u].key.as_str(), *u, *v);
+                let better = match &best {
+                    None => true,
+                    Some((w, k, _, _)) => (weight, atoms[*u].key.as_str()) > (*w, k),
+                };
+                if better {
+                    best = Some(candidate);
+                }
+            }
+        }
+        let (_, _, u, v) = best.expect("a component is connected");
+        children.entry(v).or_default().push(u);
+        visited.insert(u);
+    }
+    for kids in children.values_mut() {
+        kids.sort_by_key(|k| atoms[*k].key.clone());
+    }
+    children
+}
+
+/// Post-order over the rooted tree, placing dependents as soon as their inputs
+/// are in one stream.
+#[allow(clippy::too_many_arguments)]
+fn walk(
+    atoms: &[Atom],
+    tree: &BTreeMap<usize, Vec<usize>>,
+    node: usize,
+    deps: &[Dependent],
+    own: &[usize],
+    placed: &mut [bool],
+    avail: &mut BTreeSet<String>,
+    trace: &mut Vec<Item>,
+) {
+    trace.push(Item::Enter(node));
+    avail.extend(atoms[node].vars.iter().cloned());
+    place_ready(avail, deps, own, placed, trace);
+    for child in tree.get(&node).into_iter().flatten() {
+        walk(atoms, tree, *child, deps, own, placed, avail, trace);
+        trace.push(Item::Join);
+        place_ready(avail, deps, own, placed, trace);
+    }
+}
+
+/// Every dependent whose inputs are now bound, until none is.
+///
+/// "Each is placed at the earliest point where all its inputs are bound. Early
+/// is always right: a filter that runs sooner shrinks everything downstream."
+/// When several become ready together they go by kind, then by structural key.
+fn place_ready(
+    avail: &mut BTreeSet<String>,
+    deps: &[Dependent],
+    pool: &[usize],
+    placed: &mut [bool],
+    trace: &mut Vec<Item>,
+) {
+    loop {
+        let mut ready: Vec<usize> = pool
+            .iter()
+            .copied()
+            .filter(|d| !placed[*d] && deps[*d].consumes.is_subset(avail))
+            .collect();
+        if ready.is_empty() {
+            return;
+        }
+        ready.sort_by(|a, b| (&deps[*a].kind, &deps[*a].key).cmp(&(&deps[*b].kind, &deps[*b].key)));
+        let chosen = ready[0];
+        placed[chosen] = true;
+        if let Some(v) = &deps[chosen].binds {
+            avail.insert(v.clone());
+        }
+        trace.push(Item::Dep(chosen));
+    }
+}
+
+/// "The maximum number of distinct variables in scope at any step."
+///
+/// A variable is born when the atom or match producing it is visited, stays
+/// alive while any unvisited node or the head still needs it, and is projected
+/// away once nothing does. Structural: no cardinality estimates, no statistics
+/// — what it knows is which plans blow up regardless of the data.
+fn cost(
+    trace: &[Item],
+    atoms: &[Atom],
+    deps: &[Dependent],
+    needed_after: &BTreeSet<String>,
+) -> usize {
+    let mut later: Vec<BTreeSet<String>> = vec![BTreeSet::new(); trace.len() + 1];
+    later[trace.len()] = needed_after.clone();
+    for i in (0..trace.len()).rev() {
+        let mut want = later[i + 1].clone();
+        match trace[i] {
+            Item::Dep(d) => {
+                if let Some(v) = &deps[d].binds {
+                    want.remove(v);
+                }
+                want.extend(deps[d].consumes.iter().cloned());
+            }
+            // Not a kill, for the reason the same step in `lower` gives.
+            Item::Enter(_) | Item::Ground | Item::Join | Item::Cross => {}
+        }
+        later[i] = want;
+    }
+    let mut born: BTreeSet<String> = BTreeSet::new();
+    let mut peak = 0;
+    for (i, item) in trace.iter().enumerate() {
+        match item {
+            Item::Enter(a) => born.extend(atoms[*a].vars.iter().cloned()),
+            Item::Dep(d) => {
+                if let Some(v) = &deps[*d].binds {
+                    born.insert(v.clone());
+                }
+            }
+            Item::Ground | Item::Join | Item::Cross => {}
+        }
+        peak = peak.max(born.intersection(&later[i + 1]).count());
+    }
+    peak
+}
+
+/// A candidate order's key: the sequence of its nodes' keys.
+fn trace_key(trace: &[Item], atoms: &[Atom], deps: &[Dependent]) -> String {
+    trace
+        .iter()
+        .map(|item| match item {
+            Item::Enter(a) => atoms[*a].key.clone(),
+            Item::Dep(d) => deps[*d].key.clone(),
+            Item::Ground => "()".to_string(),
+            Item::Join => "><".to_string(),
+            Item::Cross => "**".to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn equals(name: &str, e: &core::Expr, span: Span) -> core::Expr {
@@ -655,56 +978,75 @@ impl Fresh {
     }
 }
 
-/// A step in the flat sequence a rule becomes, before liveness decides schemas.
+/// A step in the flat sequence a rule becomes, after partiality is lifted out.
 enum Step {
+    Enter(usize),
+    Ground,
+    Join,
+    Cross,
     Filter(core::Expr),
     /// Bind one name, keeping everything else that is still live.
     Bind(String, core::Expr),
-    /// Replace the row wholesale — the entry rename, and the head.
-    Row(Vec<(String, core::Expr, Option<Type>)>),
     /// See [`Op::Narrow`].
     Narrow(String, core::Expr),
+    /// The head: replace the row wholesale.
+    Row(Vec<(String, core::Expr, Option<Type>)>),
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lower(
     rule: &core::Rule,
-    atoms: &[&core::Stmt],
-    entry: Vec<(String, String)>,
-    order: Vec<Dependent>,
+    atoms: &[Atom],
+    deps: &mut [Dependent],
+    trace: Vec<Item>,
     fresh: &mut Fresh,
     typed: &infer::TypedRule,
     columns: &[(String, Type)],
 ) -> Rule {
-    let mut steps: Vec<Step> = Vec::new();
-
-    // The rename: out of the relation's column names and into the rule's
-    // variables. Every rule has one, because every later node speaks variables.
-    steps.push(Step::Row(
-        entry
-            .iter()
-            .map(|(column, name)| {
-                (
-                    name.clone(),
-                    core::Expr::Var {
-                        name: column.clone(),
-                        span: rule.span,
-                    },
-                    None,
-                )
-            })
-            .collect(),
-    ));
-
-    for node in order {
-        match node.body {
-            Body::Filter(e) => push_total(&mut steps, fresh, Step::Filter, e),
-            Body::Bind(name, e) => {
-                push_total(&mut steps, fresh, move |e| Step::Bind(name.clone(), e), e)
-            }
+    // "The primary producer is whichever comes first in the post-order. Every
+    // other producer becomes an equality filter." Writing `x` twice says both
+    // computations agree; one supplies the value and the rest check it.
+    let mut produced: BTreeSet<String> = BTreeSet::new();
+    for item in &trace {
+        let Item::Dep(d) = item else { continue };
+        let Some(name) = deps[*d].binds.clone() else {
+            continue;
+        };
+        if produced.insert(name.clone()) {
+            continue;
         }
+        let Body::Bind(_, e) = &deps[*d].body else {
+            continue;
+        };
+        let eq = equals(&name, e, e.span());
+        deps[*d].kind = Kind::Filter;
+        deps[*d].binds = None;
+        deps[*d].consumes = free(&eq);
+        deps[*d].key = key::expr(&eq);
+        deps[*d].body = Body::Filter(eq);
     }
 
-    // The head is the sink, and its schema is exactly the relation's columns.
+    let mut steps: Vec<Step> = Vec::new();
+    for item in &trace {
+        match item {
+            Item::Enter(a) => steps.push(Step::Enter(*a)),
+            Item::Ground => steps.push(Step::Ground),
+            Item::Join => steps.push(Step::Join),
+            Item::Cross => steps.push(Step::Cross),
+            Item::Dep(d) => match &deps[*d].body {
+                Body::Filter(e) => push_total(&mut steps, fresh, Step::Filter, e.clone()),
+                Body::Bind(name, e) => {
+                    let name = name.clone();
+                    push_total(
+                        &mut steps,
+                        fresh,
+                        move |e| Step::Bind(name.clone(), e),
+                        e.clone(),
+                    )
+                }
+            },
+        }
+    }
     let (pre, head) = total_row(fresh, rule.head.args.clone());
     steps.extend(pre);
     steps.push(Step::Row(
@@ -719,17 +1061,64 @@ fn lower(
             .collect(),
     ));
 
-    // Liveness, backwards: a node's schema is what everything after it needs.
-    // This is projection — a variable absent from the set is gone — and it is
-    // the same analysis the cost model will read.
+    // A pre-pass over the stack, ignoring projection, to learn what each join
+    // joins *on*. Its key is what the two streams share — every shared variable,
+    // not only the tree edge that put them together, which is what enforces the
+    // equalities a spanning tree had to cut.
+    let mut shapes: Vec<BTreeSet<String>> = Vec::new();
+    let mut keys: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    for (i, step) in steps.iter().enumerate() {
+        match step {
+            Step::Enter(a) => shapes.push(atoms[*a].vars.clone()),
+            Step::Ground => shapes.push(BTreeSet::new()),
+            Step::Join | Step::Cross => {
+                let right = shapes.pop().expect("a stream to join");
+                let left = shapes.pop().expect("a stream to join");
+                let key: Vec<String> = left.intersection(&right).cloned().collect();
+                debug_assert!(
+                    !matches!(step, Step::Cross) || key.is_empty(),
+                    "components share no variable, so a cross has no key"
+                );
+                keys.insert(i, key);
+                shapes.push(left.union(&right).cloned().collect());
+            }
+            Step::Filter(_) => {}
+            Step::Bind(name, _) | Step::Narrow(name, _) => {
+                shapes.last_mut().expect("a stream").insert(name.clone());
+            }
+            Step::Row(fields) => {
+                *shapes.last_mut().expect("a stream") =
+                    fields.iter().map(|(n, _, _)| n.clone()).collect();
+            }
+        }
+    }
+
+    // Liveness, backwards: what every step still needs. This is projection — a
+    // variable absent from the set is gone — and it is the same analysis the
+    // cost model reads. A join's key counts as consumed, or a variable shared
+    // by two atoms and used nowhere else would be dropped before they met.
     let mut needed: Vec<BTreeSet<String>> = vec![BTreeSet::new(); steps.len() + 1];
     for i in (0..steps.len()).rev() {
         let mut want = needed[i + 1].clone();
         match &steps[i] {
+            // An atom does *not* kill the variables it binds. A join key is
+            // bound on both sides — that is what makes it a key — so the atom
+            // reached first is not its only producer, and killing there would
+            // project the key away before the two streams ever met. What
+            // bounds the entry projection is the atom's own variables, which
+            // it is intersected with.
+            Step::Enter(_) | Step::Ground => {}
+            Step::Join | Step::Cross => {
+                want.extend(keys[&i].iter().cloned());
+            }
             Step::Filter(e) => want.extend(free(e)),
             Step::Bind(name, e) => {
                 want.remove(name);
                 want.extend(free(e));
+            }
+            Step::Narrow(name, fallback) => {
+                want.insert(name.clone());
+                want.extend(free(fallback));
             }
             Step::Row(fields) => {
                 want.clear();
@@ -737,34 +1126,116 @@ fn lower(
                     want.extend(free(e));
                 }
             }
-            Step::Narrow(name, fallback) => {
-                want.insert(name.clone());
-                want.extend(free(fallback));
-            }
         }
         needed[i] = want;
     }
 
-    let source = match atoms.first().copied() {
-        Some(core::Stmt::Atom { relation, .. }) => Op::Scan {
-            relation: relation.clone(),
-        },
-        // "A rule with no positive atom is grounded on the unit relation."
-        _ => Op::Ground,
+    let mut nodes: Vec<Node> = Vec::new();
+    let mut stack: Vec<usize> = Vec::new();
+    let push = |nodes: &mut Vec<Node>, op: Op, schema: BTreeSet<String>| {
+        nodes.push(Node { op, schema });
+        nodes.len() - 1
     };
-    let mut nodes = vec![Node {
-        op: source,
-        schema: needed[0].clone(),
-    }];
 
     for (i, step) in steps.into_iter().enumerate() {
         let carry = &needed[i + 1];
-        let op = match step {
-            Step::Filter(expr) => Op::Filter { expr },
-            Step::Bind(name, e) => {
-                let mut fields: Vec<Field> = carry
+        match step {
+            Step::Enter(a) => {
+                let atom = &atoms[a];
+                let scan = push(
+                    &mut nodes,
+                    Op::Scan {
+                        relation: atom.relation.clone(),
+                    },
+                    atom.entry.iter().map(|(c, _)| c.clone()).collect(),
+                );
+                // Out of the relation's column names and into the rule's
+                // variables, keeping only what something still wants.
+                let fields: Vec<Field> = atom
+                    .entry
                     .iter()
-                    .filter(|v| **v != name)
+                    .filter(|(_, v)| carry.contains(v))
+                    .map(|(column, v)| Field {
+                        name: v.clone(),
+                        value: core::Expr::Var {
+                            name: column.clone(),
+                            span: rule.span,
+                        },
+                        ty: None,
+                    })
+                    .collect();
+                let schema = fields.iter().map(|f| f.name.clone()).collect();
+                let renamed = push(
+                    &mut nodes,
+                    Op::Map {
+                        input: scan,
+                        fields,
+                    },
+                    schema,
+                );
+                stack.push(renamed);
+            }
+            Step::Ground => {
+                let g = push(&mut nodes, Op::Ground, BTreeSet::new());
+                stack.push(g);
+            }
+            Step::Join | Step::Cross => {
+                let right = stack.pop().expect("a stream to join");
+                let left = stack.pop().expect("a stream to join");
+                let key = keys[&i].clone();
+                let side = |nodes: &mut Vec<Node>, input: usize| {
+                    let val: Vec<String> = nodes[input]
+                        .schema
+                        .iter()
+                        .filter(|v| carry.contains(*v) && !key.contains(*v))
+                        .cloned()
+                        .collect();
+                    let schema: BTreeSet<String> = key.iter().chain(val.iter()).cloned().collect();
+                    let op = Op::MapIndex {
+                        input,
+                        key: key.clone(),
+                        val,
+                    };
+                    nodes.push(Node { op, schema });
+                    nodes.len() - 1
+                };
+                let l = side(&mut nodes, left);
+                let r = side(&mut nodes, right);
+                let schema: BTreeSet<String> = nodes[l]
+                    .schema
+                    .union(&nodes[r].schema)
+                    .filter(|v| carry.contains(*v))
+                    .cloned()
+                    .collect();
+                let j = push(&mut nodes, Op::Join { left: l, right: r }, schema);
+                stack.push(j);
+            }
+            Step::Filter(expr) => {
+                let input = *stack.last().expect("a stream to filter");
+                let schema = nodes[input].schema.clone();
+                let n = push(&mut nodes, Op::Filter { input, expr }, schema);
+                *stack.last_mut().expect("a stream") = n;
+            }
+            Step::Narrow(name, fallback) => {
+                let input = *stack.last().expect("a stream to narrow");
+                let schema = nodes[input].schema.clone();
+                let n = push(
+                    &mut nodes,
+                    Op::Narrow {
+                        input,
+                        name,
+                        fallback,
+                    },
+                    schema,
+                );
+                *stack.last_mut().expect("a stream") = n;
+            }
+            Step::Bind(name, e) => {
+                let input = *stack.last().expect("a stream to map");
+                let mut fields: Vec<Field> = nodes[input]
+                    .schema
+                    .iter()
+                    .filter(|v| **v != name && carry.contains(*v))
                     .map(|v| Field {
                         name: v.clone(),
                         value: core::Expr::Var {
@@ -775,38 +1246,39 @@ fn lower(
                     })
                     .collect();
                 if carry.contains(&name) {
-                    let ty = typed.vars.get(&name).cloned();
                     fields.push(Field {
                         name: name.clone(),
                         value: e,
-                        ty,
+                        ty: typed.vars.get(&name).cloned(),
                     });
                 }
                 fields.sort_by(|a, b| a.name.cmp(&b.name));
-                Op::Map { fields }
+                let schema = fields.iter().map(|f| f.name.clone()).collect();
+                let n = push(&mut nodes, Op::Map { input, fields }, schema);
+                *stack.last_mut().expect("a stream") = n;
             }
             Step::Row(fields) => {
+                let input = *stack.last().expect("a stream to project");
                 let mut fields: Vec<Field> = fields
                     .into_iter()
                     .map(|(name, value, ty)| Field { name, value, ty })
                     .collect();
                 fields.sort_by(|a, b| a.name.cmp(&b.name));
-                Op::Map { fields }
+                let schema = fields.iter().map(|f| f.name.clone()).collect();
+                let n = push(&mut nodes, Op::Map { input, fields }, schema);
+                *stack.last_mut().expect("a stream") = n;
             }
-            Step::Narrow(name, fallback) => Op::Narrow { name, fallback },
-        };
-        // A filter hands on exactly what it was given; everything else states
-        // its own row.
-        let schema = match &op {
-            // Neither changes the row's shape; the next `Map` is what projects.
-            Op::Filter { .. } | Op::Narrow { .. } => {
-                nodes.last().expect("a source node").schema.clone()
-            }
-            Op::Map { fields } => fields.iter().map(|f| f.name.clone()).collect(),
-            Op::Scan { .. } | Op::Ground => unreachable!("only the source is a source"),
-        };
-        nodes.push(Node { op, schema });
+        }
     }
+
+    debug_assert_eq!(stack.len(), 1, "a computation DAG is single-sink");
+    debug_assert!(
+        nodes
+            .iter()
+            .enumerate()
+            .all(|(i, n)| n.op.inputs().iter().all(|input| *input < i)),
+        "inputs precede use"
+    );
 
     Rule {
         nodes,
