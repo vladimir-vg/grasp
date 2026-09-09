@@ -211,6 +211,16 @@ an absent value comes through absent and only a *present* one that fails is
 dropped. It is the check you want where absence is a legitimate answer and a
 malformed value is not.
 
+The last three rows all check **under** something, and each admits only a
+whole-value check beneath it. `array(json) :: array(i64)` works and
+`array(array(json)) :: array(array(i64))` does not, because the second is two of
+these composed and the compiler writes one level. It says so rather than
+rejecting the program.
+
+A container check counts the parts that would survive against the parts there
+are, so an **empty** array or dict passes: there is no element to fail. And the
+row is dropped whole — a narrowing is not a filter over the elements.
+
 ```grasp
 named(name: n) <-
     person(name: n)      # n : optional(string)

@@ -28,7 +28,7 @@
 use crate::ast::{Aggregator, BinOp, Lit, Type, UnOp};
 use crate::core;
 use crate::key;
-use crate::plan::{Agg, Definite, Field, Group, Node, Op, Plan, Relation, Rule, Source};
+use crate::plan::{Agg, Definite, Field, Group, Narrowed, Node, Op, Plan, Relation, Rule, Source};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
@@ -370,17 +370,8 @@ fn emit_rule(out: &mut String, relation: &Relation, rule: &Rule, names: &mut Nam
                 input,
                 name: v,
                 cast,
-                definite,
-            } => emit_narrow(
-                out,
-                &base,
-                names,
-                node,
-                v,
-                cast.as_ref(),
-                definite.as_ref(),
-                &at[*input],
-            ),
+                into,
+            } => emit_narrow(out, &base, names, node, v, cast.as_ref(), into, &at[*input]),
         };
         at.push(name);
     }
@@ -720,7 +711,7 @@ fn emit_narrow(
     node: &Node,
     v: &str,
     cast: Option<&Type>,
-    definite: Option<&Definite>,
+    into: &Narrowed,
     previous: &str,
 ) -> String {
     // A field of the row, rebuilt with `v` replaced by `value`.
@@ -751,7 +742,52 @@ fn emit_narrow(
     // conversion is written twice rather than bound to a field this would have
     // to invent a name for. Every expression here is total, so the second
     // evaluation is a cost and never a difference.
-    let Some(definite) = definite else {
+    // A container narrowing tests every part and converts every part, so both
+    // operators walk the value: `filter_array` counts the parts that would
+    // survive against the parts there are, and `map_array` rebuilds it. Neither
+    // touches the value as a whole, which is why `cast` is `None` here.
+    if let Narrowed::Elements(el) | Narrowed::Values(el) = into {
+        let dict = matches!(into, Narrowed::Values(_));
+        let parts = if dict {
+            format!("entries({ROW}.{v})")
+        } else {
+            format!("{ROW}.{v}")
+        };
+        let part = if dict {
+            format!("{ELEMENT}.value")
+        } else {
+            ELEMENT.to_string()
+        };
+        let converted = format!("cast({part}, optional({}))", ty_text(el));
+        let kept = names.intermediate(base);
+        let _ = writeln!(
+            out,
+            "{kept} := filter({previous}, function(({ROW}) -> \
+             (length(filter_array({parts}, function(({ELEMENT}) -> ({converted} != NONE)))) \
+             == length({ROW}.{v}))))"
+        );
+        // The `coalesce` default is unreachable for the same reason it is in
+        // the whole-value shape: the filter above has dropped every row with a
+        // part that would take it.
+        let definite = format!("coalesce({converted}, {})", definite_value(el));
+        let rebuilt = if dict {
+            format!(
+                "dict(map_array({parts}, function(({ELEMENT}) -> \
+                 record(key: {ELEMENT}.key, value: {definite}))))"
+            )
+        } else {
+            format!("map_array({parts}, function(({ELEMENT}) -> {definite}))")
+        };
+        let name = names.intermediate(base);
+        let _ = writeln!(
+            out,
+            "{name} := map({kept}, function(({ROW}) -> {}))",
+            row_with(&rebuilt)
+        );
+        return name;
+    }
+
+    if let Narrowed::Wrapper = into {
         let ty = cast.expect("a wrapper-keeping narrowing converts");
         let converted = format!("cast({ROW}.{v}, {})", ty_text(ty));
         let kept = names.intermediate(base);
@@ -767,6 +803,10 @@ fn emit_narrow(
             row_with(&converted)
         );
         return name;
+    }
+
+    let Narrowed::Definite(definite) = into else {
+        unreachable!("the container and wrapper shapes returned above")
     };
 
     // The first of `mapping.md`'s three operators, where one is needed: bind

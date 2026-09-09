@@ -318,20 +318,37 @@ pub fn impose(ty: &mut Ty, expected: &Ty) -> Result<(), Conflict> {
 pub enum Narrowing {
     /// The value is already a `T`. A compile-time check: nothing is emitted.
     Already,
-    /// A check could settle it, so a filter drops the rows that do not match
-    /// and `v` is a definite `T` afterwards. `cast` says whether the value has
-    /// to be converted before it can be tested.
-    Filter { cast: bool },
+    /// A check could settle it, so a filter drops the rows that do not match.
+    /// `cast` says whether the whole value has to be converted before it can be
+    /// tested, and `shape` says what the check is *over*.
+    Filter { cast: bool, shape: Shape },
     /// A check could settle it, but this compiler cannot emit one.
     ///
-    /// The three rows that keep their wrapper — `optional(A) :: optional(B)`,
-    /// `array(A) :: array(B)`, `dict(K,A) :: dict(K,B)` — need either an
-    /// absence-preserving test or a per-element one. grasp-dbsp has neither:
-    /// "records and arrays have no conversions", and a dict has none at all.
+    /// One thing is: a check under *two* wrappers, as
+    /// `optional(array(A)) :: optional(array(B))` is. Each layer alone is a
+    /// shape emission writes; the two composed are a fifth, and nothing has
+    /// wanted one. Reported as unsupported rather than as `Never`, which would
+    /// call the program wrong for asking.
     Unsupported,
     /// No value of the source could ever be a `T`. An error, because a filter
     /// that can never pass is a silently empty relation.
     Never,
+}
+
+/// What a runtime filter tests, which the target type alone does not say:
+/// `json :: array(i64)` and `array(json) :: array(i64)` want the same type and
+/// check different things.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Shape {
+    /// The value itself, which is definite afterwards.
+    Value,
+    /// The value under its `optional`, which survives: absence is kept and only
+    /// a present value that fails is dropped.
+    Wrapper,
+    /// Every element of an array.
+    Elements,
+    /// Every value of a dict.
+    Values,
 }
 
 /// Which of the four `v :: T` is.
@@ -343,14 +360,23 @@ pub fn narrows(from: &Ty, to: &Ty) -> Narrowing {
         // "`optional(T)` :: `T` — drops the row when the value is absent." The
         // common one, and the way to drop absent rows before a join.
         (Ty::Optional(a), t) if !matches!(t, Ty::Optional(_)) => match narrows(a, t) {
-            Narrowing::Already => Narrowing::Filter { cast: false },
-            Narrowing::Filter { .. } => Narrowing::Filter { cast: true },
+            Narrowing::Already => Narrowing::Filter {
+                cast: false,
+                shape: Shape::Value,
+            },
+            Narrowing::Filter { .. } => Narrowing::Filter {
+                cast: true,
+                shape: Shape::Value,
+            },
             other => other,
         },
         // "`json` :: `T` — drops the row when the document does not hold a
         // `T`." A document is converted by what is wanted, and every such
         // conversion is fallible, which is exactly the test.
-        (Ty::Json, t) if holdable(t) => Narrowing::Filter { cast: true },
+        (Ty::Json, t) if holdable(t) => Narrowing::Filter {
+            cast: true,
+            shape: Shape::Value,
+        },
         // "`optional(A)` :: `optional(B)` — drops the row when present and not
         // a `B`." The wrapper survives, so this is the inner check performed
         // under it, and absence is one of the answers rather than one of the
@@ -361,15 +387,39 @@ pub fn narrows(from: &Ty, to: &Ty) -> Narrowing {
         // other answer is the inner one — an inner `Unsupported` must stay
         // unsupported, or `optional(array(A)) :: optional(array(B))` would
         // become a filter over a check that does not exist.
-        (Ty::Optional(a), Ty::Optional(b)) => match narrows(a, b) {
-            Narrowing::Filter { .. } => Narrowing::Filter { cast: true },
-            other => other,
-        },
-        (Ty::Array(a), Ty::Array(b)) if narrows(a, b) != Narrowing::Never => Narrowing::Unsupported,
-        (Ty::Dict(ka, a), Ty::Dict(kb, b)) if ka == kb && narrows(a, b) != Narrowing::Never => {
-            Narrowing::Unsupported
+        // The three rows that check *under* something. Each is the inner check
+        // performed once per part, and each admits only a whole-value inner
+        // one — `optional(array(A)) :: optional(array(B))` and
+        // `array(array(A)) :: array(array(B))` are two of these composed, and
+        // the composition is a shape emission does not write. Reported as
+        // unsupported rather than as a mistake, because the program is not one.
+        (Ty::Optional(a), Ty::Optional(b)) => under(narrows(a, b), true, Shape::Wrapper),
+        // "`array(A)` :: `array(B)` — drops the row when any element is not a
+        // `B`", and the dict row over its values. The check is per part and so
+        // is the conversion; the whole value is converted nowhere, which is
+        // what `cast: false` says.
+        (Ty::Array(a), Ty::Array(b)) => under(narrows(a, b), false, Shape::Elements),
+        (Ty::Dict(ka, a), Ty::Dict(kb, b)) if ka == kb => {
+            under(narrows(a, b), false, Shape::Values)
         }
         _ => Narrowing::Never,
+    }
+}
+
+/// One of the three checks performed under a wrapper, given what the inner
+/// check turned out to be.
+fn under(inner: Narrowing, cast: bool, shape: Shape) -> Narrowing {
+    match inner {
+        Narrowing::Filter {
+            shape: Shape::Value,
+            ..
+        } => Narrowing::Filter { cast, shape },
+        // An inner check that is itself under something. Two levels is a fifth
+        // emission shape and nothing has wanted one.
+        Narrowing::Filter { .. } => Narrowing::Unsupported,
+        // `Already` cannot reach here: it means the inner is assignable, and
+        // then so is the pair, which `assignable` matched at the top.
+        other => other,
     }
 }
 

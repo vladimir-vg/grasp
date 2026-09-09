@@ -35,7 +35,7 @@ use crate::ast::{Aggregator, BinOp, Lit, Type, UnOp};
 use crate::core;
 use crate::diag::{Diagnostic, Pass, Span};
 use crate::key;
-use crate::ty::{Narrowing, Open, Ty, assignable, compose, impose, narrows, settle};
+use crate::ty::{Narrowing, Open, Shape, Ty, assignable, compose, impose, narrows, settle};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The typed core.
@@ -85,6 +85,10 @@ pub struct Assert {
     /// `json` source, and not an `optional(T)` one, which is already the shape
     /// the check produces.
     pub cast: bool,
+    /// What the check is over. Decided here because the target type does not
+    /// say: `json :: array(i64)` and `array(json) :: array(i64)` ask for the
+    /// same type and test different things.
+    pub shape: Shape,
     pub span: Span,
 }
 
@@ -726,17 +730,18 @@ impl Cx {
             };
             match narrows(have, &want) {
                 Narrowing::Already => *have = want,
-                Narrowing::Filter { cast } => {
+                Narrowing::Filter { cast, shape } => {
                     filters.push(Assert {
                         variable: variable.clone(),
                         ty: ty.clone(),
                         cast,
+                        shape,
                         span,
                     });
                     *have = want;
                 }
                 Narrowing::Unsupported => note(
-                    Diagnostic::unimplemented(Pass::Infer, span, "narrowing inside a container"),
+                    Diagnostic::unimplemented(Pass::Infer, span, "narrowing under two wrappers"),
                     &mut fault,
                 ),
                 Narrowing::Never => note(

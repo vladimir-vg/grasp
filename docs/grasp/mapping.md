@@ -371,16 +371,24 @@ needs the value before it as well as after, and a bound field would need a name
 invented against the row's schema. Every expression in grasp-dbsp is total, so
 the second evaluation is a cost and never a difference.
 
-**Two rows of that table still cannot be emitted**, and it is grasp-dbsp that is
-short rather than the rule. `array(A) :: array(B)` and `dict(K,A) :: dict(K,B)`
-have to test every element, and testing per element needs an array `filter` or a
-reduction, which [`map_array`](../grasp-dbsp/language.md#map_array-and-filter_array)
-deliberately is
-not. Absence is *not* what stands in the way — a `cast` preserves it, which is
-what makes the row above expressible. The compiler says
-`not implemented: narrowing inside a container` rather than guessing, and
-`programs/assertions.yaml` carries what the array row should compute so that
-whatever closes the gap has to satisfy it.
+**A narrowing over a container tests every part, and rebuilds it.**
+`array(A) :: array(B)` and `dict(K,A) :: dict(K,B)` are two operators again, and
+neither touches the value as a whole:
+
+1. `filter(s, function((r) -> length(filter_array(r.v, function((e) -> cast(e, optional(B)) != NONE))) == length(r.v)))`;
+2. a `map` rebinding the column as `map_array(r.v, function((e) -> coalesce(cast(e, optional(B)), d)))`.
+
+Counting the survivors against the elements is what "any element is not a `B`"
+means, and it is why an empty array passes rather than failing for having
+nothing. A dict goes through `entries` and back through `dict`, its keys
+untouched; that is the only difference between the two rows.
+
+**What is still missing is the two composed.**
+`optional(array(A)) :: optional(array(B))` is a check under a wrapper under a
+wrapper, and each of the three "under" rows admits only a whole-value check
+beneath it. The compiler says `not implemented: narrowing under two wrappers`
+rather than emitting the one-level form, which would try to convert a whole
+`array(json)` and be refused by grasp-dbsp.
 
 **Division needs no rule of its own.** `/` and `%` are `optional(T)` in
 grasp-dbsp and `T` in grasp, so every `q := a / b` carries an implicit `q :: T`

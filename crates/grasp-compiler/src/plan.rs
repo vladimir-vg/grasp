@@ -32,6 +32,7 @@ use crate::core;
 use crate::diag::{Diagnostic, Pass, Span};
 use crate::infer;
 use crate::key;
+use crate::ty::Shape;
 use std::collections::{BTreeMap, BTreeSet};
 
 // ---------------------------------------------------------------------------
@@ -127,6 +128,21 @@ pub struct Node {
 pub enum Definite {
     Like(core::Expr),
     Of(Type),
+}
+
+/// What a narrowing leaves behind — `types.md`'s runtime-filter rows, as the
+/// four things emission has to write.
+#[derive(Debug)]
+pub enum Narrowed {
+    /// A definite value, rebound by coalescing to this.
+    Definite(Definite),
+    /// An `optional(B)`: absence survives and only a present value that fails
+    /// is dropped.
+    Wrapper,
+    /// An `array(B)`, holding the element target `B`.
+    Elements(Type),
+    /// A `dict(K,B)`, holding the value target `B`.
+    Values(Type),
 }
 
 /// One aggregate: a variable, the aggregator that fills it, and what it folds.
@@ -269,14 +285,9 @@ pub enum Op {
         /// operator, needed for a `json` source and not for one that is already
         /// the `optional(T)` the check produces.
         cast: Option<Type>,
-        /// What to rebind the variable as, once the rows with no value are gone.
-        ///
-        /// `None` where the assertion **keeps its wrapper**: `optional(A) ::
-        /// optional(B)` leaves an `optional(B)`, so there is nothing to
-        /// coalesce to and absence is one of the answers rather than one of the
-        /// rows to drop. That case is emitted differently throughout — see
-        /// [`crate::emit`].
-        definite: Option<Definite>,
+        /// What the variable is once the rows that failed are gone. Each of the
+        /// four is emitted differently — see [`crate::emit`].
+        into: Narrowed,
     },
 }
 
@@ -1366,6 +1377,7 @@ fn destructure(
                     variable: var.clone(),
                     ty,
                     cast: false,
+                    shape: Shape::Value,
                     span,
                 }),
             });
@@ -1517,6 +1529,7 @@ fn destructure_array(
                 variable: var.clone(),
                 ty,
                 cast: false,
+                shape: Shape::Value,
                 span,
             }),
         });
@@ -1634,7 +1647,7 @@ enum Step {
     Narrow {
         name: String,
         cast: Option<Type>,
-        definite: Option<Definite>,
+        into: Narrowed,
     },
     /// The head: replace the row wholesale.
     Row(Vec<(String, core::Expr, Option<Type>)>),
@@ -1732,15 +1745,24 @@ fn lower(
                         e.clone(),
                     )
                 }
-                // An `optional` target is exactly the assertion that keeps its
-                // wrapper, and nothing else: `optional(T) :: T` asserts `T`,
-                // and `json :: T` is gated on `holdable`, which excludes
-                // `optional`. So the type says which shape this is.
+                // `infer` decided which row of the table this is, the target
+                // type not being enough to tell: `json :: array(i64)` and
+                // `array(json) :: array(i64)` ask for the same type.
                 Body::Assert(a) => steps.push(Step::Narrow {
                     name: a.variable.clone(),
                     cast: a.cast.then(|| a.ty.clone()),
-                    definite: (!matches!(a.ty, Type::Optional(_)))
-                        .then(|| Definite::Of(a.ty.clone())),
+                    into: match (a.shape, &a.ty) {
+                        (Shape::Wrapper, _) => Narrowed::Wrapper,
+                        (Shape::Elements, Type::Array(e)) => Narrowed::Elements((**e).clone()),
+                        (Shape::Values, Type::Dict(_, v)) => Narrowed::Values((**v).clone()),
+                        // The shape and the type are decided together in
+                        // `narrows`, so a mismatch is this compiler
+                        // disagreeing with itself.
+                        (Shape::Elements | Shape::Values, t) => {
+                            unreachable!("a container narrowing asserts a container, not `{t}`")
+                        }
+                        (Shape::Value, _) => Narrowed::Definite(Definite::Of(a.ty.clone())),
+                    },
                 }),
                 Body::Unnest { over, vars, kind } => {
                     let (vars, kind) = (vars.clone(), *kind);
@@ -1905,9 +1927,9 @@ fn lower(
                 want.remove(name);
                 want.extend(free(e));
             }
-            Step::Narrow { name, definite, .. } => {
+            Step::Narrow { name, into, .. } => {
                 want.insert(name.clone());
-                if let Some(Definite::Like(e)) = definite {
+                if let Narrowed::Definite(Definite::Like(e)) = into {
                     want.extend(free(e));
                 }
             }
@@ -2159,11 +2181,7 @@ fn lower(
                 let n = push(&mut nodes, Op::Filter { input, expr }, schema);
                 *stack.last_mut().expect("a stream") = n;
             }
-            Step::Narrow {
-                name,
-                cast,
-                definite,
-            } => {
+            Step::Narrow { name, cast, into } => {
                 let input = *stack.last().expect("a stream to narrow");
                 let schema = nodes[input].schema.clone();
                 let n = push(
@@ -2172,7 +2190,7 @@ fn lower(
                         input,
                         name,
                         cast,
-                        definite,
+                        into,
                     },
                     schema,
                 );
@@ -2305,7 +2323,7 @@ fn lift(fresh: &mut Fresh, steps: &mut Vec<Step>, e: core::Expr) -> core::Expr {
             steps.push(Step::Narrow {
                 name: name.clone(),
                 cast: None,
-                definite: Some(Definite::Like(lhs)),
+                into: Narrowed::Definite(Definite::Like(lhs)),
             });
             core::Expr::Var { name, span }
         }

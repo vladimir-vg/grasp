@@ -185,11 +185,12 @@
       pass: infer
       message: "this assertion would discard every row"
 
-# The wrapper case is the *outer* check performed under the wrapper, so it can
-# only be as available as the inner one. Here the inner one is the array
-# narrowing below, which is not — and this must stay pending rather than become
-# a filter over a check that does not exist.
-- name: a wrapper over a narrowing that is not available
+# Each of the three "check under something" rows is written, and each admits
+# only a whole-value check underneath. This is two of them composed — an
+# optional over an array — which is a fifth emission shape nobody has wanted.
+# It must stay pending rather than emit the one-level form, which would try to
+# convert a whole `array(json)` and be rejected by grasp-dbsp.
+- name: a narrowing under two wrappers
   source: |
     r :: relation(a: optional(array(json)))
     r(a:) <- input
@@ -203,12 +204,10 @@
 
 # "`array(A)` :: `array(B)` — drops the row when any element is not a `B`."
 #
-# Pending, and blocked on the target: the per-element test needs an array
-# `filter`, which grasp-dbsp names as missing and does not have. Absence is
-# *not* the obstacle — a `cast` preserves it, which is what makes the
-# `optional` case above expressible — so what stands in the way is only the
-# element-by-element part. What this should compute is here so that whatever
-# closes the gap has to satisfy it.
+# `filter_array` counts the elements that would survive against the elements
+# there are, which is the per-element test; `map_array` rebuilds the array. The
+# row with a bad element is dropped whole — a narrowing is not a filter over the
+# elements.
 - name: narrowing inside an array drops the rows an element fails
   source: |
     r :: relation(k: string, a: array(json))
@@ -227,3 +226,47 @@
   expected_exact_output:
     - s:
         - [1, {k: "ok", v: [1, 2]}]
+
+# "`dict(K,A)` :: `dict(K,B)` — drops the row when any value is not a `B`."
+# The same shape over `entries`, rebuilt with `dict`. The keys are untouched:
+# only the values are converted, which is what the row says.
+- name: narrowing inside a dict drops the rows a value fails
+  source: |
+    r :: relation(k: string, d: dict(string, json))
+    r(k:, d:) <- input
+
+    s :: relation(k: string, v: dict(string, i64))
+    s(k: k, v: x) <-
+        r(k: k, d: x)
+        x :: dict(string, i64)
+
+  input:
+    - r:
+        - [1, {k: "ok", d: {"a": 1, "b": 2}}]
+        - [1, {k: "no", d: {"a": 1, "b": "two"}}]
+        - [1, {k: "empty", d: {}}]
+
+  expected_exact_output:
+    - s:
+        - [1, {k: "ok", v: {a: 1, b: 2}}]
+        - [1, {k: "empty", v: {}}]
+
+# An empty container passes: there is no element to fail, and the check counts
+# survivors against elements rather than asking for at least one.
+- name: an empty array narrows to an empty array
+  source: |
+    r :: relation(k: string, a: array(json))
+    r(k:, a:) <- input
+
+    s :: relation(k: string, v: array(i64))
+    s(k: k, v: x) <-
+        r(k: k, a: x)
+        x :: array(i64)
+
+  input:
+    - r:
+        - [1, {k: "e", a: []}]
+
+  expected_exact_output:
+    - s:
+        - [1, {k: "e", v: []}]

@@ -197,7 +197,7 @@ impl Diagnostic {
     /// The plan and emit stages have no entry here at all: everything the
     /// pipeline reaches, it finishes. What is left is three constructs the
     /// front of the pipeline refuses, and the list goes when they do.
-    pub const UNIMPLEMENTED: &[&str] = &["narrowing inside a container", "keyword arguments"];
+    pub const UNIMPLEMENTED: &[&str] = &["narrowing under two wrappers", "keyword arguments"];
 
     /// A construct this compiler has not implemented yet.
     ///
