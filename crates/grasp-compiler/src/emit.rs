@@ -659,7 +659,10 @@ fn emit_unnest(
             bound.insert(k.clone(), format!("{ELEMENT}.key"));
             bound.insert(v.clone(), format!("{ELEMENT}.value"));
         }
-        _ => unreachable!("an unnest binds one variable, or a key and a value"),
+        // `infer::check_unnest` is what makes this total: an array unnest of two
+        // is legal and reported unimplemented there, and every other arity is
+        // rejected there. Without it a grammatical `(k) := **d` reaches here.
+        _ => unreachable!("`check_unnest` admits one variable, or a key and a value"),
     }
     let scope = Scope {
         row: ROW,

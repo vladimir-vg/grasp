@@ -200,6 +200,7 @@ impl Diagnostic {
     pub const UNIMPLEMENTED: &[&str] = &[
         "narrowing that keeps its wrapper",
         "destructuring patterns",
+        "indexed unnest",
         "keyword arguments",
     ];
 

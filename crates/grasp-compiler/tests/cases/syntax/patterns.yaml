@@ -149,10 +149,51 @@
         {a: x, **e} := d
   expected_ok: true
 
+# The three shapes an unnest has, and no others:
+# `gordeev-automations/docs/design/grasp-core-language.md` — "`value_var` is
+# always set. `key_var` set ⇔ map unnest, and then `index_var` is ABSENT.
+# `index_var` set ⇔ array index+value unnest… never both set."
+#
+# This is the one grasp-dbsp cannot express, so it is pending rather than
+# skipped: `select` maps an array element by element with no index, `get`
+# covers a document and a dict but not an array, and there is no `enumerate`.
 - name: an indexed array unnest
-  skip: "indexed unnest follows array element access — overview.md#future-work"
   source: |
+    s :: relation(arr: array(string))
+    s(arr:) <- input
+
     r(i: i, v: v) <-
         s(arr: arr)
         (i, v) := *arr
   expected_ok: true
+
+# A map unnest always binds both. The wildcard-ish spelling `_v` is how the
+# corpus ignores one, and the message says so rather than leaving the reader to
+# find it.
+- name: a dict unnest binds both a key and a value
+  source: |
+    s :: relation(d: dict(string, i64))
+    s(d:) <- input
+
+    r(k: k) <-
+        s(d: d)
+        (k) := **d
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "a dict unnest binds a key and a value"
+
+# Any other arity at all. Without this check the pattern reaches emission,
+# where the match over the three shapes has no fourth arm.
+- name: an unnest binds no more than two variables
+  source: |
+    s :: relation(arr: array(string))
+    s(arr:) <- input
+
+    r(v: a) <-
+        s(arr: arr)
+        (a, b, c) := *arr
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "an array unnest binds a value, or an index and a value"

@@ -1275,6 +1275,11 @@ impl Cx {
     }
 
     fn check_rule(&self, rule: &core::Rule) -> Option<Diagnostic> {
+        // Shape first: a pattern with no settled meaning makes every check
+        // below it read something that is not there.
+        if let Some(d) = self.check_unnest(rule) {
+            return Some(d);
+        }
         // Safety, before typing: an unbound variable makes everything after it
         // unknowable, and reporting both would be two diagnostics for one
         // mistake.
@@ -1356,6 +1361,59 @@ impl Cx {
                     span,
                     format!("relation `{relation}` has no column `{column}`"),
                 ));
+            }
+        }
+        None
+    }
+
+    /// An unnest binds a value, an index and a value, or a key and a value.
+    ///
+    /// `syntax.md`'s `unnest_pattern` admits any number of variables, and the
+    /// three meanings are the ones the language has: the marker says which
+    /// container is being taken apart and the arity says what is wanted from
+    /// it. Nothing downstream is written for another arity — `emit` matches the
+    /// three shapes and has no fourth — so this is what keeps that match total.
+    ///
+    /// It runs before every other check because a malformed pattern has no
+    /// settled meaning, and the checks after it all read what a statement
+    /// binds.
+    fn check_unnest(&self, rule: &core::Rule) -> Option<Diagnostic> {
+        for stmt in &rule.body {
+            let core::Stmt::Match {
+                lhs: core::Pattern::Unnest { vars, kind, span },
+                ..
+            } = stmt
+            else {
+                continue;
+            };
+            match (kind, vars.len()) {
+                (core::UnnestKind::Array, 1) | (core::UnnestKind::Dict, 2) => {}
+                // Legal, and with nothing to lower it to: grasp-dbsp's `select`
+                // maps an array element by element with no index, its `get`
+                // covers a document and a dict but not an array, and it has no
+                // `enumerate`. Producing the index needs one of those.
+                (core::UnnestKind::Array, 2) => {
+                    return Some(Diagnostic::unimplemented(
+                        Pass::Infer,
+                        *span,
+                        "indexed unnest",
+                    ));
+                }
+                (core::UnnestKind::Array, _) => {
+                    return Some(Diagnostic::error(
+                        Pass::Infer,
+                        *span,
+                        "an array unnest binds a value, or an index and a value",
+                    ));
+                }
+                (core::UnnestKind::Dict, _) => {
+                    return Some(Diagnostic::error(
+                        Pass::Infer,
+                        *span,
+                        "a dict unnest binds a key and a value; write `(k, _v)` to \
+                         ignore the value",
+                    ));
+                }
             }
         }
         None
