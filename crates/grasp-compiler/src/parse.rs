@@ -49,6 +49,20 @@ pub const RESERVED_NAMESPACES: &[&str] = &[
 ];
 
 /// Reserved as a relation, variable or column name.
+/// grasp's identifier shape, `[a-zA-Z_][a-zA-Z0-9_]*`.
+///
+/// A dict key may be quoted, and a quoted one is arbitrary text — so this is
+/// what decides whether `{k:}` names a variable. It is deliberately not
+/// `check_variable_name`, which also rules out reserved and namespaced names:
+/// those are separate objections with their own messages.
+fn is_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 pub fn is_reserved(name: &str) -> bool {
     KEYWORDS.contains(&name) || TYPE_NAMES.contains(&name) || AGGREGATORS.contains(&name)
 }
@@ -751,10 +765,15 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `pat_field ::= dict_key ":" variable`, then an optional `**` rest.
+    /// `pat_field ::= dict_key ":" [variable]`, then an optional `**` rest.
     ///
     /// "its values must be variables, so `{a: f(1)} := d` is rejected there
     /// rather than by the grammar" — which is this function.
+    ///
+    /// The variable may be left out: `{a:}` means `{a: a}`, the same shorthand
+    /// an atom's `r(a:)` already has, performed here so that desugaring does
+    /// not do it again. It needs the key to be a name a variable can have,
+    /// which a quoted key need not be.
     fn pattern_fields(
         &mut self,
         terminator: &Tok,
@@ -792,6 +811,20 @@ impl<'a> Parser<'a> {
                 Some(Tok::Ident(n)) => {
                     let n = n.clone();
                     (n, self.bump().span)
+                }
+                // The shorthand: nothing between the `:` and what ends the
+                // field, so the key names the variable.
+                _ if self.at(&Tok::Comma) || self.at(terminator) => {
+                    if !is_identifier(&key) {
+                        return Err(self.error(
+                            key_span,
+                            format!(
+                                "`{key}` is not a name a variable can have, so `{key}:` \
+                                 names none; write the variable"
+                            ),
+                        ));
+                    }
+                    (key.clone(), key_span)
                 }
                 _ => {
                     return Err(

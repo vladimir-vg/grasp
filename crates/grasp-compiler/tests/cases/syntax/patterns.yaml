@@ -76,6 +76,69 @@
         record(a: x, **) := rec
   expected_ok: true
 
+# `pat_field ::= dict_key ":" [variable]` — the shorthand, which is the way
+# every pattern in the documents is written. `{a:}` is `{a: a}`.
+- name: a dict pattern in the shorthand
+  source: |
+    s :: relation(d: dict(string, i64))
+    s(d:) <- input
+
+    r(v: a) <-
+        s(d: d)
+        {a:} := d
+  expected_ok: true
+
+- name: the shorthand beside a written-out field
+  source: |
+    s :: relation(d: dict(string, i64))
+    s(d:) <- input
+
+    r(v: a, w: y) <-
+        s(d: d)
+        {a:, b: y, **} := d
+  expected_ok: true
+
+- name: a record pattern in the shorthand
+  source: |
+    s :: relation(rec: record(a: i64, b: string))
+    s(rec:) <- input
+
+    r(v: a) <-
+        s(rec: rec)
+        record(a:, **) := rec
+  expected_ok: true
+
+# A quoted key is arbitrary text, and the shorthand needs a name a variable can
+# have. Written out, the same key is fine — `a quoted key in a dict pattern`
+# above.
+- name: a quoted key has no shorthand
+  source: |
+    s :: relation(d: dict(string, i64))
+    s(d:) <- input
+
+    r(v: x) <-
+        s(d: d)
+        {"key with spaces":} := d
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "is not a name a variable can have"
+
+# The shorthand names a variable, so it takes the objections a variable name
+# takes. `sum` is an aggregator, and reserved.
+- name: a reserved key has no shorthand either
+  source: |
+    s :: relation(d: dict(string, i64))
+    s(d:) <- input
+
+    r(v: x) <-
+        s(d: d)
+        {sum:} := d
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "reserved word"
+
 # "`=>` is not allowed in a pattern."
 - name: the arrow form is rejected in a pattern
   source: |

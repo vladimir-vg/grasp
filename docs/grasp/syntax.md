@@ -117,7 +117,7 @@ dict_pattern   ::= "{" [pat_fields] ["," dict_rest] "}"
 record_pattern ::= "record" "(" [pat_fields] ["," dict_rest] ")"
 pat_elems      ::= variable ("," variable)*
 pat_fields     ::= pat_field ("," pat_field)*
-pat_field      ::= dict_key ":" variable
+pat_field      ::= dict_key ":" [variable]   -- omitted: the key names it
 dict_key       ::= name | STRING        -- quoted only when not an identifier
 rest           ::= "*" [variable]       -- ignore, or bind, the remainder
 dict_rest      ::= "**" [variable]
@@ -252,6 +252,15 @@ enforced: its values must be variables, so `{a: f(1)} := d` is rejected there
 rather than by the grammar.
 
 > ``a pattern binds variables; `f(1)` is not one``
+
+The variable may be left out, and then the key names it: `{a:} := d` is
+`{a: a} := d`, and `record(a:, **) := r` is `record(a: a, **) := r`. It is the
+same shorthand an atom's `r(a:)` has, and it reads the same way — the name is
+already written, so writing it twice says nothing. A quoted key need not be a
+name a variable can have, so there it is not available.
+
+> ``` `key with spaces` is not a name a variable can have, so `key with spaces:`
+> names none; write the variable ```
 
 ### Where a call is, and is not, a call
 
