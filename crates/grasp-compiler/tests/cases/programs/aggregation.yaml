@@ -205,3 +205,139 @@
     - reach:
         - [1, {v: 1}]
         - [1, {v: 2}]
+
+# What an aggregator will and will not fold.
+#
+# None of this was checked. `sum<>` quietly folded a literal and gave every
+# group 0; `count<e>` quietly meant grasp-dbsp's count — the values that are
+# present — rather than the assignments in the group; and `sum<name>` over a
+# string reached the target, which rejected it with a diagnostic against
+# generated code. `min` over a record was rejected by neither, and invented
+# exactly the ordering `types.md` says the language refuses to invent.
+
+- name: count takes no argument
+  source: |
+    t :: relation(g: string, x: i64)
+    t(g:, x:) <- input
+
+    q(g: g, n: c) <-
+        t(g: g, x: x)
+        c := count<x>
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "`count` takes no argument"
+
+- name: an aggregator other than count needs one
+  source: |
+    t :: relation(g: string, x: i64)
+    t(g:, x:) <- input
+
+    q(g: g, n: s) <-
+        t(g: g, x: x)
+        s := sum<>
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "`sum` needs an argument"
+
+- name: sum needs a numeric argument
+  source: |
+    t :: relation(g: string, name: string)
+    t(g:, name:) <- input
+
+    q(g: g, s: s) <-
+        t(g: g, name: n)
+        s := sum<n>
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "`sum` needs a numeric argument, found `string`"
+
+- name: avg needs a numeric argument
+  source: |
+    t :: relation(g: string, name: string)
+    t(g:, name:) <- input
+
+    q(g: g, m: m) <-
+        t(g: g, name: n)
+        m := avg<n>
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "`avg` needs a numeric argument"
+
+# The same rule `<` enforces. A document sorts by type tag, and a record has no
+# ordering at all — "any invention would be arbitrary in a way that silently
+# decides `min` and `max`".
+- name: min has no meaning over a document
+  source: |
+    d :: relation(g: string, doc: json)
+    d(g:, doc:) <- input
+
+    q(g: g, m: m) <-
+        d(g: g, doc: doc)
+        m := min<doc>
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "ordering is not defined on `json`, so `min` has no meaning over it"
+
+- name: max has no meaning over a record
+  source: |
+    p :: relation(g: string, r: record(a: i64))
+    p(g:, r:) <- input
+
+    q(g: g, m: m) <-
+        p(g: g, r: r)
+        m := max<r>
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "so `max` has no meaning over it"
+
+# An `optional` is looked through: absence is skipped rather than folded, and
+# the wrapper survives into the result. Both of these must keep working.
+- name: sum folds an optional and keeps the wrapper
+  source: |
+    t :: relation(g: string, x: optional(i64))
+    t(g:, x:) <- input
+
+    q :: relation(g: string, s: optional(i64))
+    q(g: g, s: s) <-
+        t(g: g, x: x)
+        s := sum<x>
+
+  input:
+    - t:
+        - [1, {g: "a", x: 1}]
+        - [1, {g: "a", x: 2}]
+
+  expected_exact_output:
+    - q:
+        - [1, {g: "a", s: 3}]
+
+- name: min folds an optional string
+  source: |
+    t :: relation(g: string, x: optional(string))
+    t(g:, x:) <- input
+
+    q :: relation(g: string, m: optional(string))
+    q(g: g, m: m) <-
+        t(g: g, x: x)
+        m := min<x>
+
+  input:
+    - t:
+        - [1, {g: "a", x: "b"}]
+        - [1, {g: "a", x: "c"}]
+
+  expected_exact_output:
+    - q:
+        - [1, {g: "a", m: "b"}]

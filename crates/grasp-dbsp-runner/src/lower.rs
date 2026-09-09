@@ -515,9 +515,15 @@ macro_rules! operator_arms {
                             DynValue::I64(n) => Acc::value(n),
                             // A `NONE` projection contributes to no sum and to no
                             // count, which is what separates `count` from
-                            // `weighted_count`. The type checker rejects a
-                            // floating-point projection, so nothing else arrives.
-                            _ => Acc::none(),
+                            // `weighted_count`.
+                            DynValue::None => Acc::none(),
+                            // Present, and not a number. `sum` and `avg` cannot
+                            // reach here — the checker requires a numeric
+                            // projection of them — but `count` can, and counts
+                            // it: what it counts is what is there, of whatever
+                            // type. Folding this into the absent case is what
+                            // made `count` over a `string` return zero.
+                            _ => Acc::counted(),
                         },
                         move |acc: Acc| match agg {
                             Agg::Count => DynValue::I64(acc.rows),

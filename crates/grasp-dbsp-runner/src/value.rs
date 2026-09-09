@@ -266,6 +266,21 @@ impl Acc {
             present: 1,
         }
     }
+
+    /// A row whose projection is there but is not a number.
+    ///
+    /// `count` counts what is present whatever its type, so this is a row for
+    /// it; `sum` and `avg` never see one, the checker requiring a numeric
+    /// projection of them. Reading it as absence — which is what happened
+    /// before this existed — made `count` over a `string` or an `f64` return
+    /// zero for every group.
+    pub fn counted() -> Acc {
+        Acc {
+            sum: 0,
+            rows: 1,
+            present: 1,
+        }
+    }
 }
 
 impl HasZero for Acc {

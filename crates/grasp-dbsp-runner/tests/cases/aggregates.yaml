@@ -352,3 +352,42 @@
     - total:
         - [-1, {}, 150]
         - [1, {}, 175]
+
+# `count` counts the projections that are there, whatever their type. Reading
+# "not a number" as "absent" made it return zero for every group — the linear
+# accumulator carries an i64, so a `string` fell into the same arm as `NONE`.
+- name: count counts a non-numeric projection
+  source: |
+    t := input("t")
+    t :: zset(record(g: string, name: string))
+    idx := map_index(t, function((r) -> record(key: r.g, value: record(name: r.name))))
+    n   := aggregate(idx, count, function((v) -> v.name))
+
+  input:
+    - t:
+        - [1, {g: "a", name: "ann"}]
+        - [1, {g: "a", name: "bo"}]
+        - [1, {g: "b", name: "cy"}]
+
+  expected_exact_output:
+    - n:
+        - [1, "a", 2]
+        - [1, "b", 1]
+
+- name: count skips an absent projection but keeps the group
+  source: |
+    t := input("t")
+    t :: zset(record(g: string, name: optional(string)))
+    idx := map_index(t, function((r) -> record(key: r.g, value: record(name: r.name))))
+    n   := aggregate(idx, count, function((v) -> v.name))
+
+  input:
+    - t:
+        - [1, {g: "a", name: "ann"}]
+        - [1, {g: "a", name: null}]
+        - [1, {g: "b", name: null}]
+
+  expected_exact_output:
+    - n:
+        - [1, "a", 1]
+        - [1, "b", 0]

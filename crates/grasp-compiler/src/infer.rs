@@ -34,6 +34,7 @@
 use crate::ast::{Aggregator, BinOp, Lit, Type, UnOp};
 use crate::core;
 use crate::diag::{Diagnostic, Pass, Span};
+use crate::key;
 use crate::ty::{Narrowing, Open, Ty, assignable, compose, impose, narrows, settle};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -579,20 +580,79 @@ impl Cx {
     fn rhs_ty(&self, rhs: &core::Rhs, vars: &BTreeMap<String, Ty>) -> (Ty, Option<Diagnostic>) {
         match rhs {
             core::Rhs::Expr(e) => self.expr_ty(e, vars),
-            core::Rhs::Aggregate { function, arg, .. } => {
-                let (inner, err) = match arg {
-                    Some(e) => self.expr_ty(e, vars),
-                    None => (Ty::I64, None),
+            core::Rhs::Aggregate {
+                function,
+                arg,
+                span,
+            } => {
+                let name = key::aggregator(*function);
+                let counting = *function == Aggregator::Count;
+                // "`count<>` takes no argument"; every other aggregator needs
+                // the expression it folds. Neither was checked, so `sum<>`
+                // quietly aggregated a literal and `count<e>` quietly meant
+                // grasp-dbsp's count — the values that are present, not the
+                // assignments in the group.
+                match (counting, arg) {
+                    (true, Some(e)) => {
+                        return (
+                            Ty::I64,
+                            Some(Diagnostic::error(
+                                Pass::Infer,
+                                e.span(),
+                                "`count` takes no argument: it counts the assignments in \
+                                 the group, not the values of an expression",
+                            )),
+                        );
+                    }
+                    (false, None) => {
+                        return (
+                            Ty::Error,
+                            Some(Diagnostic::error(
+                                Pass::Infer,
+                                *span,
+                                format!("`{name}` needs an argument: the expression to fold"),
+                            )),
+                        );
+                    }
+                    (true, None) => return (Ty::I64, None),
+                    (false, Some(_)) => {}
+                }
+                let e = arg.as_ref().expect("checked above");
+                let (inner, err) = self.expr_ty(e, vars);
+                if err.is_some() {
+                    return (Ty::Error, err);
+                }
+                // What each aggregator can fold. An `optional` is looked
+                // through: absence is skipped, and the result keeps the
+                // wrapper.
+                let want = under_optional(&inner);
+                let wrong = match function {
+                    Aggregator::Sum | Aggregator::Avg if !numeric(want) => Some(format!(
+                        "`{name}` needs a numeric argument, found `{inner}`"
+                    )),
+                    // The same rule `<` enforces, and for the same reason:
+                    // "any invention would be arbitrary in a way that silently
+                    // decides `min` and `max`".
+                    Aggregator::Min | Aggregator::Max if !scalar(want) => Some(format!(
+                        "ordering is not defined on `{inner}`, so `{name}` has no meaning \
+                         over it"
+                    )),
+                    _ => None,
                 };
+                if let Some(message) = wrong {
+                    return (
+                        Ty::Error,
+                        Some(Diagnostic::error(Pass::Infer, e.span(), message)),
+                    );
+                }
                 let ty = match function {
-                    // "`count<>` takes no argument and counts rows."
                     Aggregator::Count => Ty::I64,
                     // "`avg` yields `f64` whatever it was given, since a mean
                     //  is not an integer."
                     Aggregator::Avg => Ty::F64,
                     _ => inner,
                 };
-                (ty, err)
+                (ty, None)
             }
         }
     }
@@ -993,6 +1053,15 @@ impl Cx {
                 }
             }
         }
+    }
+}
+
+/// What is under an `optional`, which is what an aggregator folds: absence is
+/// skipped rather than aggregated, and the wrapper survives into the result.
+fn under_optional(t: &Ty) -> &Ty {
+    match t {
+        Ty::Optional(inner) => inner,
+        other => other,
     }
 }
 

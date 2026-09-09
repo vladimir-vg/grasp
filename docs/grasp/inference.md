@@ -247,6 +247,10 @@ Every rejection this pass can produce, in the phase that produces it.
 | ``variable `x` is used as A here and as B at line N`` | 1 |
 | ``variable `x` appears in the head but nothing in the body binds it`` | 1 |
 | ```e` is not a record, so it has no field `f` `` | 1 |
+| ``` `count` takes no argument ``` | 1 |
+| ``` `f` needs an argument: the expression to fold ``` | 1 |
+| ``` `f` needs a numeric argument, found A ``` | 1 |
+| ``ordering is not defined on A, so `f` has no meaning over it`` | 1 |
 | ``relation `r` is not defined and has no typespec`` | 2 |
 | ``relation `r` column `c` is A at line N and B at line M`` | 2 |
 | ``rule at line N gives `r.c` type B, but it is declared A`` | 2 |

@@ -285,7 +285,7 @@ aggregate(idx, max, function((v) -> v.salary))
 | `min` / `max` | `A` — the smallest/largest projected value in the group |
 | `sum` | the sum of the projected values |
 | `avg` | their mean |
-| `count` | the number of rows whose projected value is not absent |
+| `count` | the number of rows whose projected value is not absent, of whatever type |
 
 `sum` yields the projection's own type; `avg` always yields `optional(f64)`, so
 averaging integers does not truncate and a group with nothing to average is

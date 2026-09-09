@@ -356,6 +356,14 @@ not mention it.
   an ordinary negated atom, and says what it means better than a default would.
 - **`avg` yields `f64`** whatever it was given, since a mean is not an integer.
   Every other aggregator yields its argument's type.
+- **`sum` and `avg` need a numeric argument**, and **`min` and `max` need a
+  scalar one** — the same rule `<` obeys, for the same reason:
+  [ordering](types.md#comparison-and-ordering) is defined on scalars only, and any invention
+  would be arbitrary in a way that silently decides which row wins.
+- **An `optional` argument is looked through.** Absence is skipped rather than
+  folded, and the wrapper survives into the result: `sum` over an
+  `optional(i64)` is an `optional(i64)`, absent only for a group with nothing to
+  add.
 
 Aggregation is **stratified on the same terms as negation**: the aggregated
 relation must be in a strictly lower stratum. An aggregate over a relation still

@@ -260,6 +260,7 @@ asks whether a value is present — but not ordered.
 | ``missing field `f` `` | a record type lacks a field the target names |
 | ``a dict key must be a scalar`` | `dict(K,V)` with composite `K` |
 | ```optional` does not nest`` | `optional(optional(T))` written |
-| ``ordering is not defined on X`` | `<` and friends on a composite |
+| ``ordering is not defined on X`` | `<` and friends on a composite, or `min`/`max` folding one |
+| ``X needs a numeric argument`` | `sum` or `avg` folding something that is not a number |
 | ``this assertion would discard every row`` | `v :: T` where no value of `S` can be a `T` |
 | ``cannot infer a type for `NONE` `` | `NONE` with no context to take one from |
