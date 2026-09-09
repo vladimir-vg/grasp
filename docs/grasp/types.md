@@ -206,6 +206,11 @@ the rest of the rule.
 `optional(T) :: T` is the common one — the way to drop absent rows before a join
 when you do not want absence to participate.
 
+`optional(A) :: optional(B)` is the one that does not: the wrapper survives, so
+an absent value comes through absent and only a *present* one that fails is
+dropped. It is the check you want where absence is a legitimate answer and a
+malformed value is not.
+
 ```grasp
 named(name: n) <-
     person(name: n)      # n : optional(string)

@@ -269,7 +269,14 @@ pub enum Op {
         /// operator, needed for a `json` source and not for one that is already
         /// the `optional(T)` the check produces.
         cast: Option<Type>,
-        definite: Definite,
+        /// What to rebind the variable as, once the rows with no value are gone.
+        ///
+        /// `None` where the assertion **keeps its wrapper**: `optional(A) ::
+        /// optional(B)` leaves an `optional(B)`, so there is nothing to
+        /// coalesce to and absence is one of the answers rather than one of the
+        /// rows to drop. That case is emitted differently throughout — see
+        /// [`crate::emit`].
+        definite: Option<Definite>,
     },
 }
 
@@ -1488,7 +1495,7 @@ enum Step {
     Narrow {
         name: String,
         cast: Option<Type>,
-        definite: Definite,
+        definite: Option<Definite>,
     },
     /// The head: replace the row wholesale.
     Row(Vec<(String, core::Expr, Option<Type>)>),
@@ -1586,10 +1593,15 @@ fn lower(
                         e.clone(),
                     )
                 }
+                // An `optional` target is exactly the assertion that keeps its
+                // wrapper, and nothing else: `optional(T) :: T` asserts `T`,
+                // and `json :: T` is gated on `holdable`, which excludes
+                // `optional`. So the type says which shape this is.
                 Body::Assert(a) => steps.push(Step::Narrow {
                     name: a.variable.clone(),
                     cast: a.cast.then(|| a.ty.clone()),
-                    definite: Definite::Of(a.ty.clone()),
+                    definite: (!matches!(a.ty, Type::Optional(_)))
+                        .then(|| Definite::Of(a.ty.clone())),
                 }),
                 Body::Unnest { over, vars, kind } => {
                     let (vars, kind) = (vars.clone(), *kind);
@@ -1756,7 +1768,7 @@ fn lower(
             }
             Step::Narrow { name, definite, .. } => {
                 want.insert(name.clone());
-                if let Definite::Like(e) = definite {
+                if let Some(Definite::Like(e)) = definite {
                     want.extend(free(e));
                 }
             }
@@ -2154,7 +2166,7 @@ fn lift(fresh: &mut Fresh, steps: &mut Vec<Step>, e: core::Expr) -> core::Expr {
             steps.push(Step::Narrow {
                 name: name.clone(),
                 cast: None,
-                definite: Definite::Like(lhs),
+                definite: Some(Definite::Like(lhs)),
             });
             core::Expr::Var { name, span }
         }

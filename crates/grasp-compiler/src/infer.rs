@@ -680,11 +680,7 @@ impl Cx {
                     *have = want;
                 }
                 Narrowing::Unsupported => note(
-                    Diagnostic::unimplemented(
-                        Pass::Infer,
-                        span,
-                        "narrowing that keeps its wrapper",
-                    ),
+                    Diagnostic::unimplemented(Pass::Infer, span, "narrowing inside a container"),
                     &mut fault,
                 ),
                 Narrowing::Never => note(

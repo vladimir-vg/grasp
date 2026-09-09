@@ -352,15 +352,29 @@ see that, not because a value was chosen — so an emitter needs some definite
 value of every type, which is `0`, `0.0`, `""`, `false`, `cast([], array(T))`,
 `cast({}, dict(K,V))`, or a record built from those.
 
-**Three rows of that table cannot be emitted yet**, and it is grasp-dbsp that
-is short rather than the rule. `optional(A) :: optional(B)` has to keep absence
-and drop only a present value that fails, and `array(A) :: array(B)` and
-`dict(K,A) :: dict(K,B)` have to test every element. grasp-dbsp offers neither:
-"records and arrays have no conversions", a dict has none at all, and testing
-per element would need a reduction over an array, which
-[`select`](../grasp-dbsp/language.md#select) deliberately is not. The compiler
-says `not implemented: narrowing that keeps its wrapper` rather than guessing,
-and `programs/assertions.yaml` carries what the array row should compute so that
+**A narrowing that keeps its wrapper is two operators, and different in kind.**
+`optional(A) :: optional(B)` leaves an `optional(B)`, so there is nothing to
+`coalesce` to: absence is one of the answers rather than one of the rows to drop.
+That also rules out `r.v != NONE` as the test, because a `cast` maps absence and
+a failed extraction alike to `NONE` and only the first is to be kept. So the
+filter reads the value on both sides of the conversion:
+
+1. `filter(s, function((r) -> (r.v == NONE or cast(r.v, optional(B)) != NONE)))`;
+2. a `map` rebinding the column as `cast(r.v, optional(B))`.
+
+The conversion is written twice rather than bound to a field first — the filter
+needs the value before it as well as after, and a bound field would need a name
+invented against the row's schema. Every expression in grasp-dbsp is total, so
+the second evaluation is a cost and never a difference.
+
+**Two rows of that table still cannot be emitted**, and it is grasp-dbsp that is
+short rather than the rule. `array(A) :: array(B)` and `dict(K,A) :: dict(K,B)`
+have to test every element, and testing per element needs an array `filter` or a
+reduction, which [`select`](../grasp-dbsp/language.md#select) deliberately is
+not. Absence is *not* what stands in the way — a `cast` preserves it, which is
+what makes the row above expressible. The compiler says
+`not implemented: narrowing inside a container` rather than guessing, and
+`programs/assertions.yaml` carries what the array row should compute so that
 whatever closes the gap has to satisfy it.
 
 **Division needs no rule of its own.** `/` and `%` are `optional(T)` in

@@ -126,13 +126,89 @@
       pass: infer
       message: "an assertion, which binds nothing"
 
+# "`optional(A)` :: `optional(B)` — drops the row when present and not a `B`."
+#
+# The wrapper survives, and that is the whole case: a document holding a `7`
+# converts, one holding a string is dropped, and an *absent* one comes through
+# absent. A reading that only casts gets the third row wrong — `cast` maps
+# absence and a failed extraction alike to `NONE` — which is why the filter
+# reads the value on both sides of the conversion.
+- name: a narrowing may keep its wrapper
+  source: |
+    doc :: relation(k: string, d: optional(json))
+    doc(k:, d:) <- input
+
+    num :: relation(k: string, v: optional(i64))
+    num(k: k, v: x) <-
+        doc(k: k, d: x)
+        x :: optional(i64)
+
+  input:
+    - doc:
+        - [1, {k: "a", d: 7}]
+        - [1, {k: "b", d: "not a number"}]
+        - [1, {k: "c", d: null}]
+
+  expected_exact_output:
+    - num:
+        - [1, {k: "a", v: 7}]
+        - [1, {k: "c", v: null}]
+
+# And it is `optional(i64)` afterwards, not `i64`. A narrowing that quietly
+# made the variable definite would pass the case above and be wrong the moment
+# anything read the variable's type.
+- name: and the variable keeps it too
+  source: |
+    doc :: relation(k: string, d: optional(json))
+    doc(k:, d:) <- input
+
+    num(k: k, v: x) <-
+        doc(k: k, d: x)
+        x :: optional(i64)
+  expected_types:
+    num:   {k: string, v: optional(i64)}
+    num:0: {k: string, x: optional(i64)}
+
+# Numbers do not widen, so there is no check that could settle this and it is
+# the compile error, not a filter that never passes.
+- name: a wrapper does not make an impossible narrowing possible
+  source: |
+    r :: relation(a: optional(i64))
+    r(a:) <- input
+
+    s(v: x) <-
+        r(a: x)
+        x :: optional(f64)
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "this assertion would discard every row"
+
+# The wrapper case is the *outer* check performed under the wrapper, so it can
+# only be as available as the inner one. Here the inner one is the array
+# narrowing below, which is not — and this must stay pending rather than become
+# a filter over a check that does not exist.
+- name: a wrapper over a narrowing that is not available
+  source: |
+    r :: relation(a: optional(array(json)))
+    r(a:) <- input
+
+    s :: relation(v: optional(array(i64)))
+    s(v: x) <-
+        r(a: x)
+        x :: optional(array(i64))
+
+  expected_ok: true
+
 # "`array(A)` :: `array(B)` — drops the row when any element is not a `B`."
 #
-# Pending, and it will stay pending until grasp-dbsp can express it: records
-# and arrays have no conversions and a dict has none at all, so this needs
-# either a per-element test or an absence-preserving one, and the target has
-# neither. What it should compute is here so that whatever closes the gap has
-# to satisfy it.
+# Pending, and blocked on the target: the per-element test needs an array
+# `filter`, which grasp-dbsp names as missing and does not have. Absence is
+# *not* the obstacle — a `cast` preserves it, which is what makes the
+# `optional` case above expressible — so what stands in the way is only the
+# element-by-element part. What this should compute is here so that whatever
+# closes the gap has to satisfy it.
 - name: narrowing inside an array drops the rows an element fails
   source: |
     r :: relation(k: string, a: array(json))

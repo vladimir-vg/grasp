@@ -375,7 +375,7 @@ fn emit_rule(out: &mut String, relation: &Relation, rule: &Rule, names: &mut Nam
                 node,
                 v,
                 cast.as_ref(),
-                definite,
+                definite.as_ref(),
                 &at[*input],
             ),
         };
@@ -707,9 +707,55 @@ fn emit_narrow(
     node: &Node,
     v: &str,
     cast: Option<&Type>,
-    definite: &Definite,
+    definite: Option<&Definite>,
     previous: &str,
 ) -> String {
+    // A field of the row, rebuilt with `v` replaced by `value`.
+    let row_with = |value: &str| {
+        let fields: Vec<(String, String)> = node
+            .schema
+            .iter()
+            .map(|f| {
+                let text = if f == v {
+                    value.to_string()
+                } else {
+                    format!("{ROW}.{f}")
+                };
+                (f.clone(), text)
+            })
+            .collect();
+        record_text(&fields)
+    };
+
+    // An assertion that keeps its wrapper is two operators rather than three,
+    // and different in kind: `optional(A) :: optional(B)` leaves an
+    // `optional(B)`, so there is no `coalesce` and absence is one of the
+    // answers rather than one of the rows to drop.
+    //
+    // Which means the test cannot be `!= NONE`: a `cast` maps absence and a
+    // failed extraction alike to `NONE`, and only the first is to be kept. So
+    // the filter reads the value on both sides of the conversion, and the
+    // conversion is written twice rather than bound to a field this would have
+    // to invent a name for. Every expression here is total, so the second
+    // evaluation is a cost and never a difference.
+    let Some(definite) = definite else {
+        let ty = cast.expect("a wrapper-keeping narrowing converts");
+        let converted = format!("cast({ROW}.{v}, {})", ty_text(ty));
+        let kept = names.intermediate(base);
+        let _ = writeln!(
+            out,
+            "{kept} := filter({previous}, function(({ROW}) -> \
+             ({ROW}.{v} == NONE or {converted} != NONE)))"
+        );
+        let name = names.intermediate(base);
+        let _ = writeln!(
+            out,
+            "{name} := map({kept}, function(({ROW}) -> {}))",
+            row_with(&converted)
+        );
+        return name;
+    };
+
     // The first of `mapping.md`'s three operators, where one is needed: bind
     // the value at the `optional(T)` the check produces. A `json` source needs
     // it; a value that is already an `optional(T)`, as a division's result is,
@@ -717,22 +763,10 @@ fn emit_narrow(
     let mut previous = previous.to_string();
     if let Some(ty) = cast {
         let bound = names.intermediate(base);
-        let fields: Vec<(String, String)> = node
-            .schema
-            .iter()
-            .map(|f| {
-                let value = if f == v {
-                    format!("cast({ROW}.{v}, optional({}))", ty_text(ty))
-                } else {
-                    format!("{ROW}.{f}")
-                };
-                (f.clone(), value)
-            })
-            .collect();
         let _ = writeln!(
             out,
             "{bound} := map({previous}, function(({ROW}) -> {}))",
-            record_text(&fields)
+            row_with(&format!("cast({ROW}.{v}, optional({}))", ty_text(ty)))
         );
         previous = bound;
     }
@@ -745,23 +779,11 @@ fn emit_narrow(
         Definite::Like(e) => expr_text(e, None),
         Definite::Of(ty) => definite_value(ty),
     };
-    let fields: Vec<(String, String)> = node
-        .schema
-        .iter()
-        .map(|f| {
-            let value = if f == v {
-                format!("coalesce({ROW}.{v}, {default})")
-            } else {
-                format!("{ROW}.{f}")
-            };
-            (f.clone(), value)
-        })
-        .collect();
     let name = names.intermediate(base);
     let _ = writeln!(
         out,
         "{name} := map({present}, function(({ROW}) -> {}))",
-        record_text(&fields)
+        row_with(&format!("coalesce({ROW}.{v}, {default})"))
     );
     name
 }

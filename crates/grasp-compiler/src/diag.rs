@@ -198,7 +198,7 @@ impl Diagnostic {
     /// pipeline reaches, it finishes. What is left is three constructs the
     /// front of the pipeline refuses, and the list goes when they do.
     pub const UNIMPLEMENTED: &[&str] = &[
-        "narrowing that keeps its wrapper",
+        "narrowing inside a container",
         "array destructuring",
         "binding a dict's remaining entries",
         "indexed unnest",

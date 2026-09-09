@@ -351,9 +351,20 @@ pub fn narrows(from: &Ty, to: &Ty) -> Narrowing {
         // `T`." A document is converted by what is wanted, and every such
         // conversion is fallible, which is exactly the test.
         (Ty::Json, t) if holdable(t) => Narrowing::Filter { cast: true },
-        (Ty::Optional(a), Ty::Optional(b)) if narrows(a, b) != Narrowing::Never => {
-            Narrowing::Unsupported
-        }
+        // "`optional(A)` :: `optional(B)` — drops the row when present and not
+        // a `B`." The wrapper survives, so this is the inner check performed
+        // under it, and absence is one of the answers rather than one of the
+        // rows to drop.
+        //
+        // `Already` cannot appear here: it means the inner is assignable, and
+        // then so is the pair, which `assignable` matched at the top. Every
+        // other answer is the inner one — an inner `Unsupported` must stay
+        // unsupported, or `optional(array(A)) :: optional(array(B))` would
+        // become a filter over a check that does not exist.
+        (Ty::Optional(a), Ty::Optional(b)) => match narrows(a, b) {
+            Narrowing::Filter { .. } => Narrowing::Filter { cast: true },
+            other => other,
+        },
         (Ty::Array(a), Ty::Array(b)) if narrows(a, b) != Narrowing::Never => Narrowing::Unsupported,
         (Ty::Dict(ka, a), Ty::Dict(kb, b)) if ka == kb && narrows(a, b) != Narrowing::Never => {
             Narrowing::Unsupported
