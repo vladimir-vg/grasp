@@ -129,9 +129,55 @@ pub enum Pattern {
         kind: UnnestKind,
         span: Span,
     },
+    /// `{a: x, …} := d` — the keys it names, paired with the variables they
+    /// bind, and what it says about the ones it does not name.
+    ///
+    /// Kept rather than desugared, for the reason `Unnest` is: the expansion
+    /// needs types. `{a: x}` means "get the entry and drop the row when it is
+    /// absent", and the narrowing that drops it has to name the dict's value
+    /// type, which desugaring does not know. See `plan`, which expands it once
+    /// inference has.
+    Dict {
+        fields: Vec<(String, String)>,
+        rest: Rest,
+        span: Span,
+    },
+    /// `record(a: x, …) := r` — the same, over a record.
+    ///
+    /// A record's fields are its *type*, so this asks nothing at runtime: with
+    /// no rest it is the claim that `r` has exactly these fields, and with one
+    /// it is the claim that it has at least them. Both are checked in `infer`,
+    /// and a row is never dropped for failing them.
+    Record {
+        fields: Vec<(String, String)>,
+        rest: Rest,
+        span: Span,
+    },
 }
 
-pub use crate::ast::UnnestKind;
+pub use crate::ast::{Rest, UnnestKind};
+
+impl Pattern {
+    /// The variables this pattern binds.
+    ///
+    /// An unnest's are positional and a destructure's are not, but for *what is
+    /// bound* the distinction does not matter, and three passes wanted the same
+    /// answer.
+    pub fn binds(&self) -> Vec<&str> {
+        match self {
+            Pattern::Var { name, .. } => vec![name],
+            Pattern::Unnest { vars, .. } => vars.iter().map(String::as_str).collect(),
+            Pattern::Dict { fields, rest, .. } | Pattern::Record { fields, rest, .. } => fields
+                .iter()
+                .map(|(_, v)| v.as_str())
+                .chain(match rest {
+                    Rest::Bind(v) => Some(v.as_str()),
+                    _ => None,
+                })
+                .collect(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Rhs {

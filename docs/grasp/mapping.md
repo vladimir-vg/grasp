@@ -274,16 +274,19 @@ promise is one mechanism rather than two.
 | `d[k]` lookup | `get(d, k)` → `optional(V)` |
 | `keys(d)` | `keys(d)` → `array(K)` |
 | `length(d)` | `length(d)` |
-| `{a: x} := d` destructure | `get(d, "a")` per key, guarded by `length(d) = N` |
+| `{a:} := d` destructure | `get(d, "a")` per key, guarded by `length(d) = N` |
 | `(k, v) := **d` unnest | `flat_map` over `entries(d)` |
 
 `entries(d)` yields `array(record(key: K, value: V))`, sorted by key, which is
 what makes the unnest deterministic. Its inverse is the other form of the dict
 literal, `dict(a)`, for building a dict whose size follows the data.
 
-`{k: v, **rest} := d` has no lowering yet: subtracting the named keys needs a
+`{k:, **rest} := d` has no lowering yet: subtracting the named keys needs a
 `without_keys` builtin grasp-dbsp does not have. See
-[`overview.md`](overview.md#future-work).
+[`overview.md`](overview.md#future-work). A **record** remainder does lower,
+because its fields are known before the program runs: `record(a:, **e) := r`
+builds `e` as a `record(…)` literal of `get`s over the fields the pattern did
+not name, which is why the two spellings are not one feature.
 
 ## Body statements, end to end
 

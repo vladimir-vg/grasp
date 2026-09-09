@@ -68,7 +68,8 @@ premise, and several of the principles invert with it.
   declared.
 - Stratified negation (`not r(...)`) and stratified aggregation.
 - Rule bodies of positive atoms, negated atoms, `:=` matches, filter
-  expressions, and destructuring and unnest patterns.
+  expressions, and dict, record and unnest patterns. Array patterns are
+  [future work](#future-work).
 - Expressions: arithmetic, comparison, logic, concatenation, function calls,
   array and dict literals, field access and subscript.
 - The value types listed in [`types.md`](types.md) — `boolean`, `i64`,
@@ -97,10 +98,13 @@ design comes from. What is missing is missing on purpose.
   element access is future work there too. Indexed unnest, `(i, v) := *arr`,
   follows it; plain `(v) := *arr` works today.
 
-- **Partial dict destructure with a binding.** `{k: v, **rest} := d` needs the
-  remaining entries, which means subtracting the named keys — a `without_keys`
-  builtin grasp-dbsp does not have. The exact and ignore-the-rest forms,
-  `{k: v} := d` and `{k: v, **} := d`, need only `get` and `length` and work.
+- **Array destructure, and a dict's remainder.** `[x, y] := arr` reads elements
+  by position, which is the element access above; `[x, y, *r]` needs a slice
+  besides. `{k:, **rest} := d` needs the entries the pattern did not name, which
+  means subtracting keys — a `without_keys` builtin grasp-dbsp does not have.
+  The dict and record forms that need only `get` and `length` work:
+  `{k:} := d`, `{k:, **} := d`, `record(k:) := r`, `record(k:, **) := r`, and
+  `record(k:, **rest) := r`, whose remainder is known before the program runs.
 
 - **The rest of the type vocabulary.** `dynamic` — the top type, and the one
   most likely to be wanted first, since it is what an untyped subset of the

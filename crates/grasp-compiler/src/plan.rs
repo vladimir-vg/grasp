@@ -27,7 +27,7 @@
 //! filter from the liveness analysis and from the node order, and `v :: T` will
 //! need the same construction.
 
-use crate::ast::{Aggregator, BinOp, Type};
+use crate::ast::{Aggregator, BinOp, Lit, Type};
 use crate::core;
 use crate::diag::{Diagnostic, Pass, Span};
 use crate::infer;
@@ -838,8 +838,18 @@ fn plan_rule(
                     });
                     continue;
                 }
+                if let core::Pattern::Dict { fields, rest, span }
+                | core::Pattern::Record { fields, rest, span } = lhs
+                {
+                    let core::Rhs::Expr(subject) = rhs else {
+                        unreachable!("an aggregate has no pattern to destructure")
+                    };
+                    let record = matches!(lhs, core::Pattern::Record { .. });
+                    destructure(&mut deps, typed, subject, fields, rest, record, *span);
+                    continue;
+                }
                 let core::Pattern::Var { name, .. } = lhs else {
-                    unreachable!("a pattern is a variable or an unnest")
+                    unreachable!("a pattern is a variable, an unnest or a destructure")
                 };
                 // Every aggregate in a rule shares one group, so they are one
                 // step rather than one dependent each — and that step is always
@@ -1246,6 +1256,151 @@ fn trace_key(trace: &[Item], atoms: &[Atom], deps: &[Dependent]) -> String {
         })
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+/// One destructure, as the dependents it stands for.
+///
+/// `semantics.md`'s table, performed here rather than in `desugar` because two
+/// of the three parts need types: the narrowing after a dict `get` has to name
+/// the value type, and a bound record remainder is a literal over the fields
+/// left, which are only known once the subject's type is.
+///
+/// Ordering takes care of itself. A narrow reads the variable its bind
+/// produced, so `place_ready` cannot put it first; the size filter reads only
+/// the subject, so it lands as early as the subject exists.
+fn destructure(
+    deps: &mut Vec<Dependent>,
+    typed: &infer::TypedRule,
+    subject: &core::Expr,
+    fields: &[(String, String)],
+    rest: &core::Rest,
+    record: bool,
+    span: Span,
+) {
+    let consumes = free(subject);
+
+    // "Exactly these keys" is a claim about how many entries the dict has, and
+    // a dict's size is data — so it is a filter, and a row whose dict is the
+    // wrong size is simply not derived. A record's fields are its *type*, so
+    // the same claim about a record was settled in `infer` and nothing is
+    // emitted for it here.
+    if !record && matches!(rest, core::Rest::None) {
+        let size = core::Expr::Binary {
+            op: BinOp::Eq,
+            lhs: Box::new(core::Expr::Call {
+                callee: core::Builtin::Length,
+                args: vec![subject.clone()],
+                span,
+            }),
+            rhs: Box::new(core::Expr::Lit {
+                value: Lit::Int(fields.len() as i64),
+                span,
+            }),
+            span,
+        };
+        deps.push(Dependent {
+            kind: Kind::Filter,
+            binds: Vec::new(),
+            consumes: consumes.clone(),
+            key: key::expr(&size),
+            body: Body::Filter(size),
+        });
+    }
+
+    for (key, var) in fields {
+        let get = core::Expr::Call {
+            callee: if record {
+                core::Builtin::RecordGet
+            } else {
+                core::Builtin::DictGet
+            },
+            args: vec![
+                subject.clone(),
+                core::Expr::Lit {
+                    value: Lit::Str(key.clone()),
+                    span,
+                },
+            ],
+            span,
+        };
+        deps.push(Dependent {
+            kind: Kind::Match,
+            binds: vec![var.clone()],
+            consumes: consumes.clone(),
+            key: format!("{var} := {}", key::expr(&get)),
+            body: Body::Bind(var.clone(), get),
+        });
+
+        // `record:get` gives the field's type; `dict:get` gives `optional(V)`,
+        // and the pattern's promise is that the key is there — so the row
+        // without it is dropped, which is `optional(V) :: V`.
+        if !record {
+            let ty = settled(typed, var);
+            deps.push(Dependent {
+                kind: Kind::Filter,
+                binds: Vec::new(),
+                consumes: [var.clone()].into_iter().collect(),
+                key: format!("{var} :: {ty}"),
+                body: Body::Assert(infer::Assert {
+                    variable: var.clone(),
+                    ty,
+                    cast: false,
+                    span,
+                }),
+            });
+        }
+    }
+
+    // A record's remainder is a set of fields known at compile time, so it is a
+    // literal rather than the builtin subtraction a dict would need. `infer`
+    // typed it, and reading the field names back off that type is what keeps
+    // the two from deciding it separately.
+    if let core::Rest::Bind(name) = rest {
+        let Type::Record(left) = settled(typed, name) else {
+            unreachable!("`infer` types a bound remainder as a record")
+        };
+        let value = core::Expr::RecordLit {
+            fields: left
+                .iter()
+                .map(|(field, _)| {
+                    (
+                        field.clone(),
+                        core::Expr::Call {
+                            callee: core::Builtin::RecordGet,
+                            args: vec![
+                                subject.clone(),
+                                core::Expr::Lit {
+                                    value: Lit::Str(field.clone()),
+                                    span,
+                                },
+                            ],
+                            span,
+                        },
+                    )
+                })
+                .collect(),
+            span,
+        };
+        deps.push(Dependent {
+            kind: Kind::Match,
+            binds: vec![name.clone()],
+            consumes,
+            key: format!("{name} := {}", key::expr(&value)),
+            body: Body::Bind(name.clone(), value),
+        });
+    }
+}
+
+/// A bound variable's settled type.
+///
+/// `plan` runs only on a rule `check` accepted, and `check` reports every
+/// variable that did not settle — so by here every one this asks about has.
+fn settled(typed: &infer::TypedRule, name: &str) -> Type {
+    typed
+        .vars
+        .get(name)
+        .cloned()
+        .expect("`check` settles every bound variable before `plan` runs")
 }
 
 fn equals(name: &str, e: &core::Expr, span: Span) -> core::Expr {

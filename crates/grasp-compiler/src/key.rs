@@ -194,6 +194,10 @@ pub fn atom(relation: &str, args: &[(String, core::Arg)]) -> String {
 
 /// A pattern's key. An unnest keeps its variables in written order — they are
 /// positional, so `(k, v)` and `(v, k)` bind differently and are not one thing.
+///
+/// A destructure's fields are *named*, so they are not positional and two
+/// spellings of the same fields are one pattern. `desugar` has already sorted
+/// them, so rendering them in order is rendering them canonically.
 pub fn pattern(p: &core::Pattern) -> String {
     match p {
         core::Pattern::Var { name, .. } => name.clone(),
@@ -204,7 +208,24 @@ pub fn pattern(p: &core::Pattern) -> String {
             };
             format!("({}) {star}", vars.join(", "))
         }
+        core::Pattern::Dict { fields, rest, .. } => {
+            format!("{{{}}}", destructure(fields, rest))
+        }
+        core::Pattern::Record { fields, rest, .. } => {
+            format!("record({})", destructure(fields, rest))
+        }
     }
+}
+
+/// The shared inside of the two destructure keys: `a: x, b: y, **r`.
+fn destructure(fields: &[(String, String)], rest: &core::Rest) -> String {
+    let mut parts: Vec<String> = fields.iter().map(|(k, v)| format!("{k}: {v}")).collect();
+    match rest {
+        core::Rest::None => {}
+        core::Rest::Ignore => parts.push("**".to_string()),
+        core::Rest::Bind(v) => parts.push(format!("**{v}")),
+    }
+    parts.join(", ")
 }
 
 /// A right-hand side's key — an expression, or an aggregate's spelling.

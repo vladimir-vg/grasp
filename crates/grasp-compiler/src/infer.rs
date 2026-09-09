@@ -449,6 +449,124 @@ impl Cx {
                         }
                         constrain(&mut vars, name, ty, *vs, &mut fault);
                     }
+                    // `inference.md`: "`d` is `dict(string, V)`; `x` is `V`."
+                    // Definite, not `optional(V)` — the pattern's promise is
+                    // that the key is there, and `plan` is where the row
+                    // without it is dropped.
+                    core::Pattern::Dict {
+                        fields, span: ps, ..
+                    } => {
+                        let (subject, err) = self.rhs_ty(rhs, &vars);
+                        if let Some(d) = err {
+                            note(d, &mut fault);
+                        }
+                        let value = match &subject {
+                            Ty::Dict(k, v) if **k == Ty::String => (**v).clone(),
+                            // A pattern names its key literally, and a literal
+                            // key is a string. Nothing else can be written.
+                            Ty::Dict(k, _) => {
+                                note(
+                                    Diagnostic::error(
+                                        Pass::Infer,
+                                        *ps,
+                                        format!(
+                                            "a dict pattern names a string key, but this \
+                                             dict is keyed by `{k}`"
+                                        ),
+                                    ),
+                                    &mut fault,
+                                );
+                                Ty::Error
+                            }
+                            Ty::Unknown => Ty::Unknown,
+                            other => {
+                                note(
+                                    Diagnostic::error(
+                                        Pass::Infer,
+                                        *ps,
+                                        format!("`{other}` is not a dict to destructure"),
+                                    ),
+                                    &mut fault,
+                                );
+                                Ty::Error
+                            }
+                        };
+                        for (_, var) in fields {
+                            constrain(&mut vars, var, value.clone(), *ps, &mut fault);
+                        }
+                    }
+
+                    // `inference.md`: "`s` is a record with field `a`; `x` is
+                    // its type." A record's fields are its type, so everything
+                    // here is a compile-time claim and no row is ever dropped
+                    // for failing one.
+                    core::Pattern::Record {
+                        fields,
+                        rest,
+                        span: ps,
+                    } => {
+                        let (subject, err) = self.rhs_ty(rhs, &vars);
+                        if let Some(d) = err {
+                            note(d, &mut fault);
+                        }
+                        match &subject {
+                            Ty::Record(have) => {
+                                for (key, var) in fields {
+                                    match have.iter().find(|(n, _)| n == key) {
+                                        Some((_, t)) => {
+                                            constrain(&mut vars, var, t.clone(), *ps, &mut fault);
+                                        }
+                                        None => note(
+                                            Diagnostic::error(
+                                                Pass::Infer,
+                                                *ps,
+                                                format!("`{subject}` has no field `{key}`"),
+                                            ),
+                                            &mut fault,
+                                        ),
+                                    }
+                                }
+                                // After the fields, not before: a pattern
+                                // naming a field the record lacks is also a
+                                // count that does not match, and "no field `z`"
+                                // is the more useful of the two.
+                                if matches!(rest, core::Rest::None) && have.len() != fields.len() {
+                                    note(
+                                        Diagnostic::error(
+                                            Pass::Infer,
+                                            *ps,
+                                            format!(
+                                                "`{subject}` has fields this pattern does \
+                                                 not name; write `**` to allow them"
+                                            ),
+                                        ),
+                                        &mut fault,
+                                    );
+                                }
+                                // The remainder is known here and nowhere else,
+                                // which is what makes it a record literal in
+                                // `plan` rather than a builtin grasp-dbsp lacks.
+                                if let core::Rest::Bind(r) = rest {
+                                    let left: Vec<(String, Ty)> = have
+                                        .iter()
+                                        .filter(|(n, _)| !fields.iter().any(|(k, _)| k == n))
+                                        .cloned()
+                                        .collect();
+                                    constrain(&mut vars, r, Ty::Record(left), *ps, &mut fault);
+                                }
+                            }
+                            Ty::Unknown => {}
+                            other => note(
+                                Diagnostic::error(
+                                    Pass::Infer,
+                                    *ps,
+                                    format!("`{other}` is not a record to destructure"),
+                                ),
+                                &mut fault,
+                            ),
+                        }
+                    }
+
                     core::Pattern::Unnest {
                         vars: names,
                         kind,
@@ -1436,14 +1554,7 @@ impl Cx {
                         }
                     }
                 }
-                core::Stmt::Match { lhs, .. } => match lhs {
-                    core::Pattern::Var { name, .. } => {
-                        bound.insert(name);
-                    }
-                    core::Pattern::Unnest { vars, .. } => {
-                        bound.extend(vars.iter().map(String::as_str));
-                    }
-                },
+                core::Stmt::Match { lhs, .. } => bound.extend(lhs.binds()),
                 _ => {}
             }
         }
@@ -1749,12 +1860,9 @@ fn binds(stmt: &core::Stmt) -> BTreeSet<String> {
                 }
             }
         }
-        core::Stmt::Match { lhs, .. } => match lhs {
-            core::Pattern::Var { name, .. } => {
-                out.insert(name.clone());
-            }
-            core::Pattern::Unnest { vars, .. } => out.extend(vars.iter().cloned()),
-        },
+        core::Stmt::Match { lhs, .. } => {
+            out.extend(lhs.binds().into_iter().map(str::to_string));
+        }
         _ => {}
     }
     out

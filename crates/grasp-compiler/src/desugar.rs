@@ -5,15 +5,19 @@
 //! that `a ++ b` and `concat(a, b)` are the same thing.
 //!
 //! Two rows of that table are performed by the parser and must not be done
-//! again here: `x:` becomes `x: x` as the argument list is read, and both dict
-//! spellings arrive as `(key, value)` pairs because the AST has only one dict
-//! form. What is left is `++`, field access, `not` in expression position, and
-//! the destructuring patterns.
+//! again here: `x:` becomes `x: x` as the argument list is read — in an atom
+//! and in a pattern both — and both dict spellings arrive as `(key, value)`
+//! pairs because the AST has only one dict form. What is left is `++`, field
+//! access and `not` in expression position.
 //!
-//! **The destructures are not implemented yet.** They expand into a binding
-//! plus the filters that make the pattern exact, which needs `length`,
-//! `dict:get` and `record:get` — all present — but they are the next widening
-//! rather than this one.
+//! **The destructures are not expanded here.** They expand into a binding plus
+//! the checks that make the pattern exact, and two of those need types: the
+//! narrowing after a dict `get` has to name the value type, and a bound record
+//! remainder is a literal over the fields left. So they survive into the core
+//! as [`core::Pattern::Dict`] and [`core::Pattern::Record`], are typed in
+//! `infer`, and are expanded in `plan` — the same route an unnest takes, for
+//! the same reason. What this pass does to them is put their fields in a
+//! canonical order and refuse the two that grasp-dbsp cannot express.
 
 use crate::ast;
 use crate::core;
@@ -122,6 +126,20 @@ fn stmt_of(stmt: &ast::Stmt) -> Result<core::Stmt, Diagnostic> {
     })
 }
 
+/// A destructure's fields, by key.
+///
+/// A pattern names its keys, so `{a: x, b: y}` and `{b: y, a: x}` are one
+/// pattern — unlike an unnest, whose variables are positional. Sorting here is
+/// what makes them one thing everywhere downstream: the structural key renders
+/// this order and `plan` expands in it, so two spellings key alike *and* emit
+/// alike, which is what `compilation.md` asks of a key. The parser has already
+/// rejected a repeated key, so nothing is lost.
+fn sorted_fields(fields: &[(String, String)]) -> Vec<(String, String)> {
+    let mut out = fields.to_vec();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
 fn pattern_of(p: &ast::Pattern) -> Result<core::Pattern, Diagnostic> {
     Ok(match p {
         ast::Pattern::Var { name, span } => core::Pattern::Var {
@@ -135,13 +153,38 @@ fn pattern_of(p: &ast::Pattern) -> Result<core::Pattern, Diagnostic> {
             kind: *kind,
             span: *span,
         },
-        ast::Pattern::Array { span, .. }
-        | ast::Pattern::Dict { span, .. }
-        | ast::Pattern::Record { span, .. } => {
+        // The dict and record patterns survive into the core for the reason an
+        // unnest does: expanding them needs types, and this runs before there
+        // are any.
+        ast::Pattern::Dict { fields, rest, span } => {
+            // `{a: x, **e}` needs the entries the pattern did not name, which
+            // is `dict:without_keys` — a builtin grasp-dbsp does not have.
+            if matches!(rest, ast::Rest::Bind(_)) {
+                return Err(Diagnostic::unimplemented(
+                    Pass::Desugar,
+                    *span,
+                    "binding a dict's remaining entries",
+                ));
+            }
+            core::Pattern::Dict {
+                fields: sorted_fields(fields),
+                rest: rest.clone(),
+                span: *span,
+            }
+        }
+        ast::Pattern::Record { fields, rest, span } => core::Pattern::Record {
+            fields: sorted_fields(fields),
+            rest: rest.clone(),
+            span: *span,
+        },
+        // `[x, y] := arr` reads elements by position, and grasp-dbsp's `get`
+        // covers a document and a dict but not an array; `[x, *r]` needs a
+        // slice besides. Both are `overview.md`'s "Element access".
+        ast::Pattern::Array { span, .. } => {
             return Err(Diagnostic::unimplemented(
                 Pass::Desugar,
                 *span,
-                "destructuring patterns",
+                "array destructuring",
             ));
         }
     })

@@ -72,10 +72,11 @@ For each variable in a rule, collect every constraint on it, then compose them.
 | unnest `(v) := *arr` | `arr` is `array(E)`; `v` is `E` |
 | unnest `(k, v) := **d` | `d` is `dict(K,V)`; `k` is `K`, `v` is `V` |
 | destructure `[x, y] := arr` | `arr` is `array(E)`; `x` and `y` are `E` |
-| destructure `{a: x} := d` | `d` is `dict(string, V)`; `x` is `V` |
+| destructure `{a:} := d` | `d` is `dict(string, V)`; `a` is `V`, definite |
+| destructure `record(a:) := s` | `s` is a record with field `a`; `a` is its type |
+| destructure `record(a:, **e) := s` | and `e` is a record of `s`'s other fields |
 | dict literal `{k => v}` | one `K` over the keys, one `V` over the values |
 | dict literal `{a: v}` | `K` is `string`; `v` contributes to `V` |
-| destructure `record(a: x) := s` | `s` is a record with field `a`; `x` is its type |
 | aggregate `v := sum<e>` | `v` is the aggregator's result for `e`'s type |
 | field access `e.f` | `e` is a record with field `f` |
 | assertion `v :: T` | `v` is `T`, or is filtered to `T` — see phase 4 |
@@ -84,6 +85,14 @@ For each variable in a rule, collect every constraint on it, then compose them.
 
 An atom is the only thing that gives a variable a type *from outside* the rule.
 Everything else relates variables to each other.
+
+A destructure's variable is **definite** where the source is not: `dict:get`
+yields `optional(V)` and the pattern promises the key is there, so `a` is a `V`
+and the row whose dict lacked the key is not derived. That is why the patterns
+are typed here rather than expanded before this pass — the narrowing has to name
+`V`, and nothing knows it earlier. `record(a:)` needs no narrowing at all: a
+record's fields are its type, so the field is definite already, and what the
+pattern claims about the fields it did *not* name is checked here too.
 
 ### Composing constraints
 

@@ -1,0 +1,248 @@
+# Destructuring — `docs/grasp/semantics.md`, "Desugaring".
+#
+# The pattern kinds differ in *kind*, not only in detail, and that is what
+# these cases are for. A dict's size is data, so "exactly these keys" is a
+# filter and a row whose dict is the wrong size is simply not derived. A
+# record's fields are its type, so the same claim about a record is a compile
+# error and no row is ever dropped for it.
+
+# `{a:, b:} := d` — `length(d) = 2`, then a get and a narrow per key. The
+# third row has an extra entry, so the pattern is not exact for it and it
+# derives nothing.
+- name: an exact dict pattern checks the size
+  source: |
+    src :: relation(id: i64, d: dict(string, i64))
+    src(id:, d:) <- input
+
+    out(id: id, a: a, b: b) <-
+        src(id: id, d: d)
+        {a:, b:} := d
+
+  input:
+    - src:
+        - [1, {id: 1, d: {"a": 10, "b": 20}}]
+        - [1, {id: 2, d: {"a": 30, "b": 40, "c": 50}}]
+        - [1, {id: 3, d: {"a": 60}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {id: 1, a: 10, b: 20}]
+
+# The same rows under `**`, which asks nothing about the entries it did not
+# name. Row 3 still derives nothing — it has no `b` at all, which is a
+# different reason, and the next case isolates it.
+- name: the rest marker drops the size check
+  source: |
+    src :: relation(id: i64, d: dict(string, i64))
+    src(id:, d:) <- input
+
+    out(id: id, a: a, b: b) <-
+        src(id: id, d: d)
+        {a:, b:, **} := d
+
+  input:
+    - src:
+        - [1, {id: 1, d: {"a": 10, "b": 20}}]
+        - [1, {id: 2, d: {"a": 30, "b": 40, "c": 50}}]
+        - [1, {id: 3, d: {"a": 60}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {id: 1, a: 10, b: 20}]
+        - [1, {id: 2, a: 30, b: 40}]
+
+# "A missing key drops the row rather than binding absence." `dict:get` yields
+# `optional(V)` and the narrowing after it is what makes the pattern's promise
+# true: `a` is a `i64` below, never an absent one.
+- name: a missing key drops the row
+  source: |
+    src :: relation(id: i64, d: dict(string, i64))
+    src(id:, d:) <- input
+
+    out(id: id, a: a) <-
+        src(id: id, d: d)
+        {a:, **} := d
+
+  input:
+    - src:
+        - [1, {id: 1, d: {"a": 10}}]
+        - [1, {id: 2, d: {"b": 20}}]
+        - [1, {id: 3, d: {}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {id: 1, a: 10}]
+
+# The value keeps the dict's value type, which is what makes it an ordinary
+# operand afterwards rather than something that has to be unwrapped first.
+- name: a destructured value is an ordinary operand
+  source: |
+    src :: relation(id: i64, d: dict(string, i64))
+    src(id:, d:) <- input
+
+    out(id: id, double: n) <-
+        src(id: id, d: d)
+        {a:, **} := d
+        n := a * 2
+
+  input:
+    - src:
+        - [1, {id: 1, d: {"a": 10}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {id: 1, double: 20}]
+
+# A record destructure: `record:get` gives the field's type directly, so there
+# is nothing to narrow and no row to drop.
+- name: a record pattern binds its fields
+  source: |
+    src :: relation(id: i64, r: record(a: i64, b: string))
+    src(id:, r:) <- input
+
+    out(id: id, a: a, b: b) <-
+        src(id: id, r: r)
+        record(a:, b:) := r
+
+  input:
+    - src:
+        - [1, {id: 1, r: {a: 10, b: "x"}}]
+        - [1, {id: 2, r: {a: 20, b: "y"}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {id: 1, a: 10, b: "x"}]
+        - [1, {id: 2, a: 20, b: "y"}]
+
+# Naming fewer fields than the record has is a *type* error, not an empty
+# relation: a record's shape is known, so the mistake is visible.
+- name: a record pattern must name every field
+  source: |
+    src :: relation(id: i64, r: record(a: i64, b: string))
+    src(id:, r:) <- input
+
+    out(id: id, a: a) <-
+        src(id: id, r: r)
+        record(a:) := r
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "has fields this pattern does not name; write `**` to allow them"
+
+# And `**` is how to say it on purpose.
+- name: the rest marker allows the fields it does not name
+  source: |
+    src :: relation(id: i64, r: record(a: i64, b: string))
+    src(id:, r:) <- input
+
+    out(id: id, a: a) <-
+        src(id: id, r: r)
+        record(a:, **) := r
+
+  input:
+    - src:
+        - [1, {id: 1, r: {a: 10, b: "x"}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {id: 1, a: 10}]
+
+# `**rest` over a record binds the fields left. It works where the dict form
+# does not, and for a reason worth the case: a record's remaining fields are
+# known at compile time, so the remainder is a literal built from them rather
+# than the runtime key-subtraction a dict would need.
+- name: a record remainder is the fields left over
+  source: |
+    src :: relation(id: i64, r: record(a: i64, b: string, c: i64))
+    src(id:, r:) <- input
+
+    out(id: id, a: a, left: rest) <-
+        src(id: id, r: r)
+        record(a:, **rest) := r
+
+  input:
+    - src:
+        - [1, {id: 1, r: {a: 10, b: "x", c: 30}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {id: 1, a: 10, left: {b: "x", c: 30}}]
+
+# A field the record does not have, which the type says outright.
+- name: a record pattern may not name a field the record lacks
+  source: |
+    src :: relation(id: i64, r: record(a: i64))
+    src(id:, r:) <- input
+
+    out(id: id, z: z) <-
+        src(id: id, r: r)
+        record(a:, z:) := r
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "has no field `z`"
+
+# A pattern names a literal key, and a literal key is a string.
+- name: a dict pattern needs a string-keyed dict
+  source: |
+    src :: relation(id: i64, d: dict(i64, string))
+    src(id:, d:) <- input
+
+    out(id: id, a: a) <-
+        src(id: id, d: d)
+        {a:, **} := d
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "a dict pattern names a string key, but this dict is keyed by `i64`"
+
+# Neither pattern takes a subject of the other's kind.
+- name: a dict pattern needs a dict
+  source: |
+    src :: relation(id: i64, n: i64)
+    src(id:, n:) <- input
+
+    out(id: id, a: a) <-
+        src(id: id, n: n)
+        {a:, **} := n
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "is not a dict to destructure"
+
+- name: a record pattern needs a record
+  source: |
+    src :: relation(id: i64, n: i64)
+    src(id:, n:) <- input
+
+    out(id: id, a: a) <-
+        src(id: id, n: n)
+        record(a:, **) := n
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "is not a record to destructure"
+
+# A pattern's fields are *named*, not positional, so two spellings of the same
+# fields are one pattern — `desugar` sorts them, and the structural key and the
+# expansion both read that order.
+- name: field order does not change the emission
+  source: |
+    src :: relation(d: dict(string, i64))
+    src(d:) <- input
+
+    out(a: a, b: b) <-
+        src(d: d)
+        {a:, b:} := d
+  equivalent_to: |
+    src :: relation(d: dict(string, i64))
+    src(d:) <- input
+
+    out(a: a, b: b) <-
+        src(d: d)
+        {b:, a:} := d

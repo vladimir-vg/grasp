@@ -464,7 +464,7 @@ before the join graph, so everything downstream sees the smaller core.
 
 | written | means |
 |---|---|
-| `x:` in an atom or head | `x: x` |
+| `x:` in an atom, a head or a pattern | `x: x` |
 | `a ++ b` | `concat(a, b)` |
 | `{a: v}` | `{"a" => v}` |
 | `{"a": v}` | `{"a" => v}` |
@@ -472,24 +472,46 @@ before the join graph, so everything downstream sees the smaller core.
 | `s.a.b` | `record:get(record:get(s, "a"), "b")` |
 | `not e` in an expression | `boolean:not(e)` |
 
-The **patterns** desugar to a binding plus the checks that make the pattern
+The **patterns** stand for a binding plus the checks that make the pattern
 exact. Each generated check is an ordinary filter, so the optimizer places it
-like any other.
+like any other. Written in the shorthand, since that is how they are written.
 
 | written | means |
 |---|---|
 | `[x, y] := arr` | `length(arr) = 2`, `x := arr[0]`, `y := arr[1]` |
 | `[x, y, *] := arr` | `length(arr) >= 2`, then the two bindings |
 | `[x, y, *r] := arr` | as above, and `r := arr[2:]` |
-| `{a: x} := d` | `length(d) = 1`, `x := dict:get(d, "a")`, `x :: V` |
-| `{a: x, **} := d` | `x := dict:get(d, "a")`, `x :: V` — no size check |
-| `{a: x, **e} := d` | as above, and `e := dict:without_keys(d, ["a"])` |
-| `record(a: x) := s` | `x := record:get(s, "a")`, `s`'s type must have exactly that field |
-| `record(a: x, **) := s` | `x := record:get(s, "a")` — extra fields allowed |
+| `{a:} := d` | `length(d) = 1`, `a := dict:get(d, "a")`, `a :: V` |
+| `{a:, **} := d` | `a := dict:get(d, "a")`, `a :: V` — no size check |
+| `{a:, **e} := d` | as above, and `e := dict:without_keys(d, ["a"])` |
+| `record(a:) := s` | `a := record:get(s, "a")`; `s`'s type must have exactly that field |
+| `record(a:, **) := s` | `a := record:get(s, "a")` — extra fields allowed |
+| `record(a:, **e) := s` | as above, and `e` is a record of the fields left |
 
-`dict:get` yields `optional(V)`, so the `x :: V` assertion is what makes a
+`dict:get` yields `optional(V)`, so the `a :: V` assertion is what makes a
 missing key drop the row rather than bind absence. That is the exactness the
 pattern promises.
+
+**A dict and a record are exact in different senses**, and the difference is
+worth stating because both spellings look alike. A dict's size is *data*, so
+`{a:, b:} := d` is a filter and a row whose dict has three entries is simply not
+derived — the ordinary [body-has-an-answer](#a-body-must-have-an-answer) case. A
+record's fields are its *type*, so `record(a:) := s` over a two-field `s` is a
+**compile error**; there is no row to drop, because every `s` has the same shape.
+That is also why `**e` works over a record and not over a dict: a record's
+remaining fields are known before the program runs, so the remainder is a literal
+built from them, while a dict's would need entries subtracted at runtime.
+
+A pattern's fields are named rather than positional, so `{a:, b:}` and `{b:, a:}`
+are one pattern, and the compiler puts them in one order before anything reads
+them.
+
+The expansion happens **after** inference rather than in desugaring, which is
+where the rest of this section's table is performed. Two of the three parts need
+types: the narrowing after a dict `get` has to name `V`, and a record remainder
+has to know which fields are left. So the patterns reach
+[`inference.md`](inference.md#where-a-constraint-comes-from), which already gives
+their typing rules, and are expanded once it has answered.
 
 The **unnests** do not desugar to filters — they are generative, and become a
 `flat_map` in the computation DAG:
@@ -506,7 +528,8 @@ relation requires.
 Two forms named above are not yet available: `arr[i]` and `arr[2:]` need array
 element access, and `dict:without_keys` needs its builtin. Both are
 [future work](overview.md#future-work), and the patterns that depend on them —
-array destructure, and `**e` with a binding — are rejected until then.
+every array destructure, and `**e` over a *dict* — are rejected until then. So is
+`(i, v) := *arr`, for the first of those reasons.
 
 ## Builtins
 
