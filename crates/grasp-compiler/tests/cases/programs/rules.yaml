@@ -168,3 +168,59 @@
   expected_exact_output:
     - seen:
         - [1, {who: "ann"}]
+
+# A relation is a set, so asserting a member twice is asserting it once. This
+# needs saying because `constant` does not deduplicate: grasp-dbsp consolidates
+# identical rows by *summing* their weights, so a fact written twice arrived at
+# weight 2 — and a relation defined only by facts had no `distinct` to clamp it.
+- name: a fact written twice is one row
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src: 1, dst: 2)
+    edge(src: 1, dst: 2)
+    edge(src: 2, dst: 3)
+
+  input:
+    - {}
+
+  expected_exact_output:
+    - edge:
+        - [1, {src: 1, dst: 2}]
+        - [1, {src: 2, dst: 3}]
+
+# Two facts that are the same row written differently. A fact argument is any
+# closed expression, so equality is a question about values and not about text —
+# which is why deduplicating the source would not have been enough.
+- name: two facts that evaluate alike are one row
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src: 1, dst: 2)
+    edge(src: 1, dst: 1 + 1)
+
+  input:
+    - {}
+
+  expected_exact_output:
+    - edge:
+        - [1, {src: 1, dst: 2}]
+
+# The same relation defined by facts *and* a rule was already clamped, by the
+# `distinct` over the union. Pinned so the two paths cannot drift.
+- name: a duplicated fact beside a rule is one row
+  source: |
+    seed :: relation(v: i64)
+    seed(v:) <- input
+
+    known :: relation(v: i64)
+    known(v: 1)
+    known(v: 1)
+    known(v: x) <- seed(v: x)
+
+  input:
+    - seed:
+        - [1, {v: 2}]
+
+  expected_exact_output:
+    - known:
+        - [1, {v: 1}]
+        - [1, {v: 2}]

@@ -100,9 +100,18 @@ edge(src: 2, dst: 3)
 ```
 
 ```
-edge :: zset(record(src: i64, dst: i64))
-edge := constant([record(src: 1, dst: 2), record(src: 2, dst: 3)])
+edge_1 :: zset(record(src: i64, dst: i64))
+edge_1 := constant([record(src: 1, dst: 2), record(src: 2, dst: 3)])
+edge   := distinct(edge_1)
 ```
+
+**The `distinct` is not decoration.** `constant` consolidates identical rows by
+*summing* their weights, so a fact written twice — or written once, and once
+again as a closed expression that evaluates the same — arrives at weight 2. A
+relation is a set and facts are program text, so asserting a member twice is
+asserting it once, and `distinct` is what says so. The `constant` therefore
+takes an intermediate name whether or not any rule also defines the relation,
+which is the same shape either way.
 
 A fact's arguments are closed expressions — [`semantics.md`](semantics.md#facts)
 says why they must be — so they translate across unchanged and grasp-dbsp
@@ -390,11 +399,11 @@ Datalog relations are sets, and `distinct` is what makes them so.
 
 For more than two rules, `sum(rule₁, rule₂, …)` is n-ary and saves the nesting.
 
-**`distinct` wraps a rule-derived definition and nothing else.** Not an `input`,
-whose rows are whatever was pushed; not a `constant`, whose rows are written out
-once and cannot repeat; and not a recursive stream, which grasp-dbsp deduplicates
-every round already ([below](#recursion)). A relation defined by facts *and*
-rules is one `distinct` over the sum of both.
+**`distinct` wraps whatever defines a relation, and nothing else.** Facts, rules,
+or both: a relation defined by facts *and* rules is one `distinct` over the sum
+of the two ([above](#facts)). It does not wrap an `input`, whose rows are
+whatever was pushed, nor a recursive stream, which grasp-dbsp deduplicates every
+round already ([below](#recursion)).
 
 ## Recursion
 

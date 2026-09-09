@@ -11,8 +11,9 @@ relation; several rules may derive for the same one. A relation's value is every
 tuple derivable by any of its rules, and nothing else.
 
 **Relations are sets.** A tuple derived twice — by two rules, or by two ways
-through one rule — appears once. This is the one place grasp and its target
-differ by default: grasp-dbsp's `plus` adds weights, so
+through one rule, or asserted twice as a fact — appears once. This is the one
+place grasp and its target differ by default: grasp-dbsp's `plus` adds weights
+and its `constant` sums the weights of identical rows, so
 [`mapping.md`](mapping.md#rules-and-unions) emits a `distinct` to restore set
 semantics — at the relation, and wherever else multiplicity is *observable*,
 which is exactly an [aggregate](#aggregation).

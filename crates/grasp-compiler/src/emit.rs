@@ -233,27 +233,18 @@ fn emit_relation(out: &mut String, relation: &Relation, names: &mut Names) {
         Source::Derived { facts, rules } => {
             let mut operands: Vec<String> = Vec::new();
             if !facts.is_empty() {
-                // "The facts of one relation collect into a single `constant`."
-                // It is the relation's own node when nothing else defines the
-                // relation, and an operand of the union otherwise — either way
-                // it needs a name and a typespec, because `constant` does not
-                // nest and takes its type from a `::`.
-                let name = if rules.is_empty() {
-                    node.clone()
-                } else {
-                    names.intermediate(node)
-                };
+                // "The facts of one relation collect into a single
+                // `constant`", which is an operand of the union like a rule's
+                // output. It needs a name and a typespec whether or not
+                // anything else defines the relation, because `constant` does
+                // not nest and takes its type from a `::`.
+                let name = names.intermediate(node);
                 let rows: Vec<String> = facts
                     .iter()
                     .map(|row| fact_row(row, &relation.columns))
                     .collect();
                 let _ = writeln!(out, "{name} :: {ty}");
                 let _ = writeln!(out, "{name} := constant([{}])", rows.join(", "));
-                if rules.is_empty() {
-                    // No `distinct`: a fact's rows are written out once and
-                    // cannot repeat, so there is nothing to deduplicate.
-                    return;
-                }
                 operands.push(name);
             }
             for rule in rules {
@@ -266,8 +257,12 @@ fn emit_relation(out: &mut String, relation: &Relation, names: &mut Names) {
                 2 => format!("plus({}, {})", operands[0], operands[1]),
                 _ => format!("sum({})", operands.join(", ")),
             };
-            // `distinct` wraps a rule-derived definition and nothing else: a
-            // relation is a set, and `plus` adds weights.
+            // A relation is a set, and neither `plus` nor `constant` makes one:
+            // `plus` adds weights, and a `constant` consolidates identical rows
+            // by summing theirs — so a fact written twice, or written once and
+            // once again as an expression that evaluates the same, arrives at
+            // weight 2. Facts are program text and a relation is a set, so
+            // asserting a member twice is asserting it once.
             let _ = writeln!(out, "{node} := distinct({union})");
         }
     }
