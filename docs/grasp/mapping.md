@@ -279,13 +279,35 @@ right is what this pass emits for it.
 | `a > 20` | `filter` | `filter(s, function((row) -> row.a > 20))` |
 | `v := e` | `map` | `map(s, function((row) -> record(…, v: e)))` |
 | `s := sum<r>` | `aggregate` | `map_index`, `aggregate(s, sum, f)`, `map` |
-| `(v) := *arr` | `flat_map` | `flat_map(s, function((row) -> row.arr))` |
-| `(k, v) := **d` | `flat_map` | `flat_map(s, function((row) -> entries(row.d)))` |
+| `(v) := *arr` | `flat_map` | `flat_map(s, function((row) -> select(row.arr, …)))` |
+| `(k, v) := **d` | `flat_map` | `flat_map(s, function((row) -> select(entries(row.d), …)))` |
 | `v :: T` | `filter` | `filter` on the runtime check |
 | the head | `map` | `map(s, function((row) -> record(…)))` |
 
 Nothing in that table is a special case: each is the operator its DAG node named,
 which is why the node vocabulary was renamed to grasp-dbsp's in the first place.
+
+**An unnest carries the rest of the row, and `select` is what carries it.**
+`flat_map` emits one row per element of the array its function returns, so the
+row it emits *is* an element, and everything else the rule had bound would be
+lost. `select` builds the rows to fan out to instead:
+
+```grasp
+tagged(name: n, tag: k) <-
+    person(name: n, tags: d)
+    (k, _v) := **d
+```
+
+```
+tagged := flat_map(rows, function((row) ->
+    select(entries(row.d), function((e) -> record(n: row.n, k: e.key)))))
+```
+
+Both binders are in scope: `n` comes off the row and `k` off the element. A dict
+goes through `entries`, which already yields `array(record(key, value))`, so the
+two kinds of unnest take one shape and differ only in what an element's parts
+are called. This is the one thing in grasp that grasp-dbsp could not express
+until it had [`select`](../grasp-dbsp/language.md#select).
 
 ### Narrowing and dropping
 

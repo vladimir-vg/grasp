@@ -87,7 +87,7 @@ That is the whole rule. Nothing is `#[ignore]`d, so nothing quietly stops being
 parsed, and each run ends with the debt, grouped by what is blocking it:
 
 ```
-3 pending: unnesting 2, type assertions 1
+1 pending: type assertions 1
 ```
 
 which is a work queue rather than a census — the largest number is the feature
@@ -418,6 +418,7 @@ been guarding — and unlike a snapshot it cannot rot.
 | `unions.yaml` | several rules for one relation, and the `distinct` that makes the result a set |
 | `negation.yaml` | the antijoin, and the stratification that gives it a meaning |
 | `aggregation.yaml` | implicit grouping, several aggregates sharing one group, and the stratum an aggregate may reach |
+| `unnest.yaml` | one row per element, with the rest of the rule's bindings carried alongside each |
 | `smoke.yaml` | the worked programs from the spec, end to end |
 
 `inference/`, covering [`inference.md`](../../../../docs/grasp/inference.md):

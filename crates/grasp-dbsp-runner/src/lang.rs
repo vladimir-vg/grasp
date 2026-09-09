@@ -274,6 +274,21 @@ const KEYWORDS: &[&str] = &[
 /// Assembled from the operator, aggregator and builtin lists rather than
 /// duplicating them, because a reserved list that drifts from the real names is
 /// worse than none.
+/// Every reserved word, for a caller that has to escape around them.
+///
+/// `grasp-compiler` mangles a relation name that lands on one, so it needs the
+/// list and not only the predicate — and needs it from here, or the copy drifts.
+pub fn reserved_words() -> Vec<&'static str> {
+    crate::typecheck::OPERATORS
+        .iter()
+        .chain(crate::typecheck::AGGREGATORS)
+        .chain(crate::expr::Builtin::ALL)
+        .chain(TYPE_NAMES)
+        .chain(KEYWORDS)
+        .copied()
+        .collect()
+}
+
 pub fn is_reserved(name: &str) -> bool {
     crate::typecheck::OPERATORS.contains(&name)
         || crate::typecheck::AGGREGATORS.contains(&name)

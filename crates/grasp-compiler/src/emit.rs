@@ -41,6 +41,34 @@ const ROW: &str = "row";
 /// rather than a row.
 const VALUE: &str = "v";
 
+/// The binder a `select` gives one element of the collection being unnested.
+const ELEMENT: &str = "e";
+
+/// Where each grasp variable is found in the grasp-dbsp being written.
+///
+/// Almost always a field of one row — every rule variable is — and for a long
+/// time one name was enough. A `select` inside a `flat_map` breaks that: the
+/// unnested variables come off the element binder while the rest of the row
+/// still comes off the row, and both are in scope at once. So this is a lookup
+/// rather than a name, with the row as what a variable falls back to.
+struct Scope<'a> {
+    row: &'a str,
+    bound: Option<&'a BTreeMap<String, String>>,
+}
+
+impl<'a> Scope<'a> {
+    fn row(row: &'a str) -> Scope<'a> {
+        Scope { row, bound: None }
+    }
+
+    fn of(&self, v: &str) -> String {
+        match self.bound.and_then(|b| b.get(v)) {
+            Some(text) => text.clone(),
+            None => format!("{}.{v}", self.row),
+        }
+    }
+}
+
 /// Emit a planned program.
 pub fn emit(plan: &Plan) -> String {
     let mut names = Names::new(plan);
@@ -309,6 +337,21 @@ fn emit_rule(out: &mut String, relation: &Relation, rule: &Rule, names: &mut Nam
             Op::Antijoin { left, right } => {
                 emit_antijoin(out, &base, names, rule, &at, *left, *right, &node.schema)
             }
+            Op::Unnest {
+                input,
+                over,
+                binds,
+                kind,
+            } => emit_unnest(
+                out,
+                &base,
+                names,
+                &at[*input],
+                over,
+                binds,
+                *kind,
+                &node.schema,
+            ),
             Op::Aggregate { input, group, aggs } => {
                 emit_aggregate(out, &base, names, &at[*input], group, aggs, &node.schema)
             }
@@ -470,7 +513,7 @@ fn emit_aggregate(
     for a in aggs {
         let folded = names.intermediate(base);
         let projection = match &a.arg {
-            Some(e) => expr_in(VALUE, e, None),
+            Some(e) => expr_in(&Scope::row(VALUE), e, None),
             None => "0".to_string(),
         };
         let _ = writeln!(
@@ -562,6 +605,59 @@ fn aggregator_text(a: Aggregator) -> &'static str {
     key::aggregator(a)
 }
 
+/// One row per element, with the rest of the row carried alongside each.
+///
+/// A `flat_map` fans out over the array its function returns, so the row it
+/// emits *is* an element — and the rest of the row would be lost. `select` is
+/// what builds the rows to fan out to, putting the carried fields back beside
+/// each element. That is the whole reason grasp-dbsp has it.
+///
+/// A dict goes through `entries`, which already yields
+/// `array(record(key, value))`, so both kinds take one shape and differ only in
+/// what an element's parts are called.
+#[allow(clippy::too_many_arguments)]
+fn emit_unnest(
+    out: &mut String,
+    base: &str,
+    names: &mut Names,
+    input: &str,
+    over: &core::Expr,
+    binds: &[String],
+    kind: core::UnnestKind,
+    schema: &BTreeSet<String>,
+) -> String {
+    let array = match kind {
+        core::UnnestKind::Array => expr_text(over, None),
+        core::UnnestKind::Dict => format!("entries({})", expr_text(over, None)),
+    };
+    // What the unnested variables are called on the element, which is the whole
+    // of the difference between the two kinds.
+    let mut bound: BTreeMap<String, String> = BTreeMap::new();
+    match (kind, binds) {
+        (core::UnnestKind::Array, [v]) => {
+            bound.insert(v.clone(), ELEMENT.to_string());
+        }
+        (core::UnnestKind::Dict, [k, v]) => {
+            bound.insert(k.clone(), format!("{ELEMENT}.key"));
+            bound.insert(v.clone(), format!("{ELEMENT}.value"));
+        }
+        _ => unreachable!("an unnest binds one variable, or a key and a value"),
+    }
+    let scope = Scope {
+        row: ROW,
+        bound: Some(&bound),
+    };
+    let fields: Vec<(String, String)> = schema.iter().map(|v| (v.clone(), scope.of(v))).collect();
+    let name = names.intermediate(base);
+    let _ = writeln!(
+        out,
+        "{name} := flat_map({input}, function(({ROW}) -> \
+         select({array}, function(({ELEMENT}) -> {}))))",
+        record_text(&fields)
+    );
+    name
+}
+
 /// A record of variables read straight off the row — a `map_index`'s key or
 /// value, which are always projections and never computations.
 ///
@@ -641,6 +737,7 @@ struct Names {
 /// a relation but says nothing about `map` or `join`, so the two lists have to
 /// be reconciled here rather than assumed to agree.
 const RESERVED: &[&str] = &[
+    "select",
     "input",
     "constant",
     "map",
@@ -876,12 +973,12 @@ fn record_text(fields: &[(String, String)]) -> String {
 /// emitter has to say the answer out loud, and `cast` is how grasp-dbsp hears
 /// it. Everywhere else `want` is threaded through and never used.
 pub fn expr_text(e: &core::Expr, want: Option<&Type>) -> String {
-    expr_in(ROW, e, want)
+    expr_in(&Scope::row(ROW), e, want)
 }
 
-/// One expression against a named binder.
-pub fn expr_in(binder: &str, e: &core::Expr, want: Option<&Type>) -> String {
-    let expr_text = |e: &core::Expr, want: Option<&Type>| expr_in(binder, e, want);
+/// One expression against a scope.
+fn expr_in(scope: &Scope<'_>, e: &core::Expr, want: Option<&Type>) -> String {
+    let expr_text = |e: &core::Expr, want: Option<&Type>| expr_in(scope, e, want);
     match e {
         core::Expr::Lit {
             value: Lit::None, ..
@@ -892,7 +989,7 @@ pub fn expr_in(binder: &str, e: &core::Expr, want: Option<&Type>) -> String {
         core::Expr::Lit { value, .. } => lit_text(value),
         // Every free variable of a rule body is a field of the row the previous
         // node handed on. `plan` guarantees it is there.
-        core::Expr::Var { name, .. } => format!("{binder}.{name}"),
+        core::Expr::Var { name, .. } => scope.of(name),
         core::Expr::Unary { op, operand, .. } => match op {
             UnOp::Neg => format!("(-{})", expr_text(operand, None)),
             UnOp::Not => format!("(not {})", expr_text(operand, None)),
@@ -903,7 +1000,7 @@ pub fn expr_in(binder: &str, e: &core::Expr, want: Option<&Type>) -> String {
             binop_text(*op),
             expr_text(rhs, None)
         ),
-        core::Expr::Call { callee, args, .. } => call_text(binder, *callee, args),
+        core::Expr::Call { callee, args, .. } => call_text(scope, *callee, args),
         core::Expr::ArrayLit { elems, .. } => {
             let element = match strip(want) {
                 Some(Type::Array(t)) => Some(t.as_ref()),
@@ -961,8 +1058,8 @@ pub fn expr_in(binder: &str, e: &core::Expr, want: Option<&Type>) -> String {
 /// callables, so the emitter puts back what desugaring took apart — and a
 /// program that wrote one by hand reaches the same text as the sugar, which is
 /// what lets the two be asserted equivalent.
-fn call_text(binder: &str, callee: core::Builtin, args: &[core::Expr]) -> String {
-    let expr_text = |e: &core::Expr, want: Option<&Type>| expr_in(binder, e, want);
+fn call_text(scope: &Scope<'_>, callee: core::Builtin, args: &[core::Expr]) -> String {
+    let expr_text = |e: &core::Expr, want: Option<&Type>| expr_in(scope, e, want);
     match (callee, args) {
         (core::Builtin::RecordGet, [subject, field]) => {
             if let core::Expr::Lit {
@@ -1022,6 +1119,32 @@ fn binop_text(op: BinOp) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    /// The reserved list is a copy of grasp-dbsp's, and nothing held the two
+    /// together.
+    ///
+    /// `mangle` is what stops a grasp relation named `map` or `select` emitting
+    /// a program the target cannot parse, and it reads this list — so a word
+    /// grasp-dbsp reserves and this list omits is a program that fails to parse
+    /// for a reason no test would explain. The two crates meet at grasp-dbsp
+    /// text and a dev-dependency is enough to ask.
+    #[test]
+    fn the_reserved_list_is_grasp_dbsp_s() {
+        for word in super::RESERVED {
+            assert!(
+                grasp_dbsp_runner::lang::is_reserved(word),
+                "`{word}` is reserved here but not by grasp-dbsp"
+            );
+        }
+        // The direction that actually breaks a program: a word grasp-dbsp
+        // reserves and this list omits is one `mangle` does not escape.
+        for word in grasp_dbsp_runner::lang::reserved_words() {
+            assert!(
+                super::RESERVED.contains(&word),
+                "grasp-dbsp reserves `{word}` and `mangle` would not escape it"
+            );
+        }
+    }
+
     /// `mapping.md`'s four rules for a fixpoint, asserted against the text.
     ///
     /// They need a test of their own because **no fixture can see three of

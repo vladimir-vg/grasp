@@ -202,6 +202,19 @@ pub enum Op {
         group: Vec<String>,
         aggs: Vec<Agg>,
     },
+    /// One row per element of a collection, with the rest of the row carried
+    /// alongside each.
+    ///
+    /// A `flat_map` whose function is a `select`: the operator fans out and the
+    /// `select` builds the rows it fans out to, which is what puts the rest of
+    /// the row beside each element. `kind` decides what an element is —
+    /// an array's value, or a dict entry's key and value.
+    Unnest {
+        input: usize,
+        over: core::Expr,
+        binds: Vec<String>,
+        kind: core::UnnestKind,
+    },
     /// Keep the rows of `left` that `right` has no match for, and flatten.
     ///
     /// Two grasp-dbsp operators under one node, like [`Op::Narrow`]: `antijoin`
@@ -240,7 +253,8 @@ impl Op {
             | Op::Map { input, .. }
             | Op::MapIndex { input, .. }
             | Op::Narrow { input, .. }
-            | Op::Aggregate { input, .. } => vec![*input],
+            | Op::Aggregate { input, .. }
+            | Op::Unnest { input, .. } => vec![*input],
             Op::Join { left, right } | Op::Antijoin { left, right } => vec![*left, *right],
         }
     }
@@ -576,11 +590,7 @@ pub fn gaps(typed: &infer::Typed) -> Vec<Diagnostic> {
         for stmt in &rule.body {
             match stmt {
                 core::Stmt::Atom { .. } => {}
-                core::Stmt::Match { lhs, span, .. } => {
-                    if matches!(lhs, core::Pattern::Unnest { .. }) {
-                        note("unnesting", *span);
-                    }
-                }
+                core::Stmt::Match { .. } => {}
                 // `infer` reports this one, so a program carrying it never
                 // reaches here — but naming it costs nothing and the day the
                 // assertion lands, this is where it stops being a gap.
@@ -692,7 +702,9 @@ struct Atom {
 /// produce one, but it is not in the spanning tree and has to be placed.
 struct Dependent {
     kind: Kind,
-    binds: Option<String>,
+    /// What it produces. More than one only for an unnest, which binds a key
+    /// and a value together.
+    binds: Vec<String>,
     consumes: BTreeSet<String>,
     key: String,
     body: Body,
@@ -724,6 +736,12 @@ enum Body {
         entry: Vec<(String, String)>,
         equal: Vec<(String, String)>,
         computed: Vec<(String, core::Expr)>,
+    },
+    /// `(v) := *arr` or `(k, v) := **d`.
+    Unnest {
+        over: core::Expr,
+        vars: Vec<String>,
+        kind: core::UnnestKind,
     },
 }
 
@@ -782,7 +800,7 @@ fn plan_rule(
                             let eq = equals(&name, e, e.span());
                             deps.push(Dependent {
                                 kind: Kind::Filter,
-                                binds: None,
+                                binds: Vec::new(),
                                 consumes: free(&eq),
                                 key: key::expr(&eq),
                                 body: Body::Filter(eq),
@@ -835,7 +853,7 @@ fn plan_rule(
                 }
                 deps.push(Dependent {
                     kind: Kind::Negated,
-                    binds: None,
+                    binds: Vec::new(),
                     consumes,
                     key: key::stmt(stmt),
                     body: Body::Negated {
@@ -849,14 +867,31 @@ fn plan_rule(
             core::Stmt::Input { .. } | core::Stmt::Assert { .. } => {}
             core::Stmt::Filter { expr, .. } => deps.push(Dependent {
                 kind: Kind::Filter,
-                binds: None,
+                binds: Vec::new(),
                 consumes: free(expr),
                 key: key::expr(expr),
                 body: Body::Filter(expr.clone()),
             }),
             core::Stmt::Match { lhs, rhs, .. } => {
+                if let core::Pattern::Unnest { vars, kind, .. } = lhs {
+                    let core::Rhs::Expr(e) = rhs else {
+                        unreachable!("an aggregate has no pattern to unnest")
+                    };
+                    deps.push(Dependent {
+                        kind: Kind::Match,
+                        binds: vars.clone(),
+                        consumes: free(e),
+                        key: key::stmt(stmt),
+                        body: Body::Unnest {
+                            over: e.clone(),
+                            vars: vars.clone(),
+                            kind: *kind,
+                        },
+                    });
+                    continue;
+                }
                 let core::Pattern::Var { name, .. } = lhs else {
-                    unreachable!("unnest is reported by `gaps`")
+                    unreachable!("a pattern is a variable or an unnest")
                 };
                 // Every aggregate in a rule shares one group, so they are one
                 // step rather than one dependent each — and that step is always
@@ -875,7 +910,7 @@ fn plan_rule(
                 };
                 deps.push(Dependent {
                     kind: Kind::Match,
-                    binds: Some(name.clone()),
+                    binds: vec![name.clone()],
                     consumes: free(e),
                     key: key::stmt(stmt),
                     body: Body::Bind(name.clone(), e.clone()),
@@ -967,10 +1002,8 @@ fn plan_rule(
             if let Item::Enter(a) = item {
                 avail.extend(atoms[*a].vars.iter().cloned());
             }
-            if let Item::Dep(d) = item
-                && let Some(v) = &deps[*d].binds
-            {
-                avail.insert(v.clone());
+            if let Item::Dep(d) = item {
+                avail.extend(deps[*d].binds.iter().cloned());
             }
         }
         if i > 0 {
@@ -1020,11 +1053,11 @@ fn closure(atoms: &[Atom], comp: &[usize], deps: &[Dependent]) -> BTreeSet<Strin
     loop {
         let mut grew = false;
         for d in deps {
-            if let Some(v) = &d.binds
-                && !out.contains(v)
+            if !d.binds.is_empty()
+                && d.binds.iter().any(|v| !out.contains(v))
                 && d.consumes.is_subset(&out)
             {
-                out.insert(v.clone());
+                out.extend(d.binds.iter().cloned());
                 grew = true;
             }
         }
@@ -1173,9 +1206,7 @@ fn place_ready(
         ready.sort_by(|a, b| (&deps[*a].kind, &deps[*a].key).cmp(&(&deps[*b].kind, &deps[*b].key)));
         let chosen = ready[0];
         placed[chosen] = true;
-        if let Some(v) = &deps[chosen].binds {
-            avail.insert(v.clone());
-        }
+        avail.extend(deps[chosen].binds.iter().cloned());
         trace.push(Item::Dep(chosen));
     }
 }
@@ -1198,7 +1229,7 @@ fn cost(
         let mut want = later[i + 1].clone();
         match trace[i] {
             Item::Dep(d) => {
-                if let Some(v) = &deps[d].binds {
+                for v in &deps[d].binds {
                     want.remove(v);
                 }
                 want.extend(deps[d].consumes.iter().cloned());
@@ -1214,9 +1245,7 @@ fn cost(
         match item {
             Item::Enter(a) => born.extend(atoms[*a].vars.iter().cloned()),
             Item::Dep(d) => {
-                if let Some(v) = &deps[*d].binds {
-                    born.insert(v.clone());
-                }
+                born.extend(deps[*d].binds.iter().cloned());
             }
             Item::Ground | Item::Join | Item::Cross | Item::Aggregate => {}
         }
@@ -1312,6 +1341,12 @@ enum Step {
     Row(Vec<(String, core::Expr, Option<Type>)>),
     /// See [`Op::Aggregate`]. The group is worked out from liveness.
     Aggregate(Vec<Agg>),
+    /// See [`Op::Unnest`].
+    Unnest {
+        over: core::Expr,
+        vars: Vec<String>,
+        kind: core::UnnestKind,
+    },
     /// See [`Op::Antijoin`]. `entry` is column to key variable, and `equal`
     /// the columns a repeated variable ties together.
     Antijoin {
@@ -1338,9 +1373,13 @@ fn lower(
     let mut produced: BTreeSet<String> = BTreeSet::new();
     for item in &trace {
         let Item::Dep(d) = item else { continue };
-        let Some(name) = deps[*d].binds.clone() else {
+        // Only a match can compete: an unnest has no equality form, and one
+        // binding a name already produced would be a rebinding rather than a
+        // second computation of the same value.
+        let [name] = deps[*d].binds.as_slice() else {
             continue;
         };
+        let name = name.clone();
         if produced.insert(name.clone()) {
             continue;
         }
@@ -1349,7 +1388,7 @@ fn lower(
         };
         let eq = equals(&name, e, e.span());
         deps[*d].kind = Kind::Filter;
-        deps[*d].binds = None;
+        deps[*d].binds = Vec::new();
         deps[*d].consumes = free(&eq);
         deps[*d].key = key::expr(&eq);
         deps[*d].body = Body::Filter(eq);
@@ -1375,6 +1414,19 @@ fn lower(
                         fresh,
                         move |e| Step::Bind(name.clone(), e),
                         e.clone(),
+                    )
+                }
+                Body::Unnest { over, vars, kind } => {
+                    let (vars, kind) = (vars.clone(), *kind);
+                    push_total(
+                        &mut steps,
+                        fresh,
+                        move |over| Step::Unnest {
+                            over,
+                            vars: vars.clone(),
+                            kind,
+                        },
+                        over.clone(),
                     )
                 }
                 Body::Negated {
@@ -1430,11 +1482,15 @@ fn lower(
             Step::Join | Step::Cross => {
                 let right = shapes.pop().expect("a stream to join");
                 let left = shapes.pop().expect("a stream to join");
+                // Whatever the two sides share, which for two components is
+                // usually nothing — that is what made them two. Usually, not
+                // always: a dependent node placed inside one component can bind
+                // a variable a later component's atom also binds, and then the
+                // two really do meet. `(v) := *arr` followed by an atom over
+                // `v` is exactly that, and joining on `v` is what the rule
+                // means. The components are drawn from the atoms alone, so this
+                // is the one place that can see it.
                 let key: Vec<String> = left.intersection(&right).cloned().collect();
-                debug_assert!(
-                    !matches!(step, Step::Cross) || key.is_empty(),
-                    "components share no variable, so a cross has no key"
-                );
                 keys.insert(i, key);
                 shapes.push(left.union(&right).cloned().collect());
             }
@@ -1444,6 +1500,10 @@ fn lower(
             Step::Aggregate(aggs) => {
                 let shape = shapes.last_mut().expect("a stream");
                 shape.extend(aggs.iter().map(|a| a.out.clone()));
+            }
+            Step::Unnest { vars, .. } => {
+                let shape = shapes.last_mut().expect("a stream");
+                shape.extend(vars.iter().cloned());
             }
             Step::Bind(name, _) | Step::Narrow(name, _) => {
                 shapes.last_mut().expect("a stream").insert(name.clone());
@@ -1478,6 +1538,12 @@ fn lower(
             // here alive even where nothing downstream wants it.
             Step::Antijoin { entry, .. } => {
                 want.extend(entry.iter().map(|(_, v)| v.clone()));
+            }
+            Step::Unnest { over, vars, .. } => {
+                for v in vars {
+                    want.remove(v);
+                }
+                want.extend(free(over));
             }
             Step::Aggregate(aggs) => {
                 for a in aggs {
@@ -1683,6 +1749,27 @@ fn lower(
                     .filter(|v| carry.contains(v))
                     .collect();
                 let n = push(&mut nodes, Op::Antijoin { left, right }, schema);
+                *stack.last_mut().expect("a stream") = n;
+            }
+            Step::Unnest { over, vars, kind } => {
+                let input = *stack.last().expect("a stream to fan out");
+                let mut schema: BTreeSet<String> = nodes[input]
+                    .schema
+                    .iter()
+                    .filter(|v| carry.contains(*v))
+                    .cloned()
+                    .collect();
+                schema.extend(vars.iter().filter(|v| carry.contains(*v)).cloned());
+                let n = push(
+                    &mut nodes,
+                    Op::Unnest {
+                        input,
+                        over,
+                        binds: vars,
+                        kind,
+                    },
+                    schema,
+                );
                 *stack.last_mut().expect("a stream") = n;
             }
             Step::Aggregate(aggs) => {

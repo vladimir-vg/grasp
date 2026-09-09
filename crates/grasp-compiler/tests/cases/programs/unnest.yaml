@@ -1,0 +1,126 @@
+# Unnesting: one row per element, with the rest of the rule's bindings carried
+# alongside each. `flat_map` fans out over the array its function returns, so
+# the row it emits *is* an element — `select` is what builds the rows to fan
+# out to, and is why grasp-dbsp has it at all.
+
+- name: an array unnest produces one row per element
+  source: |
+    person :: relation(name: string, tags: array(string))
+    person(name:, tags:) <- input
+
+    item(name: n, tag: v) <-
+        person(name: n, tags: arr)
+        (v) := *arr
+
+  input:
+    - person:
+        - [1, {name: "ann", tags: ["x", "y"]}]
+        - [1, {name: "bo", tags: ["z"]}]
+
+  expected_exact_output:
+    - item:
+        - [1, {name: "ann", tag: "x"}]
+        - [1, {name: "ann", tag: "y"}]
+        - [1, {name: "bo", tag: "z"}]
+
+# "`(k, v) := **d` iterates entries in key order, because a dict is stored
+#  sorted" — a relation is a set, and the rows must not depend on how the dict
+#  was built.
+- name: a dict unnest binds the key and the value
+  source: |
+    person :: relation(name: string, tags: dict(string, i64))
+    person(name:, tags:) <- input
+
+    tagged(name: n, tag: k, n_uses: c) <-
+        person(name: n, tags: d)
+        (k, c) := **d
+
+  input:
+    - person:
+        - [1, {name: "ann", tags: {"x": 1, "y": 2}}]
+
+  expected_exact_output:
+    - tagged:
+        - [1, {name: "ann", tag: "x", n_uses: 1}]
+        - [1, {name: "ann", tag: "y", n_uses: 2}]
+
+# An empty collection contributes no row: fan-out follows the data.
+- name: an empty array contributes nothing
+  source: |
+    person :: relation(name: string, tags: array(string))
+    person(name:, tags:) <- input
+
+    item(name: n, tag: v) <-
+        person(name: n, tags: arr)
+        (v) := *arr
+
+  input:
+    - person:
+        - [1, {name: "ann", tags: []}]
+        - [1, {name: "bo", tags: ["z"]}]
+
+  expected_exact_output:
+    - item:
+        - [1, {name: "bo", tag: "z"}]
+
+# The unnested variable is an ordinary binding: a filter reads it, and the
+# placement rule puts that filter after the thing that binds it.
+- name: a filter may read an unnested variable
+  source: |
+    person :: relation(name: string, scores: array(i64))
+    person(name:, scores:) <- input
+
+    high(name: n, score: v) <-
+        person(name: n, scores: arr)
+        (v) := *arr
+        v > 50
+
+  input:
+    - person:
+        - [1, {name: "ann", scores: [10, 90]}]
+
+  expected_exact_output:
+    - high:
+        - [1, {name: "ann", score: 90}]
+
+# Two rows unnesting to the same pair appear once: a relation is a set.
+- name: rows unnesting alike appear once
+  source: |
+    person :: relation(name: string, tags: array(string))
+    person(name:, tags:) <- input
+
+    tag(v: t) <-
+        person(name: n, tags: arr)
+        (t) := *arr
+
+  input:
+    - person:
+        - [1, {name: "ann", tags: ["x"]}]
+        - [1, {name: "bo", tags: ["x"]}]
+
+  expected_exact_output:
+    - tag:
+        - [1, {v: "x"}]
+
+# An unnest joins like anything else: the variable it binds is a join key.
+- name: an unnested variable joins
+  source: |
+    person :: relation(name: string, tags: array(string))
+    label :: relation(tag: string, title: string)
+    person(name:, tags:) <- input
+    label(tag:, title:) <- input
+
+    titled(name: n, title: t) <-
+        person(name: n, tags: arr)
+        (v) := *arr
+        label(tag: v, title: t)
+
+  input:
+    - person:
+        - [1, {name: "ann", tags: ["x", "q"]}]
+      label:
+        - [1, {tag: "x", title: "eks"}]
+
+  expected_exact_output:
+    - titled:
+        - [1, {name: "ann", title: "eks"}]
