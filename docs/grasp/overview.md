@@ -136,14 +136,14 @@ design comes from. What is missing is missing on purpose.
   machine-dependence of IEEE arithmetic, resolvable only through an explicit
   eval against a shared cache. Here `f64` arithmetic is just arithmetic.
 
-- **A computed dict lookup, and conversions.** grasp-dbsp has `get(d, k)`,
-  `cast(x, T)` and `coalesce(x, d)`; grasp has none of them. A dict is read by
-  the `{a: x} := d` pattern, which names its key; a document by a runtime
-  filter; and an absent value is dropped by that same filter rather than
-  defaulted. So what has no spelling is a *computed* key and an arbitrary change
-  of type. Both are wanted; neither has been designed on grasp's own terms, and
-  taking grasp-dbsp's because it has one is how `optional` division briefly got
-  in.
+- **Conversions.** grasp-dbsp has `cast(x, T)` and `coalesce(x, d)`; grasp has
+  neither. A document is read by a runtime filter, and an absent value is
+  dropped by that same filter rather than defaulted. So what has no spelling is
+  an arbitrary change of type. It is wanted; it has not been designed on grasp's
+  own terms, and taking grasp-dbsp's because it has one is how `optional`
+  division briefly got in. (A computed dict key was on this list until it got a
+  spelling of grasp's own: `d[k]`, an expression rather than a borrowed
+  builtin.)
 
 - **A wider standard library.** The builtins available are the ones grasp-dbsp
   provides, listed in [`semantics.md`](semantics.md#builtins). The namespaces for types that

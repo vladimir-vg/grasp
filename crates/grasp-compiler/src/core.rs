@@ -272,7 +272,15 @@ pub enum Builtin {
 
     /// `record:get(s, "f")` — what `s.f` desugars to.
     RecordGet,
-    /// `dict:get(d, "a")` — what a dict pattern desugars to.
+    /// `dict:get(d, k)` — what `d[k]` and a dict pattern desugar to.
+    ///
+    /// The one of the three with no name a program can write: `d[k]` is the
+    /// spelling, and giving it a second one would be giving grasp the computed
+    /// dict lookup [`semantics.md`] holds back, unchecked, under a name nothing
+    /// documents. `record:get` and `boolean:not` keep theirs, being the written
+    /// halves of `.` and `not`.
+    ///
+    /// [`semantics.md`]: ../../../docs/grasp/semantics.md
     DictGet,
     /// `boolean:not(e)` — what `not e` desugars to in expression position.
     BooleanNot,
@@ -294,7 +302,6 @@ impl Builtin {
             "keys" => Builtin::Keys,
             "entries" => Builtin::Entries,
             "record:get" => Builtin::RecordGet,
-            "dict:get" => Builtin::DictGet,
             "boolean:not" => Builtin::BooleanNot,
             _ => return None,
         })

@@ -1014,17 +1014,40 @@ impl<'a> Parser<'a> {
         self.postfix()
     }
 
+    /// `postfix ::= primary ("." name | "[" expr "]")*`
+    ///
+    /// A `[` opening a line is an array destructure pattern, not a subscript on
+    /// whatever the line above ended with — the body's statements are delimited
+    /// by line, and an expression may not reach across one to take it. That is
+    /// the whole disambiguation, and it is why the token's `first_on_line`
+    /// matters here.
     fn postfix(&mut self) -> Result<Parsed, Diagnostic> {
         let mut base = self.primary()?;
-        while self.at(&Tok::Dot) {
-            self.bump();
-            let (name, name_span) = self.expect_ident("a field name")?;
-            let span = base.expr.span().to(name_span);
-            base = Parsed::primary(Expr::Field {
-                base: Box::new(base.expr),
-                name,
-                span,
-            });
+        loop {
+            if self.at(&Tok::Dot) {
+                self.bump();
+                let (name, name_span) = self.expect_ident("a field name")?;
+                let span = base.expr.span().to(name_span);
+                base = Parsed::primary(Expr::Field {
+                    base: Box::new(base.expr),
+                    name,
+                    span,
+                });
+                continue;
+            }
+            if self.at(&Tok::LBracket) && !self.peek().is_some_and(|t| t.first_on_line) {
+                self.bump();
+                let key = self.expr()?.expr;
+                let close = self.expect(&Tok::RBracket, "`]`")?;
+                let span = base.expr.span().to(close.span);
+                base = Parsed::primary(Expr::Index {
+                    base: Box::new(base.expr),
+                    key: Box::new(key),
+                    span,
+                });
+                continue;
+            }
+            break;
         }
         Ok(base)
     }

@@ -158,7 +158,7 @@ cat_expr    ::= add_expr ("++" add_expr)*
 add_expr    ::= mul_expr (("+" | "-") mul_expr)*
 mul_expr    ::= unary (("*" | "/" | "%") unary)*
 unary       ::= "-" postfix | postfix
-postfix     ::= primary ("." name)*
+postfix     ::= primary ("." name | "[" expr "]")*
 primary     ::= literal
               | variable
               | call
@@ -243,8 +243,21 @@ evaluates it, a pattern binds it — the ordinary duality of any language with
 destructuring.
 
 `=>` is **not** allowed in a pattern. A pattern names the key it extracts, so
-its keys are literal; looking one up by a computed key is `get(d, k)`, which is
-an expression and already exists.
+its keys are literal; looking one up by a computed key is `d[k]`, which is an
+expression and belongs there.
+
+A **subscript** is postfix, beside `.`, and reads a dict: `d[k]` where `k` is
+any expression. A `[` that opens a line is not one — the body's statements are
+delimited by line and an expression may not reach across one — so
+
+```grasp
+    n := d
+    [x, y] := arr
+```
+
+is a match and then an array pattern, never `d[x, y]`. Everywhere else, a `[`
+directly after an expression is a subscript and a `[` anywhere else begins an
+array literal.
 
 A brace form at body-statement level is parsed once and then read as a pattern
 if `:=` follows it. That is also where a pattern's extra requirement is

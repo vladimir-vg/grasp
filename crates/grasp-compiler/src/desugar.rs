@@ -201,6 +201,15 @@ fn expr_of(e: &ast::Expr) -> Result<core::Expr, Diagnostic> {
             span: *span,
         },
 
+        // `d[k]` → `dict:get(d, k)`. The key is an ordinary expression, which
+        // is the whole difference from `s.f`: a record's field is part of its
+        // type and has to be written, a dict's key is a value.
+        ast::Expr::Index { base, key, span } => core::Expr::Call {
+            callee: core::Builtin::DictGet,
+            args: vec![expr_of(base)?, expr_of(key)?],
+            span: *span,
+        },
+
         // `s.f` → `record:get(s, "f")`, and `s.a.b` by recursion.
         ast::Expr::Field { base, name, span } => core::Expr::Call {
             callee: core::Builtin::RecordGet,

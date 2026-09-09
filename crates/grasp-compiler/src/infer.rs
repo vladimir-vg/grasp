@@ -1177,12 +1177,33 @@ impl Cx {
                     _ => wrong(),
                 }
             }
+            // `d[k]`. Unlike `record:get`, the key is a value rather than part
+            // of the subject's type — so it has one, and it has to be the
+            // dict's. Without this check `d[1]` on a `dict(string, …)` reaches
+            // grasp-dbsp, which reports it against text the program never
+            // wrote.
             B::DictGet => {
                 if let Some(d) = arity(2) {
                     return (Ty::Error, Some(d));
                 }
                 match &args[0] {
-                    Ty::Dict(_, v) => (Ty::Optional(v.clone()), None),
+                    Ty::Dict(k, v) => {
+                        if !open(&args[1]) && !assignable(&args[1], k) {
+                            return (
+                                Ty::Error,
+                                Some(Diagnostic::error(
+                                    Pass::Infer,
+                                    span,
+                                    format!(
+                                        "this dict is keyed by `{k}`, but the key is \
+                                         `{}`",
+                                        args[1]
+                                    ),
+                                )),
+                            );
+                        }
+                        (Ty::Optional(v.clone()), None)
+                    }
                     Ty::Unknown => (Ty::Unknown, None),
                     _ => wrong(),
                 }

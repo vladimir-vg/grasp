@@ -1,0 +1,150 @@
+# `d[k]` — `docs/grasp/syntax.md`'s `postfix`, and the only way grasp reads a
+# dict by a key it computes. It yields `optional(V)`, because a key may not be
+# there, and `:: V` is what drops the rows where it was not.
+
+- name: a subscript reads a dict by a computed key
+  source: |
+    src :: relation(d: dict(string, i64), k: string)
+    src(d:, k:) <- input
+
+    out(k: k, v: v) <-
+        src(d: d, k: k)
+        v := d[k]
+        v :: i64
+
+  input:
+    - src:
+        - [1, {d: {"a": 10, "b": 20}, k: "a"}]
+        - [1, {d: {"a": 10, "b": 20}, k: "b"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {k: "a", v: 10}]
+        - [1, {k: "b", v: 20}]
+
+# "An absent value is dropped by that same filter rather than defaulted."
+- name: a key that is not there drops the row
+  source: |
+    src :: relation(d: dict(string, i64), k: string)
+    src(d:, k:) <- input
+
+    out(k: k, v: v) <-
+        src(d: d, k: k)
+        v := d[k]
+        v :: i64
+
+  input:
+    - src:
+        - [1, {d: {"a": 10}, k: "a"}]
+        - [1, {d: {"a": 10}, k: "zz"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {k: "a", v: 10}]
+
+# Without the narrowing the value keeps its wrapper, which is what makes the
+# narrowing a choice rather than a formality.
+- name: a subscript without a narrowing is optional
+  source: |
+    src :: relation(d: dict(string, i64), k: string)
+    out :: relation(k: string, v: optional(i64))
+    src(d:, k:) <- input
+
+    out(k: k, v: v) <-
+        src(d: d, k: k)
+        v := d[k]
+
+  input:
+    - src:
+        - [1, {d: {"a": 10}, k: "a"}]
+        - [1, {d: {"a": 10}, k: "zz"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {k: "a", v: 10}]
+        - [1, {k: "zz", v: null}]
+
+# A subscript chains with field access, both being postfix.
+- name: a subscript chains with field access
+  source: |
+    src :: relation(r: record(d: dict(string, i64)))
+    src(r:) <- input
+
+    out(v: v) <-
+        src(r: r)
+        v := r.d["a"]
+        v :: i64
+
+  input:
+    - src:
+        - [1, {r: {d: {"a": 7}}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: 7}]
+
+# The key is a value, so it has a type, and it has to be the dict's. Before
+# `d[k]` existed this was reachable only as `dict:get`, which checked nothing
+# and let the mistake through to grasp-dbsp — a diagnostic about text the
+# program never wrote.
+- name: the key must be the dict's key type
+  source: |
+    src :: relation(d: dict(string, i64))
+    src(d:) <- input
+
+    out(v: v) <-
+        src(d: d)
+        v := d[1]
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "this dict is keyed by `string`, but the key is `an integer literal`"
+
+# `d[k]` is the spelling, and the only one. `dict:get` was callable and gave a
+# program the computed dict lookup `semantics.md` holds back, unchecked and
+# undocumented.
+- name: dict:get is not a name a program can write
+  source: |
+    src :: relation(d: dict(string, i64))
+    src(d:) <- input
+
+    out(v: v) <-
+        src(d: d)
+        v := dict:get(d, "a")
+
+  expected_diagnostics:
+    - severity: error
+      pass: desugar
+      message: "there is no callable `dict:get`"
+
+# The written halves of `.` and `not` keep their names, which is what lets
+# `programs/desugar.yaml` write an expansion out and compare it.
+- name: record:get and boolean:not still are
+  source: |
+    src :: relation(r: record(a: i64), b: boolean)
+    src(r:, b:) <- input
+
+    out(v: v, n: n) <-
+        src(r: r, b: b)
+        n := boolean:not(b)
+        v := record:get(r, "a")
+
+  expected_ok: true
+
+# A `[` opening a line is an array destructure, not a subscript reaching back
+# across the line above. Written as `expected_ok` on purpose: with the rule the
+# program is merely *unimplemented*, which this mode tolerates, and without it
+# the two lines run together into `d[x, y]` and it is a parse error, which this
+# mode does not.
+- name: a bracket opening a line is a pattern, not a subscript
+  source: |
+    src :: relation(d: dict(string, i64), arr: array(i64))
+    src(d:, arr:) <- input
+
+    out(v: x) <-
+        src(d: d, arr: arr)
+        n := d
+        [x, y] := arr
+
+  expected_ok: true

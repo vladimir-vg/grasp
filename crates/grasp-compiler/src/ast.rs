@@ -316,6 +316,15 @@ pub enum Expr {
         name: String,
         span: Span,
     },
+    /// `d[k]` — a dict read by a key that need not be literal.
+    ///
+    /// The postfix twin of [`Expr::Field`], and desugared the same way: this
+    /// becomes `dict:get(d, k)`, so nothing past desugaring has it.
+    Index {
+        base: Box<Expr>,
+        key: Box<Expr>,
+        span: Span,
+    },
     Unary {
         op: UnOp,
         operand: Box<Expr>,
@@ -356,6 +365,7 @@ impl Expr {
             Expr::Lit { span, .. }
             | Expr::Var { span, .. }
             | Expr::Field { span, .. }
+            | Expr::Index { span, .. }
             | Expr::Unary { span, .. }
             | Expr::Binary { span, .. }
             | Expr::Call { span, .. }
