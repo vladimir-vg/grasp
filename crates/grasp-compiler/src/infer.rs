@@ -1523,7 +1523,7 @@ impl Cx {
             };
             match (kind, vars.len()) {
                 (core::UnnestKind::Array, 1) | (core::UnnestKind::Dict, 2) => {}
-                // Legal, and with nothing to lower it to: grasp-dbsp's `select`
+                // Legal, and with nothing to lower it to: grasp-dbsp's `map_array`
                 // maps an array element by element with no index, its `get`
                 // covers a document and a dict but not an array, and it has no
                 // `enumerate`. Producing the index needs one of those.

@@ -330,7 +330,8 @@ expr       := literal
             | unop expr
             | expr binop expr
             | NAME "(" [expr ("," expr)*] ")"             # a builtin, or a named function
-            | "select" "(" expr "," anon_function ")"     # one element per element
+            | "map_array" "(" expr "," anon_function ")"     # one element per element
+            | "filter_array" "(" expr "," anon_function ")"  # the elements it keeps
 
 unop       := "-" | "not"
 binop      := "+" | "-" | "*" | "/" | "%"
@@ -483,48 +484,67 @@ posts :: zset(record(id: i64, tags: array(string)))
 tags  := flat_map(posts, function((r) -> r.tags))
 ```
 
-### `select`
+### `map_array` and `filter_array`
 
-`select(a, function((e) -> body))` evaluates `body` once per element of the
-array `a`, with `e` bound to that element, and collects the results into an
-array. It is the **one construct in the language that binds a name inside an
-expression**.
+`map_array(a, function((e, i) -> body))` evaluates `body` once per element of
+the array `a` — with `e` bound to that element and `i` to its 0-based index —
+and collects the results into an array. `filter_array` takes the same shape,
+its `body` is a `bool`, and what comes back is the elements it kept, in order.
 
-It exists for `flat_map`. That operator emits one row per element of the array
-its function returns, so the output row *is* the element — and a row's other
-columns cannot survive the fan-out unless the function can build an array of
-whole rows. Nothing else could build one:
+They are the **two constructs in the language that bind a name inside an
+expression**, and the only two things that read an array element by element.
+
+`map_array` exists for `flat_map`. That operator emits one row per element of
+the array its function returns, so the output row *is* the element — and a row's
+other columns cannot survive the fan-out unless the function can build an array
+of whole rows. Nothing else could build one:
 
 ```
 person :: zset(record(name: string, tags: array(string)))
 tagged := flat_map(person, function((r) ->
-    select(r.tags, function((e) -> record(name: r.name, tag: e)))))
+    map_array(r.tags, function((e) -> record(name: r.name, tag: e)))))
 ```
 
 `entries` already yields `array(record(key: K, value: V))`, so a dict fans out
-through the same shape, and `select` is what puts the row back beside each entry.
+through the same shape, and `map_array` is what puts the row back beside each
+entry.
+
+`filter_array` is the length-changing one, which is a capability rather than a
+second spelling: `map_array` cannot change an array's length, and the `filter`
+*operator* works on rows rather than on an array inside one. The names say which
+of the two levels each works at, rather than borrowing a second vocabulary a
+reader would have to hold beside the operators' — the rule that keeps `dict` from
+being called `map`.
+
+With the index, it is also how a slice is written, and with `entries` and `dict`
+around it, how keys are subtracted from a dict:
+
+```
+tail := filter_array(r.xs, function((e, i) -> i >= 2))
+less := dict(filter_array(entries(r.d), function((e) -> e.key != "b")))
+```
 
 - **The function is not a value.** It is written where it is used, the way
   `cast`'s second argument is a type rather than an expression. There is no
   function type and nothing may pass one around.
 - **The body sees the enclosing function's parameters**, which is what makes it
   worth having: `r.name` above comes from the row, `e` from the element.
+- **The index binder is optional to name, never to bind.** A function may be
+  written `function((e) -> …)` or `function((e, i) -> …)`, and the second form
+  is the only way to reach the index — but the element and the index take a
+  frame slot each either way. That is what makes two bodies that ignore the
+  index one expression however they were written, rather than two that happen to
+  compute the same array.
 - **A binder may not shadow a name already in scope.** There is one reading of a
   name, and no rule to remember about which one wins.
-- **`select` is an expression.** `x := select(a, f)` is not a node definition;
-  it belongs inside a function body.
+- **They are expressions.** `x := map_array(a, f)` is not a node definition; it
+  belongs inside a function body.
 
-`select` is the only thing that maps an array. Two neighbours it does not have,
-and what stands in the way of each:
-
-- **An array `filter`** would be a new capability, not a second spelling:
-  `select` cannot change an array's length, and the `filter` *operator* works on
-  rows rather than on an array inside one. Nothing has needed it.
-- **A `fold`** would be a new capability too — nothing here reduces an array to
-  a scalar. But it would subsume `length`, and "exactly one way to write each
-  thing" wants that answered rather than left: either `length` goes, or the two
-  coexist and an emitter is given a rule for choosing. Nothing has needed a fold
-  either, so nothing has answered it.
+One neighbour they do not have. **A `fold`** would be a new capability again —
+nothing here reduces an array to a scalar. But it would subsume `length`, and
+"exactly one way to write each thing" wants that answered rather than left:
+either `length` goes, or the two coexist and an emitter is given a rule for
+choosing. Nothing has needed a fold, so nothing has answered it.
 
 ### Builtins
 
@@ -936,19 +956,19 @@ each thing.
 These may not name a node, a function or a parameter: the 21 operator names,
 the 5 aggregator names, the builtin names, the type constructors (`bool`,
 `i64`, `f64`, `string`, `json`, `optional`, `record`, `array`, `dict`, `sql`,
-`zset`, `indexed_zset`), `cast`, `select`, and `true`, `false`, `NONE`, `null`,
-`function`, `return`, `and`, `or`, `not`, `circuit`, `fixpoint`.
+`zset`, `indexed_zset`), `cast`, `map_array`, `filter_array`, and `true`,
+`false`, `NONE`, `null`, `function`, `return`, `and`, `or`, `not`, `circuit`,
+`fixpoint`.
 
 `if` is reserved by being a builtin, like every other builtin name. `then` and
-`else` were held for a syntactic conditional and are not reserved: the
-conditional is `if(cond, a, b)`, so those words are free.
+`else` are **not** reserved: the conditional is `if(cond, a, b)` and there is no
+syntactic one to hold them for, so those words are free to name a node.
 
 `sql` is reserved although the namespace is empty, so the Feldera value types
 can arrive later without breaking a program that used the name meanwhile.
 
-`if`, `then` and `else` are reserved although there are no conditionals yet, so
-adding them later will not break existing programs. Record *field* names are
-unrestricted — they are their own namespace and can be quoted.
+Record *field* names are unrestricted — they are their own namespace and can be
+quoted.
 
 ## Example
 

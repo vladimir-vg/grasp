@@ -168,18 +168,19 @@
         - [1, "x"]
         - [1, "y"]
 
-# `select` is the only construct in the language that binds a name inside an
+# `map_array` is one of the two constructs in the language that bind a name
+# inside an
 # expression. It exists because a `flat_map`'s function returns an array and
 # there was no way to *build* one from another array — so a row's other columns
 # could not survive a fan-out. The operator did not change; the expression
 # language grew.
 
-- name: select carries the row through a fan-out
+- name: map_array carries the row through a fan-out
   source: |
     person := input("person")
     person :: zset(record(name: string, tags: array(string)))
     tagged := flat_map(person, function((r) ->
-        select(r.tags, function((e) -> record(name: r.name, tag: e)))))
+        map_array(r.tags, function((e) -> record(name: r.name, tag: e)))))
 
   input:
     - person:
@@ -194,12 +195,12 @@
 
 # `entries` already yields `array(record(key, value))`, so a dict fans out
 # through the same shape.
-- name: select over a dict's entries
+- name: map_array over a dict's entries
   source: |
     person := input("person")
     person :: zset(record(name: string, tags: dict(string, i64)))
     tagged := flat_map(person, function((r) ->
-        select(entries(r.tags), function((e) ->
+        map_array(entries(r.tags), function((e) ->
             record(name: r.name, tag: e.key, n: e.value)))))
 
   input:
@@ -211,12 +212,12 @@
         - [1, {name: "ann", tag: "x", n: 1}]
         - [1, {name: "ann", tag: "y", n: 2}]
 
-- name: a select in an ordinary map builds an array
+- name: a map_array in an ordinary map builds an array
   source: |
     nums := input("nums")
     nums :: zset(record(id: i64, xs: array(i64)))
     doubled := map(nums, function((r) ->
-        record(id: r.id, xs: select(r.xs, function((e) -> e * 2)))))
+        record(id: r.id, xs: map_array(r.xs, function((e) -> e * 2)))))
 
   input:
     - nums:
@@ -226,13 +227,13 @@
     - doubled:
         - [1, {id: 1, xs: [2, 4, 6]}]
 
-- name: selects nest, and each binder keeps its own slot
+- name: array functions nest, and each binder keeps its own slot
   source: |
     g := input("g")
     g :: zset(record(k: i64, rows: array(record(v: i64, ns: array(i64)))))
     out := flat_map(g, function((r) ->
-        select(r.rows, function((a) ->
-            record(k: r.k, v: a.v, total: select(a.ns, function((b) -> b + a.v)))))))
+        map_array(r.rows, function((a) ->
+            record(k: r.k, v: a.v, total: map_array(a.ns, function((b) -> b + a.v)))))))
 
   input:
     - g:
@@ -242,17 +243,17 @@
     - out:
         - [1, {k: 7, v: 10, total: [11, 12]}]
 
-# The case the binder scheme exists for: a named function that binds a `select`
-# around a use of its own parameter, called from inside another `select`. The
+# The case the binder scheme exists for: a named function that binds a `map_array`
+# around a use of its own parameter, called from inside another `map_array`. The
 # argument is itself a binder reference, so it has to survive being substituted
 # under one. Without the shift in `instantiate` this quietly computes `w + w`.
-- name: a function binding a select, called from inside one
+- name: a function binding a map_array, called from inside one
   source: |
-    function g(a) { return select(a.ns, function((w) -> w + a.v)) }
+    function g(a) { return map_array(a.ns, function((w) -> w + a.v)) }
     t := input("t")
     t :: zset(record(k: i64, rows: array(record(v: i64, ns: array(i64)))))
     out := flat_map(t, function((r) ->
-        select(r.rows, function((e) -> record(k: r.k, got: g(e))))))
+        map_array(r.rows, function((e) -> record(k: r.k, got: g(e))))))
 
   input:
     - t:
@@ -262,57 +263,182 @@
     - out:
         - [1, {k: 1, got: [101, 102]}]
 
-- name: a select may not shadow a name in scope
+- name: a map_array may not shadow a name in scope
   source: |
     t := input("t")
     t :: zset(record(xs: array(i64)))
-    out := map(t, function((r) -> record(v: select(r.xs, function((r) -> r)))))
+    out := map(t, function((r) -> record(v: map_array(r.xs, function((r) -> r)))))
 
   expected_diagnostics:
     - severity: error
       pass: typecheck
       message: "already in scope"
 
-- name: select needs an array
+- name: map_array needs an array
   source: |
     t := input("t")
     t :: zset(record(v: i64))
-    out := map(t, function((r) -> record(v: select(r.v, function((e) -> e)))))
+    out := map(t, function((r) -> record(v: map_array(r.v, function((e) -> e)))))
 
   expected_diagnostics:
     - severity: error
       pass: typecheck
-      message: "`select` needs an array"
+      message: "`map_array` needs an array"
 
-- name: select is an expression, not an operator
+- name: map_array is an expression, not an operator
   source: |
     t := input("t")
     t :: zset(record(xs: array(i64)))
-    out := select(t, function((e) -> e))
+    out := map_array(t, function((e) -> e))
 
   expected_diagnostics:
     - severity: error
       pass: typecheck
-      message: "`select` is an expression, not an operator"
+      message: "`map_array` is an expression, not an operator"
 
-- name: select's second argument must be a function
+- name: map_array's second argument must be a function
   source: |
     t := input("t")
     t :: zset(record(xs: array(i64)))
-    out := map(t, function((r) -> record(v: select(r.xs, r.xs))))
+    out := map(t, function((r) -> record(v: map_array(r.xs, r.xs))))
 
   expected_diagnostics:
     - severity: error
       pass: parse
       message: "must be a function"
 
-- name: select's function takes one parameter
+# Two is the element and its index. Three is nothing.
+- name: an array function's function takes at most two parameters
   source: |
     t := input("t")
     t :: zset(record(xs: array(i64)))
-    out := map(t, function((r) -> record(v: select(r.xs, function((a, b) -> a)))))
+    out := map(t, function((r) -> record(v: map_array(r.xs, function((a, b, c) -> a)))))
 
   expected_diagnostics:
     - severity: error
       pass: parse
-      message: "takes one parameter"
+      message: "found 3 parameters"
+
+# The index binder: 0-based, `i64`, and named only if wanted.
+- name: map_array binds an element's index
+  source: |
+    t := input("t")
+    t :: zset(record(id: i64, xs: array(string)))
+    out := flat_map(t, function((r) ->
+        map_array(r.xs, function((e, i) -> record(id: r.id, at: i, tag: e)))))
+
+  input:
+    - t:
+        - [1, {id: 1, xs: ["a", "b", "c"]}]
+
+  expected_output:
+    - out:
+        - [1, {id: 1, at: 0, tag: "a"}]
+        - [1, {id: 1, at: 1, tag: "b"}]
+        - [1, {id: 1, at: 2, tag: "c"}]
+
+# The index is a slot whether or not it is named, so the inner binder of a
+# nested pair sits two along rather than one. Nothing about that is visible in
+# the language — this is here because it is the invariant the frame rests on,
+# and a body reading the wrong slot would compute quietly wrong answers.
+- name: a named index does not move an outer binder
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(i64)))
+    out := map(t, function((r) ->
+        record(v: map_array(r.xs, function((e, i) ->
+            map_array(r.xs, function((f, j) -> e + f + i + j)))))))
+
+  input:
+    - t:
+        - [1, {xs: [10, 20]}]
+
+  expected_output:
+    - out:
+        - [1, {v: [[20, 31], [31, 42]]}]
+
+# The two binders are one parameter list, so `param_list`'s own rule covers
+# them and there is no second check to keep in step with it.
+- name: the element and its index may not share a name
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(i64)))
+    out := map(t, function((r) -> record(v: map_array(r.xs, function((e, e) -> e)))))
+
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "bound twice"
+
+# `filter_array` — the length-changing sibling. Its function is a predicate and
+# what comes back is the elements it kept, in order.
+- name: filter_array keeps the elements its function admits
+  source: |
+    t := input("t")
+    t :: zset(record(id: i64, xs: array(i64)))
+    out := map(t, function((r) ->
+        record(id: r.id, xs: filter_array(r.xs, function((e) -> e > 2)))))
+
+  input:
+    - t:
+        - [1, {id: 1, xs: [1, 2, 3, 4]}]
+        - [1, {id: 2, xs: [1, 1]}]
+
+  expected_output:
+    - out:
+        - [1, {id: 1, xs: [3, 4]}]
+        - [1, {id: 2, xs: []}]
+
+# Which is what a slice is, given the index.
+- name: filter_array over the index is a slice
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(string)))
+    out := map(t, function((r) ->
+        record(xs: filter_array(r.xs, function((e, i) -> i >= 2)))))
+
+  input:
+    - t:
+        - [1, {xs: ["a", "b", "c", "d"]}]
+
+  expected_output:
+    - out:
+        - [1, {xs: ["c", "d"]}]
+
+# And with `dict` and `entries` around it, subtracting keys from a dict.
+- name: filter_array over entries drops a dict's keys
+  source: |
+    t := input("t")
+    t :: zset(record(d: dict(string, i64)))
+    out := map(t, function((r) ->
+        record(d: dict(filter_array(entries(r.d), function((e) -> e.key != "b"))))))
+
+  input:
+    - t:
+        - [1, {d: {"a": 1, "b": 2, "c": 3}}]
+
+  expected_output:
+    - out:
+        - [1, {d: {"a": 1, "c": 3}}]
+
+- name: filter_array's function must return a boolean
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(i64)))
+    out := map(t, function((r) -> record(v: filter_array(r.xs, function((e) -> e)))))
+
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+      message: "`filter_array`'s function must return `bool`"
+
+- name: filter_array is an expression, not an operator
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(i64)))
+    out := filter_array(t, function((e) -> true))
+
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+      message: "`filter_array` is an expression, not an operator"

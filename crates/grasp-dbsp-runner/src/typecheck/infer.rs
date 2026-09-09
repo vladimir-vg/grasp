@@ -84,7 +84,8 @@ fn pin(e: &mut TypedExpr, ty: &TypeDesc) {
         TypedExpr::Const(_)
         | TypedExpr::Var(_)
         | TypedExpr::Elem(_)
-        | TypedExpr::Select { .. }
+        | TypedExpr::MapArray { .. }
+        | TypedExpr::FilterArray { .. }
         | TypedExpr::Field(..)
         | TypedExpr::Record(_)
         | TypedExpr::Array(_)
@@ -308,7 +309,11 @@ pub(super) type Scope<'a> = [(&'a str, &'a TypeDesc, Bound)];
 fn shift(e: &TypedExpr, by: isize) -> TypedExpr {
     match e {
         TypedExpr::Elem(i) => TypedExpr::Elem((*i as isize + by) as usize),
-        TypedExpr::Select { array, body } => TypedExpr::Select {
+        TypedExpr::MapArray { array, body } => TypedExpr::MapArray {
+            array: Box::new(shift(array, by)),
+            body: Box::new(shift(body, by)),
+        },
+        TypedExpr::FilterArray { array, body } => TypedExpr::FilterArray {
             array: Box::new(shift(array, by)),
             body: Box::new(shift(body, by)),
         },
@@ -340,7 +345,11 @@ fn substitute(e: &TypedExpr, args: &[TypedExpr]) -> TypedExpr {
         // Already shifted into this frame by `instantiate`, and not a parameter
         // of the function being inlined, so it stands.
         TypedExpr::Elem(i) => TypedExpr::Elem(*i),
-        TypedExpr::Select { array, body } => TypedExpr::Select {
+        TypedExpr::MapArray { array, body } => TypedExpr::MapArray {
+            array: Box::new(substitute(array, args)),
+            body: Box::new(substitute(body, args)),
+        },
+        TypedExpr::FilterArray { array, body } => TypedExpr::FilterArray {
             array: Box::new(substitute(array, args)),
             body: Box::new(substitute(body, args)),
         },
@@ -408,36 +417,83 @@ fn infer(
             (reference, Ty::Known(env[i].1.clone()))
         }
 
-        ExprKind::Select { array, param, body } => {
-            let (mut ae, at) = infer(array, env, funcs, Option::None)?;
-            definite(&at, "select", span)?;
-            let at = commit(&mut ae, at, array.span, "the array of a `select`")?;
-            let TypeDesc::Array(element) = at.non_null() else {
-                return err(span, format!("`select` needs an array, found `{at}`"));
+        // `map_array` and `filter_array` differ in what the body must be and in
+        // what comes out; the binder is one rule and is written once.
+        //
+        // **The frame grows by two whichever arity was written** — the element,
+        // then its index. Only the naming is optional. A frame whose size
+        // depended on the arity would put a nested binder at a different slot
+        // for two expressions that compute the same array, and give them two
+        // content ids.
+        ExprKind::MapArray {
+            array,
+            param,
+            index,
+            body,
+        }
+        | ExprKind::FilterArray {
+            array,
+            param,
+            index,
+            body,
+        } => {
+            let filtering = matches!(e.kind, ExprKind::FilterArray { .. });
+            let what = if filtering {
+                "filter_array"
+            } else {
+                "map_array"
             };
-            if env.iter().any(|(n, _, _)| n == param) {
-                return err(
-                    span,
-                    format!("`{param}` is already in scope; a `select` may not shadow a name"),
-                );
+            let (mut ae, at) = infer(array, env, funcs, Option::None)?;
+            definite(&at, what, span)?;
+            let at = commit(&mut ae, at, array.span, "the array of an array function")?;
+            let TypeDesc::Array(element) = at.non_null() else {
+                return err(span, format!("`{what}` needs an array, found `{at}`"));
+            };
+            for name in [Some(param), index.as_ref()].into_iter().flatten() {
+                if env.iter().any(|(n, _, _)| n == name) {
+                    return err(
+                        span,
+                        format!("`{name}` is already in scope; a binder may not shadow a name"),
+                    );
+                }
             }
-            // The element type an enclosing typespec asks of this `select`, so
-            // an empty container in the body has somewhere to take a type from.
+            // The element type an enclosing typespec asks of this `map_array`,
+            // so an empty container in the body has somewhere to take a type
+            // from. A `filter_array` body is a `bool` and has no use for one.
             let want = match expected.map(TypeDesc::non_null) {
-                Some(TypeDesc::Array(t)) => Some(&**t),
+                Some(TypeDesc::Array(t)) if !filtering => Some(&**t),
                 _ => Option::None,
             };
+            // Both slots exist; the unnamed one simply cannot be reached.
+            const UNREACHABLE_BINDER: &str = " index";
             let mut inner: Vec<(&str, &TypeDesc, Bound)> = env.to_vec();
             inner.push((param.as_str(), element, Bound::Binder));
+            inner.push((
+                index.as_deref().unwrap_or(UNREACHABLE_BINDER),
+                &TypeDesc::I64,
+                Bound::Binder,
+            ));
             let (mut be, bt) = infer(body, &inner, funcs, want)?;
-            let bt = commit(&mut be, bt, body.span, "the body of a `select`")?;
-            (
-                TypedExpr::Select {
-                    array: Box::new(ae),
-                    body: Box::new(be),
-                },
-                Ty::Known(TypeDesc::Array(Box::new(bt))),
-            )
+            let bt = commit(&mut be, bt, body.span, "the body of an array function")?;
+            let array = Box::new(ae);
+            let body = Box::new(be);
+            if filtering {
+                if bt.non_null() != &TypeDesc::Bool || bt.is_optional() {
+                    return err(
+                        span,
+                        format!("`filter_array`'s function must return `bool`, found `{bt}`"),
+                    );
+                }
+                (
+                    TypedExpr::FilterArray { array, body },
+                    Ty::Known(at.clone()),
+                )
+            } else {
+                (
+                    TypedExpr::MapArray { array, body },
+                    Ty::Known(TypeDesc::Array(Box::new(bt))),
+                )
+            }
         }
 
         ExprKind::Field(base, field) => {
@@ -1221,11 +1277,12 @@ mod tests {
     use super::{shift, substitute};
     use crate::expr::TypedExpr;
 
-    /// `Elem(0) + Var(0)` under a `select` over `Var(0)` — the body of
-    /// `function g(a) { return select(a, function((w) -> w + a)) }`, where the
-    /// binder `w` sits at index 1 because `g` has one parameter.
+    /// `Elem(1) + Var(0)` under a `map_array` over `Var(0)` — the body of
+    /// `function g(a) { return map_array(a, function((w) -> w + a)) }`, where
+    /// the binder `w` sits at index 1 because `g` has one parameter. Its
+    /// unnamed index binder is at 2.
     fn callee_binding_around_its_parameter() -> TypedExpr {
-        TypedExpr::Select {
+        TypedExpr::MapArray {
             array: Box::new(TypedExpr::Var(0)),
             body: Box::new(TypedExpr::Binary(
                 crate::lang::BinOp::Add,
@@ -1240,7 +1297,7 @@ mod tests {
     #[test]
     fn a_callee_binder_moves_into_the_callers_frame() {
         let moved = shift(&callee_binding_around_its_parameter(), 2 - 1);
-        let TypedExpr::Select { body, .. } = &moved else {
+        let TypedExpr::MapArray { body, .. } = &moved else {
             unreachable!()
         };
         let TypedExpr::Binary(_, w, a) = &**body else {
@@ -1251,7 +1308,7 @@ mod tests {
     }
 
     /// The case the whole scheme exists for. `g(e)` is called from inside a
-    /// `select` whose binder `e` is `Elem(1)`, so the argument is itself a
+    /// `map_array` whose binder `e` is `Elem(1)`, so the argument is itself a
     /// binder reference. Without the shift it collides with the callee's own
     /// binder and the body computes `w + w`.
     #[test]
@@ -1260,7 +1317,7 @@ mod tests {
         let moved = shift(&callee_binding_around_its_parameter(), caller_frame - 1);
         let out = substitute(&moved, &[TypedExpr::Elem(1)]);
 
-        let TypedExpr::Select { array, body } = &out else {
+        let TypedExpr::MapArray { array, body } = &out else {
             unreachable!()
         };
         assert_eq!(**array, TypedExpr::Elem(1), "the array is the caller's `e`");
@@ -1277,17 +1334,21 @@ mod tests {
     }
 
     /// Two binders in one frame keep their own slots.
+    ///
+    /// Each `map_array` claims **two** — its element and its index — so the
+    /// inner element is at 3 rather than at 2. That is what makes an expression
+    /// ignoring the index the same expression whichever arity was written.
     #[test]
-    fn nested_selects_number_their_binders_apart() {
-        // select(Var(0), (x) -> select(Elem(1), (y) -> Elem(1) + Elem(2)))
-        let e = TypedExpr::Select {
+    fn nested_array_functions_number_their_binders_apart() {
+        // map_array(Var(0), (x) -> map_array(Elem(1), (y) -> Elem(1) + Elem(3)))
+        let e = TypedExpr::MapArray {
             array: Box::new(TypedExpr::Var(0)),
-            body: Box::new(TypedExpr::Select {
+            body: Box::new(TypedExpr::MapArray {
                 array: Box::new(TypedExpr::Elem(1)),
                 body: Box::new(TypedExpr::Binary(
                     crate::lang::BinOp::Add,
                     Box::new(TypedExpr::Elem(1)),
-                    Box::new(TypedExpr::Elem(2)),
+                    Box::new(TypedExpr::Elem(3)),
                 )),
             }),
         };

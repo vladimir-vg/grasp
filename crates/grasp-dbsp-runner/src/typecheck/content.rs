@@ -213,7 +213,7 @@ fn hash_expr(h: &mut Xxh3Default, e: &TypedExpr) {
             0u8.hash(h);
             v.hash(h);
         }
-        // 13 and 14 because 0-12 are taken. The tags are not in variant order
+        // 13 to 15 because 0-12 are taken. The tags are not in variant order
         // and must never be reused or renumbered: a content id is a
         // `persistent_id`, so moving one silently renames every node that
         // carries it.
@@ -221,8 +221,13 @@ fn hash_expr(h: &mut Xxh3Default, e: &TypedExpr) {
             13u8.hash(h);
             i.hash(h);
         }
-        TypedExpr::Select { array, body } => {
+        TypedExpr::MapArray { array, body } => {
             14u8.hash(h);
+            hash_expr(h, array);
+            hash_expr(h, body);
+        }
+        TypedExpr::FilterArray { array, body } => {
+            15u8.hash(h);
             hash_expr(h, array);
             hash_expr(h, body);
         }

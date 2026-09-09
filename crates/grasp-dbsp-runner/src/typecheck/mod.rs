@@ -192,7 +192,7 @@ fn check_function_cycles(funcs: &Functions<'_>) -> TResult<()> {
                     calls(v, out);
                 })
             }
-            ExprKind::Select { array, body, .. } => {
+            ExprKind::MapArray { array, body, .. } | ExprKind::FilterArray { array, body, .. } => {
                 calls(array, out);
                 calls(body, out);
             }

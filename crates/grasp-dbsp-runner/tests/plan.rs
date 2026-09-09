@@ -219,7 +219,7 @@ fn a_numeric_literal_is_pinned_to_its_context() {
                 TypedExpr::Field(b, _) | TypedExpr::Cast(b, _) | TypedExpr::DictFrom(b) => {
                     walk(b, out)
                 }
-                TypedExpr::Select { array, body } => {
+                TypedExpr::MapArray { array, body } | TypedExpr::FilterArray { array, body } => {
                     walk(array, out);
                     walk(body, out);
                 }

@@ -230,8 +230,8 @@ pub enum Op {
     /// One row per element of a collection, with the rest of the row carried
     /// alongside each.
     ///
-    /// A `flat_map` whose function is a `select`: the operator fans out and the
-    /// `select` builds the rows it fans out to, which is what puts the rest of
+    /// A `flat_map` whose function is a `map_array`: the operator fans out and
+    /// the `map_array` builds the rows it fans out to, which is what puts the rest of
     /// the row beside each element. `kind` decides what an element is —
     /// an array's value, or a dict entry's key and value.
     Unnest {

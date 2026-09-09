@@ -699,9 +699,9 @@
     - pass: typecheck
       message: "calls itself through"
 
-- name: recursion through a select is still a cycle
+- name: recursion through a map_array is still a cycle
   source: |
-    function f(x) { return select(x, function((e) -> f(x))) }
+    function f(x) { return map_array(x, function((e) -> f(x))) }
     a := input("a")
     a :: zset(record(v: array(i64)))
     out := map(a, function((r) -> record(v: f(r.v))))

@@ -135,7 +135,14 @@ fn every_construct_appears_in_a_fixture() {
     }
     // `cast` is not a `Builtin` — its second argument is a type, not an
     // expression — so it has to be named here rather than coming from a list.
-    for other in ["cast", "record", "array", "dict", "select"] {
+    for other in [
+        "cast",
+        "record",
+        "array",
+        "dict",
+        "map_array",
+        "filter_array",
+    ] {
         if !corpus.contains(&format!("{other}(")) {
             missing.push(format!("`{other}`"));
         }

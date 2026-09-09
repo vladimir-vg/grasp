@@ -41,13 +41,13 @@ const ROW: &str = "row";
 /// rather than a row.
 const VALUE: &str = "v";
 
-/// The binder a `select` gives one element of the collection being unnested.
+/// The binder a `map_array` gives one element of the collection being unnested.
 const ELEMENT: &str = "e";
 
 /// Where each grasp variable is found in the grasp-dbsp being written.
 ///
 /// Almost always a field of one row — every rule variable is — and for a long
-/// time one name was enough. A `select` inside a `flat_map` breaks that: the
+/// time one name was enough. A `map_array` inside a `flat_map` breaks that: the
 /// unnested variables come off the element binder while the rest of the row
 /// still comes off the row, and both are in scope at once. So this is a lookup
 /// rather than a name, with the row as what a variable falls back to.
@@ -626,7 +626,7 @@ fn aggregator_text(a: Aggregator) -> &'static str {
 /// One row per element, with the rest of the row carried alongside each.
 ///
 /// A `flat_map` fans out over the array its function returns, so the row it
-/// emits *is* an element — and the rest of the row would be lost. `select` is
+/// emits *is* an element — and the rest of the row would be lost. `map_array` is
 /// what builds the rows to fan out to, putting the carried fields back beside
 /// each element. That is the whole reason grasp-dbsp has it.
 ///
@@ -673,7 +673,7 @@ fn emit_unnest(
     let _ = writeln!(
         out,
         "{name} := flat_map({input}, function(({ROW}) -> \
-         select({array}, function(({ELEMENT}) -> {}))))",
+         map_array({array}, function(({ELEMENT}) -> {}))))",
         record_text(&fields)
     );
     name
@@ -846,7 +846,8 @@ struct Names {
 /// a relation but says nothing about `map` or `join`, so the two lists have to
 /// be reconciled here rather than assumed to agree.
 const RESERVED: &[&str] = &[
-    "select",
+    "map_array",
+    "filter_array",
     "input",
     "constant",
     "map",
@@ -1231,7 +1232,7 @@ mod tests {
     /// The reserved list is a copy of grasp-dbsp's, and nothing held the two
     /// together.
     ///
-    /// `mangle` is what stops a grasp relation named `map` or `select` emitting
+    /// `mangle` is what stops a grasp relation named `map` or `map_array` emitting
     /// a program the target cannot parse, and it reads this list — so a word
     /// grasp-dbsp reserves and this list omits is a program that fails to parse
     /// for a reason no test would explain. The two crates meet at grasp-dbsp

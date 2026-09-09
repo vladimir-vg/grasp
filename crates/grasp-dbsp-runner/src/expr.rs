@@ -181,16 +181,55 @@ pub enum TypedExpr {
     /// site, and an `Elem` is *shifted* into the caller's frame. Telling them
     /// apart by the size of the index would make a magnitude carry meaning.
     Elem(usize),
-    /// `select(array, function((e) -> body))`.
+    /// `map_array(array, function((e, i) -> body))`.
     ///
-    /// The binder has no name here. Two identical computations written with
+    /// The binders have no names here. Two identical computations written with
     /// different binder names must be one node: `push_node` deduplicates on
     /// equality and the content id is a structural hash, so a name would give
     /// them two ids and two `persistent_id`s.
-    Select {
+    ///
+    /// Nor is there a flag for whether the index was named. The frame grows by
+    /// two slots either way, so a body that does not read the index is the same
+    /// expression whichever arity was written — and is the same node.
+    MapArray {
         array: Box<TypedExpr>,
         body: Box<TypedExpr>,
     },
+    /// `filter_array(array, function((e, i) -> body))`, whose `body` is a
+    /// `bool` and whose result is the elements it kept, in order.
+    FilterArray {
+        array: Box<TypedExpr>,
+        body: Box<TypedExpr>,
+    },
+}
+
+/// `body`, once per element, with the element and its index appended to the
+/// frame.
+///
+/// Two slots, always — the language binds both whether or not the written
+/// function named the second, so that an expression ignoring the index is the
+/// same expression whichever arity produced it.
+///
+/// The indices are materialised because the frame holds *references*: a value
+/// built inside the loop would not outlive the frame that points at it. One
+/// `Vec` of them per evaluation, beside the one `Vec` for the frame — a real
+/// per-row cost in an interpreted walk, named here so it is a known one.
+fn over_elements(args: &[&DynValue], items: &[DynValue], body: &TypedExpr) -> Vec<DynValue> {
+    let indices: Vec<DynValue> = (0..items.len() as i64).map(DynValue::I64).collect();
+    let mut frame: Vec<&DynValue> = Vec::with_capacity(args.len() + 2);
+    frame.extend_from_slice(args);
+    frame.push(&DynValue::None);
+    frame.push(&DynValue::None);
+    let element = frame.len() - 2;
+    items
+        .iter()
+        .zip(indices.iter())
+        .map(|(item, index)| {
+            frame[element] = item;
+            frame[element + 1] = index;
+            eval(body, &frame)
+        })
+        .collect()
 }
 
 /// Evaluate an expression against positionally-bound arguments.
@@ -208,29 +247,28 @@ pub fn eval(e: &TypedExpr, args: &[&DynValue]) -> DynValue {
         TypedExpr::IntLit(v) => DynValue::I64(*v),
         TypedExpr::FloatLit(v) => DynValue::F64(Flt::new(*v)),
         TypedExpr::Var(i) | TypedExpr::Elem(i) => args[*i].clone(),
-        // The one place an expression is evaluated more than once under
-        // different bindings. The frame grows by exactly one slot, appended, so
-        // every index already in scope keeps its meaning.
+        // The two places an expression is evaluated more than once under
+        // different bindings. The frame grows by exactly two slots, appended —
+        // the element and its index — so every index already in scope keeps its
+        // meaning, and it grows by two whether or not the index was named.
         //
         // One `Vec` per evaluation, reused across the elements. That is a real
         // per-row cost in an interpreted walk, named here so it is a known one.
-        TypedExpr::Select { array, body } => match eval(array, args) {
-            DynValue::Array(items) => {
-                let mut frame: Vec<&DynValue> = Vec::with_capacity(args.len() + 1);
-                frame.extend_from_slice(args);
-                frame.push(&DynValue::None);
-                DynValue::Array(
-                    items
-                        .iter()
-                        .map(|item| {
-                            *frame.last_mut().expect("the binder's slot") = item;
-                            eval(body, &frame)
-                        })
-                        .collect(),
-                )
-            }
+        TypedExpr::MapArray { array, body } => match eval(array, args) {
+            DynValue::Array(items) => DynValue::Array(over_elements(args, &items, body)),
             // The checker admits only an array, so this is defensive — and
             // absence rather than an empty array, as `DictFrom` has it.
+            _ => DynValue::None,
+        },
+        TypedExpr::FilterArray { array, body } => match eval(array, args) {
+            DynValue::Array(items) => DynValue::Array(
+                over_elements(args, &items, body)
+                    .into_iter()
+                    .zip(items.iter())
+                    .filter(|(keep, _)| matches!(keep, DynValue::Bool(true)))
+                    .map(|(_, item)| item.clone())
+                    .collect(),
+            ),
             _ => DynValue::None,
         },
         TypedExpr::Field(base, index) => match eval(base, args) {

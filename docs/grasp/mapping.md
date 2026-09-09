@@ -303,18 +303,18 @@ right is what this pass emits for it.
 | `a > 20` | `filter` | `filter(s, function((row) -> row.a > 20))` |
 | `v := e` | `map` | `map(s, function((row) -> record(…, v: e)))` |
 | `s := sum<r>` | `aggregate` | `map_index`, `aggregate(s, sum, f)`, `map` |
-| `(v) := *arr` | `flat_map` | `flat_map(s, function((row) -> select(row.arr, …)))` |
-| `(k, v) := **d` | `flat_map` | `flat_map(s, function((row) -> select(entries(row.d), …)))` |
+| `(v) := *arr` | `flat_map` | `flat_map(s, function((row) -> map_array(row.arr, …)))` |
+| `(k, v) := **d` | `flat_map` | `flat_map(s, function((row) -> map_array(entries(row.d), …)))` |
 | `v :: T` | `filter` | `filter` on the runtime check |
 | the head | `map` | `map(s, function((row) -> record(…)))` |
 
 Nothing in that table is a special case: each is the operator its DAG node named,
 which is why the node vocabulary was renamed to grasp-dbsp's in the first place.
 
-**An unnest carries the rest of the row, and `select` is what carries it.**
+**An unnest carries the rest of the row, and `map_array` is what carries it.**
 `flat_map` emits one row per element of the array its function returns, so the
 row it emits *is* an element, and everything else the rule had bound would be
-lost. `select` builds the rows to fan out to instead:
+lost. `map_array` builds the rows to fan out to instead:
 
 ```grasp
 tagged(name: n, tag: k) <-
@@ -324,14 +324,14 @@ tagged(name: n, tag: k) <-
 
 ```
 tagged := flat_map(rows, function((row) ->
-    select(entries(row.d), function((e) -> record(n: row.n, k: e.key)))))
+    map_array(entries(row.d), function((e) -> record(n: row.n, k: e.key)))))
 ```
 
 Both binders are in scope: `n` comes off the row and `k` off the element. A dict
 goes through `entries`, which already yields `array(record(key, value))`, so the
 two kinds of unnest take one shape and differ only in what an element's parts
 are called. This is the one thing in grasp that grasp-dbsp could not express
-until it had [`select`](../grasp-dbsp/language.md#select).
+until it had [`map_array`](../grasp-dbsp/language.md#map_array-and-filter_array).
 
 ### Narrowing and dropping
 
@@ -370,7 +370,8 @@ the second evaluation is a cost and never a difference.
 **Two rows of that table still cannot be emitted**, and it is grasp-dbsp that is
 short rather than the rule. `array(A) :: array(B)` and `dict(K,A) :: dict(K,B)`
 have to test every element, and testing per element needs an array `filter` or a
-reduction, which [`select`](../grasp-dbsp/language.md#select) deliberately is
+reduction, which [`map_array`](../grasp-dbsp/language.md#map_array-and-filter_array)
+deliberately is
 not. Absence is *not* what stands in the way — a `cast` preserves it, which is
 what makes the row above expressible. The compiler says
 `not implemented: narrowing inside a container` rather than guessing, and

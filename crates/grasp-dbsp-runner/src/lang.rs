@@ -183,27 +183,45 @@ pub enum ExprKind {
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Call(String, Vec<Expr>),
-    /// `select(a, function((e) -> body))` — one output element per element of
-    /// `a`, with `e` bound to it.
+    /// `map_array(a, function((e, i) -> body))` — one output element per
+    /// element of `a`, with `e` bound to it and `i` to its 0-based index.
     ///
-    /// The **one** construct in this language that binds a name inside an
-    /// expression. The function is syntactic and not a value, the way
-    /// [`ExprKind::Cast`]'s type is: it is held here rather than being an
-    /// operand, so no function type reaches [`crate::value::TypeDesc`] and no
-    /// closure reaches [`crate::value::DynValue`].
+    /// One of the **two** constructs in this language that bind a name inside
+    /// an expression, [`ExprKind::FilterArray`] being the other. The function
+    /// is syntactic and not a value, the way [`ExprKind::Cast`]'s type is: it
+    /// is held here rather than being an operand, so no function type reaches
+    /// [`crate::value::TypeDesc`] and no closure reaches
+    /// [`crate::value::DynValue`].
     ///
     /// It exists because `flat_map`'s function returns an array and there was
     /// no way to *build* one from another array — so a row's other columns
     /// could not survive a fan-out. Nothing about the operator changed.
     ///
-    /// An array `filter` would fit here with almost nothing new: one variant,
-    /// one eval arm, one hash tag, and the same binder. A `fold` would not, and
-    /// is refused rather than deferred — it can express filter and overlaps
-    /// `length` and `sum`, which is a redundancy an emitter must choose between
-    /// with no information.
-    Select {
+    /// The index binder is optional to *name*, never to allocate: the frame
+    /// grows by two slots whichever arity is written, and the parameter list
+    /// only decides how many of them a body can reach. That is what keeps
+    /// `map_array(a, function((e) -> b))` and `map_array(a, function((e, i) ->
+    /// b))` one node when `b` does not read `i` — they compute the same array,
+    /// and a frame whose size depended on the arity would give them two content
+    /// ids.
+    MapArray {
         array: Box<Expr>,
         param: String,
+        /// The index binder's name, where the function asked for one.
+        index: Option<String>,
+        body: Box<Expr>,
+    },
+    /// `filter_array(a, function((e, i) -> body))` — the elements of `a` whose
+    /// `body` is true, in order.
+    ///
+    /// The length-changing sibling `map_array` deliberately is not. A `fold`
+    /// would subsume both and is still refused rather than deferred: it
+    /// overlaps `length`, which is a redundancy an emitter must choose between
+    /// with no information.
+    FilterArray {
+        array: Box<Expr>,
+        param: String,
+        index: Option<String>,
         body: Box<Expr>,
     },
 }
@@ -265,8 +283,20 @@ const TYPE_NAMES: &[&str] = &[
 /// through `Builtin::ALL` like every other one, and the list below is assembled
 /// from the real names rather than duplicating them.
 const KEYWORDS: &[&str] = &[
-    "true", "false", "NONE", "null", "function", "return", "and", "or", "not", "cast", "circuit",
-    "fixpoint", "select",
+    "true",
+    "false",
+    "NONE",
+    "null",
+    "function",
+    "return",
+    "and",
+    "or",
+    "not",
+    "cast",
+    "circuit",
+    "fixpoint",
+    "map_array",
+    "filter_array",
 ];
 
 /// Whether `name` is reserved, and so may not name a node or a parameter.
@@ -929,6 +959,39 @@ impl Parser {
         Ok(params)
     }
 
+    /// `(array, function((e[, i]) -> body))`, shared by `map_array` and
+    /// `filter_array`.
+    ///
+    /// Checked here so no ill-formed one reaches the AST: an array in, one name
+    /// for the element, and at most one more for its index.
+    #[allow(clippy::type_complexity)]
+    fn array_binder(&mut self, what: &str) -> PResult<(Expr, String, Option<String>, Expr)> {
+        self.expect(&Tok::LParen, "`(` after the array function")?;
+        let array = self.expr()?;
+        self.expect(&Tok::Comma, "`,` before the function")?;
+        if !matches!(self.peek(), Tok::Ident(n) if n == "function") {
+            return self.err(format!(
+                "`{what}`'s second argument must be a function, written \
+                 `function((e) -> …)` or `function((e, i) -> …)`"
+            ));
+        }
+        self.bump();
+        let fun = self.fun_literal()?;
+        self.expect(&Tok::RParen, "`)` closing the array function")?;
+        let (param, index) = match fun.params.as_slice() {
+            [e] => (e.clone(), None),
+            [e, i] => (e.clone(), Some(i.clone())),
+            other => {
+                return self.err(format!(
+                    "`{what}`'s function takes the element and, if wanted, its index; \
+                     found {} parameters",
+                    other.len()
+                ));
+            }
+        };
+        Ok((array, param, index, fun.body))
+    }
+
     fn fun_literal(&mut self) -> PResult<FunLit> {
         self.expect(&Tok::LParen, "`(` after `function`")?;
         let params = self.param_list()?;
@@ -1226,36 +1289,30 @@ impl Parser {
                 }
                 return Ok(self.mk(start, ExprKind::Record(fields)));
             }
-            // `select(a, function((e) -> body))` is parsed here for the same
-            // reason `cast` is: its second argument is a function, and a
-            // function is not an expression.
-            "select" => {
-                self.expect(&Tok::LParen, "`(` after select")?;
-                let array = self.expr()?;
-                self.expect(&Tok::Comma, "`,` before the function of a select")?;
-                if !matches!(self.peek(), Tok::Ident(n) if n == "function") {
-                    return self.err(
-                        "`select`'s second argument must be a function, written \
-                         `function((e) -> …)`",
-                    );
-                }
-                self.bump();
-                let fun = self.fun_literal()?;
-                self.expect(&Tok::RParen, "`)` closing select")?;
-                // Checked here so the AST cannot hold an ill-formed `select`:
-                // one element in, one name to call it.
-                let [param] = fun.params.as_slice() else {
-                    return self.err(format!(
-                        "`select`'s function takes one parameter, the element; found {}",
-                        fun.params.len()
-                    ));
-                };
+            // `map_array(a, function((e, i) -> body))` and its filtering twin
+            // are parsed here for the same reason `cast` is: the second
+            // argument is a function, and a function is not an expression.
+            "map_array" | "filter_array" => {
+                let what = word.clone();
+                let (array, param, index, body) = self.array_binder(&what)?;
+                let array = Box::new(array);
+                let body = Box::new(body);
                 return Ok(self.mk(
                     start,
-                    ExprKind::Select {
-                        array: Box::new(array),
-                        param: param.clone(),
-                        body: Box::new(fun.body),
+                    if what == "map_array" {
+                        ExprKind::MapArray {
+                            array,
+                            param,
+                            index,
+                            body,
+                        }
+                    } else {
+                        ExprKind::FilterArray {
+                            array,
+                            param,
+                            index,
+                            body,
+                        }
                     },
                 ));
             }
