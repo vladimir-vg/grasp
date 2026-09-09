@@ -177,6 +177,17 @@ pub enum Op {
         left: usize,
         right: usize,
     },
+    /// Keep the rows of `left` that `right` has no match for, and flatten.
+    ///
+    /// Two grasp-dbsp operators under one node, like [`Op::Narrow`]: `antijoin`
+    /// yields an *indexed* stream and a relation is flat, so "the `map` after
+    /// the `antijoin` is not optional". Both sides are [`Op::MapIndex`] nodes
+    /// keyed alike, and an empty key subtracts one whole stream from another —
+    /// which is what a negated proposition means.
+    Antijoin {
+        left: usize,
+        right: usize,
+    },
     /// `mapping.md`'s narrowing, minus its first operator: drop the rows where
     /// `name` has no value, then rebind it as a definite one.
     ///
@@ -204,7 +215,7 @@ impl Op {
             | Op::Map { input, .. }
             | Op::MapIndex { input, .. }
             | Op::Narrow { input, .. } => vec![*input],
-            Op::Join { left, right } => vec![*left, *right],
+            Op::Join { left, right } | Op::Antijoin { left, right } => vec![*left, *right],
         }
     }
 }
@@ -251,6 +262,7 @@ pub fn plan(typed: infer::Typed) -> Result<Plan, Vec<Diagnostic>> {
         }
     }
     let components = scc(&edges);
+    stratified(&components, &rules)?;
 
     let mut relations = Vec::new();
     for (name, relation) in &typed.relations {
@@ -318,6 +330,63 @@ pub fn plan(typed: infer::Typed) -> Result<Plan, Vec<Diagnostic>> {
     groups.sort_by(|a, b| a.relations[0].name.cmp(&b.relations[0].name));
 
     Ok(Plan { groups })
+}
+
+/// Reject a negation that reaches back into its own recursive component.
+///
+/// `semantics.md`'s stratification, step 5, and the whole point of the other
+/// four: "A negative edge inside a component is a relation whose definition
+/// depends on the *absence* of something not yet computed." `p <- not p` has no
+/// least fixpoint — neither `p` empty nor `p` full satisfies it — so the
+/// language forbids the shape rather than picking one of the answers.
+///
+/// An aggregate marks an edge the same way and will be checked here too; it is
+/// absent only because aggregation is still reported unimplemented before a
+/// program reaches this far.
+fn stratified(
+    components: &[BTreeSet<String>],
+    rules: &BTreeMap<String, Vec<&infer::TypedRule>>,
+) -> Result<(), Vec<Diagnostic>> {
+    for component in components {
+        for head in component {
+            for rule in rules.get(head).into_iter().flatten() {
+                for stmt in &rule.rule.body {
+                    let core::Stmt::Atom {
+                        relation,
+                        negated: true,
+                        span,
+                        ..
+                    } = stmt
+                    else {
+                        continue;
+                    };
+                    if !component.contains(relation) {
+                        continue;
+                    }
+                    // The spec words this for two relations. A relation that
+                    // negates itself is the same fault and wants its own
+                    // sentence; both end alike, which is what a reader — and a
+                    // fixture — takes hold of.
+                    let message = if relation == head {
+                        format!(
+                            "`{head}` is defined by its own negation at line {} — negation \
+                             cannot cross a recursive cycle",
+                            span.line
+                        )
+                    } else {
+                        format!(
+                            "`{head}` and `{relation}` are mutually recursive, and \
+                             `{relation}` is negated at line {} — negation cannot cross a \
+                             recursive cycle",
+                            span.line
+                        )
+                    };
+                    return Err(vec![Diagnostic::error(Pass::Plan, *span, message)]);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The strongly connected components of the dependency graph — Tarjan's.
@@ -450,15 +519,9 @@ pub fn gaps(typed: &infer::Typed) -> Vec<Diagnostic> {
         let infer::Decl::Rule(r) = decl else { continue };
         let rule = &r.rule;
 
-        let mut atoms: Vec<&core::Stmt> = Vec::new();
         for stmt in &rule.body {
             match stmt {
-                core::Stmt::Atom {
-                    negated: true,
-                    span,
-                    ..
-                } => note("negation", *span),
-                core::Stmt::Atom { negated: false, .. } => atoms.push(stmt),
+                core::Stmt::Atom { .. } => {}
                 core::Stmt::Match { lhs, rhs, span } => {
                     if matches!(rhs, core::Rhs::Aggregate { .. }) {
                         note("aggregation", *span);
@@ -474,11 +537,6 @@ pub fn gaps(typed: &infer::Typed) -> Vec<Diagnostic> {
                 core::Stmt::Filter { .. } | core::Stmt::Input { .. } => {}
             }
         }
-
-        // Two atoms are one component when they share a variable. So a second
-        // atom is a join if it meets the first, and a cross product if it does
-        // not — different machinery, landing in different slices, which is why
-        // they are counted apart rather than as "more than one atom".
     }
 
     // The rank. `Diagnostic::UNIMPLEMENTED` lists the plan constructs in this
@@ -594,6 +652,7 @@ struct Dependent {
 /// most selective first.
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 enum Kind {
+    Negated,
     Filter,
     Match,
 }
@@ -601,6 +660,20 @@ enum Kind {
 enum Body {
     Filter(core::Expr),
     Bind(String, core::Expr),
+    /// A negated atom.
+    ///
+    /// `entry` maps the relation's columns to the key variables both sides will
+    /// be indexed by, one column per variable. `equal` are the columns a
+    /// repeated variable ties together — a constraint on the negated relation,
+    /// not a second key field. `computed` are the key variables this rule has to
+    /// work out on the left first, because the atom wrote an expression there
+    /// rather than a variable.
+    Negated {
+        relation: String,
+        entry: Vec<(String, String)>,
+        equal: Vec<(String, String)>,
+        computed: Vec<(String, core::Expr)>,
+    },
 }
 
 /// One step of the sequence a rule becomes, as a stack machine over streams:
@@ -667,7 +740,56 @@ fn plan_rule(
                     key: key::stmt(stmt),
                 });
             }
-            core::Stmt::Atom { .. } | core::Stmt::Input { .. } | core::Stmt::Assert { .. } => {}
+            core::Stmt::Atom {
+                relation,
+                args,
+                negated: true,
+                ..
+            } => {
+                // Every argument becomes a key variable, and the two sides are
+                // indexed by the same ones. A plain variable is already on the
+                // left; anything else is computed there first, which is what
+                // lets a literal argument and an expression take one path.
+                let mut entry: Vec<(String, String)> = Vec::new();
+                let mut equal = Vec::new();
+                let mut computed = Vec::new();
+                let mut consumes = BTreeSet::new();
+                for (column, arg) in args {
+                    match arg {
+                        core::Arg::Wildcard(_) => {}
+                        core::Arg::Expr(core::Expr::Var { name, .. }) => {
+                            consumes.insert(name.clone());
+                            // One key field per variable. A variable written
+                            // twice is not two keys — it says the two columns
+                            // agree, which is the negated relation's business
+                            // and becomes a filter over it.
+                            match entry.iter().find(|(_, v)| v == name) {
+                                Some((first, _)) => equal.push((column.clone(), first.clone())),
+                                None => entry.push((column.clone(), name.clone())),
+                            }
+                        }
+                        core::Arg::Expr(e) => {
+                            let name = fresh.next();
+                            entry.push((column.clone(), name.clone()));
+                            consumes.extend(free(e));
+                            computed.push((name, e.clone()));
+                        }
+                    }
+                }
+                deps.push(Dependent {
+                    kind: Kind::Negated,
+                    binds: None,
+                    consumes,
+                    key: key::stmt(stmt),
+                    body: Body::Negated {
+                        relation: relation.clone(),
+                        entry,
+                        equal,
+                        computed,
+                    },
+                });
+            }
+            core::Stmt::Input { .. } | core::Stmt::Assert { .. } => {}
             core::Stmt::Filter { expr, .. } => deps.push(Dependent {
                 kind: Kind::Filter,
                 binds: None,
@@ -1101,6 +1223,13 @@ enum Step {
     Narrow(String, core::Expr),
     /// The head: replace the row wholesale.
     Row(Vec<(String, core::Expr, Option<Type>)>),
+    /// See [`Op::Antijoin`]. `entry` is column to key variable, and `equal`
+    /// the columns a repeated variable ties together.
+    Antijoin {
+        relation: String,
+        entry: Vec<(String, String)>,
+        equal: Vec<(String, String)>,
+    },
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1154,6 +1283,29 @@ fn lower(
                         e.clone(),
                     )
                 }
+                Body::Negated {
+                    relation,
+                    entry,
+                    equal,
+                    computed,
+                } => {
+                    // What the atom wrote as an expression is worked out on the
+                    // left first, so that both sides can be indexed by a name.
+                    for (name, e) in computed {
+                        let name = name.clone();
+                        push_total(
+                            &mut steps,
+                            fresh,
+                            move |e| Step::Bind(name.clone(), e),
+                            e.clone(),
+                        );
+                    }
+                    steps.push(Step::Antijoin {
+                        relation: relation.clone(),
+                        entry: entry.clone(),
+                        equal: equal.clone(),
+                    });
+                }
             },
         }
     }
@@ -1192,7 +1344,9 @@ fn lower(
                 keys.insert(i, key);
                 shapes.push(left.union(&right).cloned().collect());
             }
-            Step::Filter(_) => {}
+            // Neither changes the row's shape: an antijoin keeps the rows of
+            // the stream it subtracts from, and it subtracts nothing else.
+            Step::Filter(_) | Step::Antijoin { .. } => {}
             Step::Bind(name, _) | Step::Narrow(name, _) => {
                 shapes.last_mut().expect("a stream").insert(name.clone());
             }
@@ -1222,6 +1376,11 @@ fn lower(
                 want.extend(keys[&i].iter().cloned());
             }
             Step::Filter(e) => want.extend(free(e)),
+            // The key is what both sides are indexed by, so it has to reach
+            // here alive even where nothing downstream wants it.
+            Step::Antijoin { entry, .. } => {
+                want.extend(entry.iter().map(|(_, v)| v.clone()));
+            }
             Step::Bind(name, e) => {
                 want.remove(name);
                 want.extend(free(e));
@@ -1319,6 +1478,106 @@ fn lower(
                     .collect();
                 let j = push(&mut nodes, Op::Join { left: l, right: r }, schema);
                 stack.push(j);
+            }
+            Step::Antijoin {
+                relation,
+                entry,
+                equal,
+            } => {
+                let input = *stack.last().expect("a stream to subtract from");
+                let key: Vec<String> = {
+                    let mut k: Vec<String> = entry.iter().map(|(_, v)| v.clone()).collect();
+                    k.sort();
+                    k
+                };
+                // The left keeps what is still wanted; the right keeps nothing
+                // at all, an antijoin reading only whether a key is there.
+                let val: Vec<String> = nodes[input]
+                    .schema
+                    .iter()
+                    .filter(|v| carry.contains(*v) && !key.contains(*v))
+                    .cloned()
+                    .collect();
+                let left_schema: BTreeSet<String> = key.iter().chain(val.iter()).cloned().collect();
+                let left = push(
+                    &mut nodes,
+                    Op::MapIndex {
+                        input,
+                        key: key.clone(),
+                        val,
+                    },
+                    left_schema.clone(),
+                );
+                let columns: BTreeSet<String> = entry
+                    .iter()
+                    .map(|(c, _)| c.clone())
+                    .chain(equal.iter().flat_map(|(a, b)| [a.clone(), b.clone()]))
+                    .collect();
+                let mut side = push(
+                    &mut nodes,
+                    Op::Scan {
+                        relation: relation.clone(),
+                    },
+                    columns.clone(),
+                );
+                // A variable the atom wrote twice: the two columns must agree,
+                // which is a constraint on the negated relation and belongs on
+                // this side, before it is indexed.
+                for (a, b) in &equal {
+                    let expr = core::Expr::Binary {
+                        op: BinOp::Eq,
+                        lhs: Box::new(core::Expr::Var {
+                            name: a.clone(),
+                            span: rule.span,
+                        }),
+                        rhs: Box::new(core::Expr::Var {
+                            name: b.clone(),
+                            span: rule.span,
+                        }),
+                        span: rule.span,
+                    };
+                    side = push(
+                        &mut nodes,
+                        Op::Filter { input: side, expr },
+                        columns.clone(),
+                    );
+                }
+                let scan = side;
+                // Into the *left's* names, so the two keys are one type.
+                let fields: Vec<Field> = entry
+                    .iter()
+                    .map(|(column, v)| Field {
+                        name: v.clone(),
+                        value: core::Expr::Var {
+                            name: column.clone(),
+                            span: rule.span,
+                        },
+                        ty: None,
+                    })
+                    .collect();
+                let renamed = push(
+                    &mut nodes,
+                    Op::Map {
+                        input: scan,
+                        fields,
+                    },
+                    key.iter().cloned().collect(),
+                );
+                let right = push(
+                    &mut nodes,
+                    Op::MapIndex {
+                        input: renamed,
+                        key: key.clone(),
+                        val: Vec::new(),
+                    },
+                    key.iter().cloned().collect(),
+                );
+                let schema: BTreeSet<String> = left_schema
+                    .into_iter()
+                    .filter(|v| carry.contains(v))
+                    .collect();
+                let n = push(&mut nodes, Op::Antijoin { left, right }, schema);
+                *stack.last_mut().expect("a stream") = n;
             }
             Step::Filter(expr) => {
                 let input = *stack.last().expect("a stream to filter");

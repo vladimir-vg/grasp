@@ -1,0 +1,230 @@
+# Negation: an `antijoin` and the `map` that flattens it, and the
+# stratification that makes it mean anything.
+#
+# "Stratified negation has a definite meaning where unrestricted negation does
+#  not. `p <- not p` has no least fixpoint — neither `p` empty nor `p` full
+#  satisfies it — so the language forbids the shape rather than picking one of
+#  the answers."
+
+- name: a negated atom removes the rows that match it
+  source: |
+    node :: relation(name: string)
+    parent :: relation(child: string)
+    node(name:) <- input
+    parent(child:) <- input
+
+    leaf(name: n) <-
+        node(name: n)
+        not parent(child: n)
+
+  input:
+    - node:
+        - [1, {name: "a"}]
+        - [1, {name: "b"}]
+        - [1, {name: "c"}]
+      parent:
+        - [1, {child: "a"}]
+
+  expected_exact_output:
+    - leaf:
+        - [1, {name: "b"}]
+        - [1, {name: "c"}]
+
+# A column the negation does not care about: many rows of the negated relation
+# can share one key, and subtracting is still subtracting.
+- name: a wildcard column in a negated atom
+  source: |
+    node :: relation(name: string)
+    parent :: relation(child: string, parent: string)
+    node(name:) <- input
+    parent(child:, parent:) <- input
+
+    leaf(name: n) <-
+        node(name: n)
+        not parent(child: n, parent: _)
+
+  input:
+    - node:
+        - [1, {name: "a"}]
+        - [1, {name: "b"}]
+      parent:
+        - [1, {child: "a", parent: "x"}]
+        - [1, {child: "a", parent: "y"}]
+
+  expected_exact_output:
+    - leaf:
+        - [1, {name: "b"}]
+
+# "A negated atom over a relation with no columns is the only one there is
+#  [that consumes no variable]: a plan must have a stream before it can
+#  subtract from one." Here it subtracts everything.
+- name: a negated proposition that holds removes every row
+  source: |
+    config :: relation(mode: string)
+    account :: relation(id: i64)
+    config(mode:) <- input
+    account(id:) <- input
+
+    paused :: relation()
+    paused() <-
+        config(mode: "off")
+
+    active(id: i) <-
+        account(id: i)
+        not paused()
+
+  input:
+    - config:
+        - [1, {mode: "off"}]
+      account:
+        - [1, {id: 1}]
+
+  expected_output:
+    - paused:
+        - [1, {}]
+
+- name: a negated proposition that fails removes nothing
+  source: |
+    config :: relation(mode: string)
+    account :: relation(id: i64)
+    config(mode:) <- input
+    account(id:) <- input
+
+    paused :: relation()
+    paused() <-
+        config(mode: "off")
+
+    active(id: i) <-
+        account(id: i)
+        not paused()
+
+  input:
+    - config:
+        - [1, {mode: "on"}]
+      account:
+        - [1, {id: 1}]
+        - [1, {id: 2}]
+
+  expected_exact_output:
+    - active:
+        - [1, {id: 1}]
+        - [1, {id: 2}]
+
+# One variable in two columns of a negated atom is not two keys — it says the
+# two columns agree, which constrains the negated relation rather than the
+# stream being subtracted from.
+- name: a variable repeated in a negated atom equates its columns
+  source: |
+    n :: relation(v: i64)
+    pair :: relation(a: i64, b: i64)
+    n(v:) <- input
+    pair(a:, b:) <- input
+
+    ok(v: x) <-
+        n(v: x)
+        not pair(a: x, b: x)
+
+  input:
+    - n:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+      pair:
+        - [1, {a: 1, b: 1}]
+        - [1, {a: 2, b: 9}]
+
+  expected_exact_output:
+    - ok:
+        - [1, {v: 2}]
+
+- name: a literal argument in a negated atom
+  source: |
+    n :: relation(v: i64)
+    banned :: relation(v: i64, kind: string)
+    n(v:) <- input
+    banned(v:, kind:) <- input
+
+    ok(v: x) <-
+        n(v: x)
+        not banned(v: x, kind: "hard")
+
+  input:
+    - n:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+      banned:
+        - [1, {v: 1, kind: "hard"}]
+        - [1, {v: 2, kind: "soft"}]
+
+  expected_exact_output:
+    - ok:
+        - [1, {v: 2}]
+
+# Negation *may* sit in a recursive rule, so long as it reaches a strictly
+# lower stratum. This is the case that must not be rejected, and it is why the
+# check is about the component rather than about negation and recursion
+# meeting at all.
+- name: a recursive rule may negate a lower stratum
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    blocked :: relation(node: i64)
+    edge(src:, dst:) <- input
+    blocked(node:) <- input
+
+    path(src: x, dst: y) <-
+        edge(src: x, dst: y)
+        not blocked(node: y)
+    path(src: x, dst: y) <-
+        path(src: x, dst: z)
+        edge(src: z, dst: y)
+        not blocked(node: y)
+
+  input:
+    - edge:
+        - [1, {src: 1, dst: 2}]
+        - [1, {src: 2, dst: 3}]
+        - [1, {src: 3, dst: 4}]
+      blocked:
+        - [1, {node: 3}]
+
+  expected_exact_output:
+    - path:
+        - [1, {src: 1, dst: 2}]
+        - [1, {src: 3, dst: 4}]
+
+# Step 5 of stratification: "Reject if any NEGATIVE edge is internal to a
+# component."
+- name: negation may not cross a recursive cycle
+  source: |
+    e :: relation(a: i64, b: i64)
+    e(a:, b:) <- input
+
+    p :: relation(v: i64)
+    q :: relation(v: i64)
+
+    p(v: x) <- e(a: x, b: 0)
+    p(v: x) <-
+        q(v: x)
+        e(a: x, b: 1)
+    q(v: x) <-
+        e(a: x, b: 2)
+        not p(v: x)
+
+  expected_diagnostics:
+    - severity: error
+      pass: plan
+      message: "negation cannot cross a recursive cycle"
+
+- name: a relation may not be defined by its own negation
+  source: |
+    e :: relation(a: i64)
+    e(a:) <- input
+
+    p :: relation(v: i64)
+    p(v: x) <-
+        e(a: x)
+        not p(v: x)
+
+  expected_diagnostics:
+    - severity: error
+      pass: plan
+      message: "is defined by its own negation"

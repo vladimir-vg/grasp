@@ -302,6 +302,9 @@ fn emit_rule(out: &mut String, relation: &Relation, rule: &Rule, names: &mut Nam
             Op::Join { left, right } => {
                 emit_join(out, &base, names, rule, &at, *left, *right, &node.schema)
             }
+            Op::Antijoin { left, right } => {
+                emit_antijoin(out, &base, names, rule, &at, *left, *right, &node.schema)
+            }
             Op::Narrow {
                 input,
                 name: v,
@@ -359,6 +362,54 @@ fn emit_join(
         "{name} := join({}, {}, function((k, a, b) -> {}))",
         at[left],
         at[right],
+        record_text(&fields)
+    );
+    name
+}
+
+/// An `antijoin`, and the `map` that flattens what it produces.
+///
+/// "The `map` after the `antijoin` is not optional: `antijoin` yields an
+/// indexed stream, and a relation is flat." So this is two operators under one
+/// node, and the flattening function takes the key and the value rather than a
+/// row — which is what an indexed stream hands a function.
+///
+/// The rows that survive are the left's, so every output field comes from the
+/// left: the key parameter for what both sides were indexed by, the value for
+/// the rest. The right side carries no value at all — an antijoin reads only
+/// whether a key is there.
+#[allow(clippy::too_many_arguments)]
+fn emit_antijoin(
+    out: &mut String,
+    base: &str,
+    names: &mut Names,
+    rule: &Rule,
+    at: &[String],
+    left: usize,
+    right: usize,
+    schema: &BTreeSet<String>,
+) -> String {
+    let key = match &rule.nodes[left].op {
+        Op::MapIndex { key, .. } => key.clone(),
+        _ => unreachable!("an antijoin reads two indexed streams"),
+    };
+    let subtracted = names.intermediate(base);
+    let _ = writeln!(out, "{subtracted} := antijoin({}, {})", at[left], at[right]);
+    let fields: Vec<(String, String)> = schema
+        .iter()
+        .map(|v| {
+            let from = if key.contains(v) {
+                format!("k.{v}")
+            } else {
+                format!("v.{v}")
+            };
+            (v.clone(), from)
+        })
+        .collect();
+    let name = names.intermediate(base);
+    let _ = writeln!(
+        out,
+        "{name} := map({subtracted}, function((k, v) -> {}))",
         record_text(&fields)
     );
     name

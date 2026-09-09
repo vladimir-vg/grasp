@@ -87,7 +87,7 @@ That is the whole rule. Nothing is `#[ignore]`d, so nothing quietly stops being
 parsed, and each run ends with the debt, grouped by what is blocking it:
 
 ```
-6 pending: aggregation 2, unnesting 2, negation 1, type assertions 1
+5 pending: aggregation 2, unnesting 2, type assertions 1
 ```
 
 which is a work queue rather than a census — the largest number is the feature
@@ -416,6 +416,7 @@ been guarding — and unlike a snapshot it cannot rot.
 | `rules.yaml` | one rule over one atom, end to end — projection, filters, matches, wildcards, literal arguments, facts |
 | `joins.yaml` | atoms meeting on a shared variable, and crossing when they share none — chains, self-joins, a cyclic rule, propositions |
 | `unions.yaml` | several rules for one relation, and the `distinct` that makes the result a set |
+| `negation.yaml` | the antijoin, and the stratification that gives it a meaning |
 | `smoke.yaml` | the worked programs from the spec, end to end |
 
 `inference/`, covering [`inference.md`](../../../../docs/grasp/inference.md):
@@ -436,9 +437,9 @@ is, so these are all `inference/` or `programs/`:
 - **desugar** — the `expected_core` half of `patterns.yaml`, in `programs/`.
 - **infer** — `optional`, `json`, `runtime_filters`, `comparison`, `specs`, and
   more of `safety` and `assignability`, all in `inference/`.
-- **plan** — `optimizer`, `stratification`, and the diagnostic halves of
-  `negation` and `aggregation`. Not `input_relations`: an input relation is
-  never a rule head, so it has no in-edge and cannot be in a cycle — the
-  rejection `semantics.md` describes is unreachable rather than unwritten.
+- **plan** — `optimizer`, and the diagnostic half of `aggregation`. Not
+  `input_relations`: an input relation is never a rule head, so it has no
+  in-edge and cannot be in a cycle — the rejection `semantics.md` describes is
+  unreachable rather than unwritten.
 - **emit** — `builtins`, more of `expressions`, `rules`, `joins` and `unions`,
   and the end-to-end halves of everything above.

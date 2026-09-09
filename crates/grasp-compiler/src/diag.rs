@@ -200,7 +200,6 @@ impl Diagnostic {
     /// in a bucket.
     pub const UNIMPLEMENTED: &[&str] = &[
         "aggregation",
-        "negation",
         "unnesting",
         "type assertions",
         "destructuring patterns",
