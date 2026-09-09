@@ -1,0 +1,170 @@
+# One rule, one atom, end to end — the shapes `mapping.md`'s body-statement
+# table gives a rule with a single positive atom, each with rows in and rows
+# out. Emission is asserted by execution here rather than by text: what the
+# emitter produced is only right if the circuit built from it computes the rule.
+
+- name: a rule renames and projects its atom's columns
+  source: |
+    person :: relation(name: string, age: i64, city: string)
+    person(name:, age:, city:) <- input
+
+    who(n: name) <- person(name: name, age: a, city: c)
+
+  input:
+    - person:
+        - [1, {name: "ann", age: 34, city: "riga"}]
+        - [1, {name: "bo", age: 21, city: "oslo"}]
+
+  expected_exact_output:
+    - who:
+        - [1, {n: "ann"}]
+        - [1, {n: "bo"}]
+
+- name: a filter drops the rows it rejects
+  source: |
+    person :: relation(name: string, age: i64)
+    person(name:, age:) <- input
+
+    adult(name: n) <-
+        person(name: n, age: a)
+        a > 20
+
+  input:
+    - person:
+        - [1, {name: "ann", age: 34}]
+        - [1, {name: "kid", age: 9}]
+
+  expected_exact_output:
+    - adult:
+        - [1, {name: "ann"}]
+
+# A wildcard binds nothing, so the column it stands in reaches neither the head
+# nor any filter — and the row still passes through.
+- name: a wildcard ignores the column it stands in
+  source: |
+    pair :: relation(a: i64, b: i64)
+    pair(a:, b:) <- input
+
+    firsts(v: x) <- pair(a: x, b: _)
+
+  input:
+    - pair:
+        - [1, {a: 1, b: 99}]
+        - [1, {a: 2, b: 98}]
+
+  expected_exact_output:
+    - firsts:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+
+# "A literal in an atom's argument takes the column's type" — and constrains it,
+# which is a filter over the column rather than a binding.
+- name: a literal atom argument selects
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src:, dst:) <- input
+
+    from_one(dst: d) <- edge(src: 1, dst: d)
+
+  input:
+    - edge:
+        - [1, {src: 1, dst: 2}]
+        - [1, {src: 2, dst: 3}]
+        - [1, {src: 1, dst: 4}]
+
+  expected_exact_output:
+    - from_one:
+        - [1, {dst: 2}]
+        - [1, {dst: 4}]
+
+# One variable in two of an atom's columns is an equality between them: the same
+# machinery competing producers use, and the reason both are one rule here.
+- name: a variable repeated in one atom equates its columns
+  source: |
+    pair :: relation(a: i64, b: i64)
+    pair(a:, b:) <- input
+
+    same(v: x) <- pair(a: x, b: x)
+
+  input:
+    - pair:
+        - [1, {a: 1, b: 1}]
+        - [1, {a: 2, b: 3}]
+
+  expected_exact_output:
+    - same:
+        - [1, {v: 1}]
+
+- name: a match binds a computed column
+  source: |
+    item :: relation(price: i64, qty: i64)
+    item(price:, qty:) <- input
+
+    line(total: t) <-
+        item(price: p, qty: q)
+        t := p * q
+
+  input:
+    - item:
+        - [1, {price: 3, qty: 4}]
+        - [1, {price: 5, qty: 2}]
+
+  expected_exact_output:
+    - line:
+        - [1, {total: 12}]
+        - [1, {total: 10}]
+
+# A rule with no atom at all is grounded on the unit relation, so it fires once
+# and needs no input.
+- name: a rule with no atom derives one row
+  source: |
+    answer :: relation(v: i64)
+
+    answer(v: n) <-
+        n := 6 * 7
+
+  # One transaction and no rows pushed: there is no input relation to push
+  # to, and a `constant` delivers itself in the first transaction anyway.
+  input:
+    - {}
+
+  expected_exact_output:
+    - answer:
+        - [1, {v: 42}]
+
+# The facts of one relation are a single `constant`, delivered in the first
+# transaction — the same shape as an input whose rows were pushed once, which is
+# why nothing downstream has to know it was a fact.
+- name: facts arrive without any input
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src: 1, dst: 2)
+    edge(src: 2, dst: 3)
+
+  # One transaction and no rows pushed: there is no input relation to push
+  # to, and a `constant` delivers itself in the first transaction anyway.
+  input:
+    - {}
+
+  expected_exact_output:
+    - edge:
+        - [1, {src: 1, dst: 2}]
+        - [1, {src: 2, dst: 3}]
+
+# "A relation is a set": two rows of the input that project to one row of the
+# head appear once, at weight 1, which is what the `distinct` is for.
+- name: two rows projecting alike appear once
+  source: |
+    visit :: relation(who: string, day: i64)
+    visit(who:, day:) <- input
+
+    seen(who: w) <- visit(who: w, day: d)
+
+  input:
+    - visit:
+        - [1, {who: "ann", day: 1}]
+        - [1, {who: "ann", day: 2}]
+
+  expected_exact_output:
+    - seen:
+        - [1, {who: "ann"}]

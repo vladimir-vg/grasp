@@ -443,9 +443,14 @@ impl<'a> Lexer<'a> {
                 }
                 Some(b'\\') => {
                     self.pos += 1;
+                    // `\r` is here because grasp has it. The two languages
+                    // share a string literal, and a source language able to
+                    // write a value its target cannot is a hole in the pair
+                    // rather than a feature of either.
                     let esc = match self.peek_byte() {
                         Some(b'n') => '\n',
                         Some(b't') => '\t',
+                        Some(b'r') => '\r',
                         Some(b'\\') => '\\',
                         Some(b'"') => '"',
                         other => {

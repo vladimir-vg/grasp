@@ -19,12 +19,15 @@ pub mod ast;
 pub mod core;
 pub mod desugar;
 pub mod diag;
+pub mod emit;
 pub mod infer;
+pub mod key;
 pub mod lex;
 pub mod parse;
+pub mod plan;
 pub mod ty;
 
-use crate::diag::{Diagnostic, Pass};
+use crate::diag::Diagnostic;
 
 /// Check a grasp program, and return what inference concluded about it.
 ///
@@ -54,10 +57,7 @@ pub fn check(source: &str) -> Result<infer::Typed, Vec<Diagnostic>> {
 /// to tell a fixture waiting on unwritten code from a fixture the compiler gets
 /// wrong.
 pub fn compile(source: &str) -> Result<String, Vec<Diagnostic>> {
-    let _typed = check(source)?;
-    Err(vec![Diagnostic::unimplemented(
-        Pass::Plan,
-        None,
-        "the stages after inference",
-    )])
+    let typed = check(source)?;
+    let plan = plan::plan(typed)?;
+    Ok(emit::emit(&plan))
 }

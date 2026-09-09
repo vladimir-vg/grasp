@@ -224,7 +224,11 @@ own content, taken from the core form after desugaring.
 | aggregate | the variable, `:=`, the aggregator and its argument |
 
 An order's key is the sequence of its nodes' keys; a component's is that
-sequence sorted. Both compare lexicographically, smallest first. Keys are built
+sequence sorted; a **rule's** is its order's key followed by its head's, the head
+keyed as an atom is. A rule needs one because several rules for one relation are
+summed, and the operands of that sum have to be in an order the program decides
+rather than the file does — two rules can share a body and differ only in the
+head, so the head has to be in the key. Both compare lexicographically, smallest first. Keys are built
 from relation, column and variable names, literal values and operator
 spellings — what a program *means* — and never from a line, a column, or which
 statement was written first.

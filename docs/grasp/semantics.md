@@ -346,8 +346,8 @@ The check both negation and aggregation rest on.
 Step 5 is the whole point. A negative edge inside a component is a relation
 whose definition depends on the *absence* of something not yet computed.
 
-> ```p` and `q` are mutually recursive, and `q` is negated at line N — negation
-> cannot cross a recursive cycle``
+> ``` `p` and `q` are mutually recursive, and `q` is negated at line N — negation
+> cannot cross a recursive cycle ```
 
 The strata are also the evaluation order: everything in a lower stratum is
 finished before a higher one starts, which is what lets a negated atom be read

@@ -87,11 +87,19 @@ That is the whole rule. Nothing is `#[ignore]`d, so nothing quietly stops being
 parsed, and each run ends with the debt, grouped by what is blocking it:
 
 ```
-43 pending: aggregates 9, recursion 5, negation 4, the stages after parsing 25
+17 pending: recursion 5, aggregation 2, cross products 2, joins 2,
+unions of rules 2, unnesting 2, negation 1, type assertions 1
 ```
 
 which is a work queue rather than a census — the largest number is the feature
-that would free the most fixtures.
+that would free the most fixtures. There is deliberately no catch-all row: a
+stage reporting "the stages after me" would never have to enumerate its gaps,
+and the queue would collapse back into one number.
+
+A case blocked by two constructs counts against whichever lands **last**, since
+implementing the other alone would free nothing. So a count can fall without
+that construct being implemented — a join case that also negates moves from
+`negation` to `joins` the day negation lands. The attribution settles itself.
 
 `expected_ok` is the exception, and stays live: it claims only that nothing
 *rejects* the program, and an unimplemented construct does not reject it. That is
@@ -406,6 +414,7 @@ been guarding — and unlike a snapshot it cannot rot.
 | `desugar.yaml` | the desugaring table, as `equivalent_to` pairs |
 | `normalization.yaml` | statement and rule order do not change the emission — including the two component-ordering cases the optimizer's forest must respect |
 | `recursion.yaml` | the transitive closure worked example, end to end |
+| `rules.yaml` | one rule over one atom, end to end — projection, filters, matches, wildcards, literal arguments, facts |
 | `smoke.yaml` | the worked programs from the spec, end to end |
 
 `inference/`, covering [`inference.md`](../../../../docs/grasp/inference.md):
@@ -427,6 +436,8 @@ is, so these are all `inference/` or `programs/`:
 - **infer** — `optional`, `json`, `runtime_filters`, `comparison`, `specs`, and
   more of `safety` and `assignability`, all in `inference/`.
 - **plan** — `optimizer`, `stratification`, and the diagnostic halves of
-  `negation`, `aggregation`, `input_relations`.
-- **emit** — `rules`, `joins`, `builtins`, `unions`, more of `expressions`, and
-  the end-to-end halves of everything above.
+  `negation` and `aggregation`. Not `input_relations`: an input relation is
+  never a rule head, so it has no in-edge and cannot be in a cycle — the
+  rejection `semantics.md` describes is unreachable rather than unwritten.
+- **emit** — `joins`, `builtins`, `unions`, more of `expressions` and `rules`,
+  and the end-to-end halves of everything above.

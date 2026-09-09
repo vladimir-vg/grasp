@@ -338,6 +338,12 @@ binop      := "+" | "-" | "*" | "/" | "%"
 literal    := INT | FLOAT | STRING | "true" | "false" | "NONE"
 ```
 
+A `STRING` is double-quoted, and its escapes are `\"`, `\\`, `\n`, `\t` and
+`\r`; a backslash before anything else is an error, so a typo is reported rather
+than silently dropped. That is the same set
+[grasp](../grasp/syntax.md#literals) has, and it is the same set on purpose: a
+string a source language can write and this one cannot is a hole in the pair.
+
 The parameter list binds the row(s) the operator feeds the function. `map`,
 `filter`, `flat_map`, `map_index` and `flat_map_index` take one row; `join` and
 `join_index` take three (key, left value, right value); `aggregate`'s function

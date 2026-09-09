@@ -41,7 +41,18 @@ where it is used — but a few must have one: a stream used twice, and anything
 `input` or `constant`, neither of which nests. Those are named after the relation
 whose rule they serve and made unique against the program's relation names.
 Which suffix is used is the emitter's business; that no intermediate collides is
-not.
+not — though it must be a function of the *plan*, not of source order, or two
+programs that mean the same thing would emit different text.
+
+**A relation whose name grasp-dbsp cannot spell is mangled.** grasp admits a
+namespace-qualified relation name — `mine:edges` — and permits names grasp-dbsp
+reserves, like `map` or `join`; grasp-dbsp identifiers are
+`[A-Za-z_][A-Za-z0-9_]*` and its reserved words are its own. So the node name is
+derived from the relation name rather than always equal to it: `:` becomes `__`,
+a reserved word takes a suffix, and the result is made unique against every other
+node name the same way an intermediate is. Only the *node* name moves. The
+`input(...)` table string is quoted and stays the relation name exactly, which is
+what anything driving a compiled program keys on.
 
 An external relation becomes an `input`:
 
@@ -58,6 +69,25 @@ edge := input("edge")
 The typespec must be written, not inferred: grasp-dbsp takes an `input` node's
 schema from its `::` annotation, and that is also why the input cannot be
 inlined into another call.
+
+A relation with a typespec and **no producer** — no rule, no fact, no `<- input`
+— is empty for the life of the program, and emits as a standalone `empty()`:
+
+```grasp
+s :: relation(x: i64)
+```
+
+```
+s :: zset(record(x: i64))
+s := empty()
+```
+
+A node still has to exist, because the naming rule above says the node named `s`
+*is* relation `s`'s stream and a rule body may reference it. The typespec is
+required rather than tidy: `empty()` takes its type from where it sits, and
+standing alone the only thing that can supply one is the `::`. `constant([])` is
+not the alternative — grasp-dbsp rejects it, since there is one way to write
+each thing.
 
 ## Facts
 
@@ -149,6 +179,9 @@ correspond directly, with one spelling difference:
 | `and`, `or`, `not` | same |
 | `++` | `concat(a, b)` |
 | `s.field` | `s.field` |
+| `record:get(s, "f")` | `s.f` |
+| `dict:get(d, k)` | `get(d, k)` |
+| `boolean:not(e)` | `not e` |
 | `[a, b]` | `[a, b]` |
 | `{k => v}` | `{k => v}` |
 | `record(f: e)` | `record(f: e)` |
@@ -157,6 +190,14 @@ correspond directly, with one spelling difference:
 The three literal forms are identical in both languages, which is not an
 accident — they were named that way so an expression survives lowering as
 itself, and only `=` needs rewriting.
+
+The three middle rows are **desugaring run backwards**. grasp-dbsp has no
+`record:get`, no `dict:get` and no `boolean:not` — those names exist only in
+grasp's reserved namespaces, as the expansions
+[`semantics.md`](semantics.md#desugaring) gives `s.f`, a dict pattern and `not`.
+So the emitter puts back what desugaring took apart. A program that spells one
+by hand is writing the expansion itself and reaches the same text, which is what
+lets a sugar and its expansion be asserted equivalent.
 
 grasp's second dict spelling, `{a: v}`, does not appear here because it is gone
 by this point: [desugaring](semantics.md#desugaring) rewrites it to
@@ -315,6 +356,12 @@ it is bag union, so a tuple derived by both rules would come out with weight 2.
 Datalog relations are sets, and `distinct` is what makes them so.
 
 For more than two rules, `sum(rule₁, rule₂, …)` is n-ary and saves the nesting.
+
+**`distinct` wraps a rule-derived definition and nothing else.** Not an `input`,
+whose rows are whatever was pushed; not a `constant`, whose rows are written out
+once and cannot repeat; and not a recursive stream, which grasp-dbsp deduplicates
+every round already ([below](#recursion)). A relation defined by facts *and*
+rules is one `distinct` over the sum of both.
 
 ## Recursion
 

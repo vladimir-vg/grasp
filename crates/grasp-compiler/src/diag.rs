@@ -188,8 +188,24 @@ impl Diagnostic {
     /// list is scaffolding — an entry appears when a stage starts reporting it
     /// and goes when that stage implements it, and when the list is empty this
     /// and [`Diagnostic::unimplemented`] go with it.
+    /// The plan stage's entries are listed most-dependent first, and that order
+    /// is load-bearing: a program blocked by two constructs is attributed to the
+    /// one that will land last, because implementing the other alone would free
+    /// nothing. See `plan::gaps`.
+    ///
+    /// There is deliberately **no catch-all**. A pass that could report "the
+    /// stages after X" would never have to enumerate its gaps, and the burn-down
+    /// would stay one number instead of a work queue; without one, a construct
+    /// nobody named trips the `debug_assert` below rather than landing silently
+    /// in a bucket.
     pub const UNIMPLEMENTED: &[&str] = &[
-        "the stages after inference",
+        "recursion",
+        "aggregation",
+        "negation",
+        "cross products",
+        "joins",
+        "unnesting",
+        "unions of rules",
         "type assertions",
         "destructuring patterns",
         "keyword arguments",
