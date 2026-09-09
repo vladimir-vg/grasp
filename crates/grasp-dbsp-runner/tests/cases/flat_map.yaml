@@ -442,3 +442,50 @@
     - severity: error
       pass: typecheck
       message: "`filter_array` is an expression, not an operator"
+
+# `get` on a typed array — the one way to read an element by position, since
+# `map_array` and `filter_array` walk every element and cannot single one out.
+- name: get reads an array element by index
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(string)))
+    out := map(t, function((r) -> record(
+        first: get(r.xs, 0),
+        second: get(r.xs, 1),
+        past:  get(r.xs, 9),
+        below: get(r.xs, -1))))
+
+  input:
+    - t:
+        - [1, {xs: ["a", "b"]}]
+
+  expected_output:
+    - out:
+        - [1, {first: "a", second: "b", past: null, below: null}]
+
+# The element type comes back, not a document: an array's elements are typed,
+# which is the same difference a dict lookup has from a document's.
+- name: an array element keeps its own type
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(i64)))
+    out := map(t, function((r) -> record(v: coalesce(get(r.xs, 0), 0) + 1)))
+
+  input:
+    - t:
+        - [1, {xs: [41]}]
+
+  expected_output:
+    - out:
+        - [1, {v: 42}]
+
+- name: an array is indexed by i64
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(i64)))
+    out := map(t, function((r) -> record(v: get(r.xs, "0"))))
+
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+      message: "an array is indexed by `i64`"

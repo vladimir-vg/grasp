@@ -561,6 +561,7 @@ above and with each other.
 | `lower` / `upper` / `trim` | `string → string` | |
 | `get` | `(json \| optional(json)) × (string \| i64) → optional(json)` | a member, by key or 0-based index |
 | `get` | `dict(K,V) × K → optional(V)` | an entry, by key |
+| `get` | `array(T) × i64 → optional(T)` | an element, by 0-based index |
 | `keys` | `json → optional(array(string))` | an object's keys, `NONE` otherwise |
 | `keys` | `dict(K,V) → array(K)` | a dict's keys, sorted |
 | `entries` | `dict(K,V) → array(record(key: K, value: V))` | a dict's entries, sorted by key |
@@ -577,6 +578,13 @@ two levels of typing. They differ where the types differ: a dict lookup is exact
 rather than navigation, and `keys` on a dict is definite — a dict is always a
 dict, so there is no "not an object" case to report as absence. `entries` is
 what turns a dict into rows, through `flat_map`.
+
+`get` covers a typed **array** on the same terms: exact rather than navigation,
+0-based, and `optional(T)` because an index may be past the end. Absence is the
+answer for an index out of range at either end, which is what a document already
+says for a member that is not there. It is the only way to read an element by
+position — `map_array` and `filter_array` walk every element and cannot single
+one out.
 
 `if` is the only branching construct, and the only builtin that does not
 evaluate all of its arguments — the untaken arm does not run. Because every

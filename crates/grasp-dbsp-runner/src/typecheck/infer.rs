@@ -1144,10 +1144,25 @@ fn infer_builtin(
                 pin(&mut exprs[1], kt);
                 return Ok(Ty::Known(optional((**vt).clone())));
             }
+            // An array is read by position, and the position is an `i64`. Like
+            // a dict and unlike a document, the result is the element type
+            // rather than another document — an array's elements are typed.
+            if let TypeDesc::Array(et) = doc.non_null() {
+                definite(&args[1], name, span)?;
+                let index = args[1].settle().expect("definite() rejected the none case");
+                if index.non_null() != &TypeDesc::I64 {
+                    return err(
+                        span,
+                        format!("an array is indexed by `i64`, but this index is `{index}`"),
+                    );
+                }
+                pin(&mut exprs[1], &TypeDesc::I64);
+                return Ok(Ty::Known(optional((**et).clone())));
+            }
             if doc.non_null() != &TypeDesc::Json {
                 return err(
                     span,
-                    format!("`get` needs a document or a dict, found `{doc}`"),
+                    format!("`get` needs a document, an array or a dict, found `{doc}`"),
                 );
             }
             definite(&args[1], name, span)?;

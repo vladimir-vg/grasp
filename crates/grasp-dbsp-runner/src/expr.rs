@@ -770,6 +770,16 @@ fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValu
             if let DynValue::Dict(entries) = &vals[0] {
                 return entries.get(&vals[1]).cloned().unwrap_or(DynValue::None);
             }
+            // An array index is exact too, and 0-based. Out of range — either
+            // end — is absence rather than an error, which is the same answer a
+            // document gives for a member that is not there.
+            if let (DynValue::Array(items), DynValue::I64(i)) = (&vals[0], &vals[1]) {
+                return usize::try_from(*i)
+                    .ok()
+                    .and_then(|i| items.get(i))
+                    .cloned()
+                    .unwrap_or(DynValue::None);
+            }
             let found = match (&vals[0], &vals[1]) {
                 (DynValue::Json(fv), DynValue::String(k)) => Some(fv.index_string(k)),
                 (DynValue::Json(fv), DynValue::I64(i)) => {

@@ -136,13 +136,6 @@ become an output — by declared name, or by content id for a node that has none
   still free to settle — which stops being true after the first stored batch.
   That freedom is what let `SqlString` be removed rather than deprecated.
 
-- **Element access** — `e[0]` on an `array(T)`. Arrays are values, `flat_map`
-  turns one into rows and `map_array` maps over one, but nothing reads an
-  element by index. `get` does this for a document; a typed array has no
-  equivalent. This is what blocks grasp's subscript syntax and its array
-  destructure. A *slice* is no longer among them: `filter_array` over the index
-  is one.
-
 - **Document odds and ends.** A `shape(doc)` builtin — a program that must
   branch on what a document holds attempts casts in order today, which works and
   reads poorly. A serialisation builtin: `cast(d, optional(string))` *extracts* a
