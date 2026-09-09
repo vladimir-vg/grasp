@@ -288,6 +288,15 @@ impl Cx {
 /// What typing one rule produced.
 struct RuleTypes {
     vars: BTreeMap<String, Ty>,
+    /// What the body walk alone concluded, before assertions narrowed anything.
+    ///
+    /// This, and not `vars`, is what the next round is seeded with. An
+    /// assertion *replaces* a variable's type, so `vars` disagrees with the
+    /// statement that binds the variable by construction: seeding a second
+    /// walk from it makes `doc(k: k, d: x)` beside `x :: i64` report `x` as
+    /// both `json` and `i64`. The walk is the monotone part, so the walk is
+    /// the part that iterates.
+    walked: BTreeMap<String, Ty>,
     filters: Vec<Assert>,
     head: BTreeMap<String, Ty>,
     /// The first thing wrong, which is the only thing reported.
@@ -299,13 +308,48 @@ struct RuleTypes {
 // ---------------------------------------------------------------------------
 
 impl Cx {
-    /// Collect every constraint the rule places on its variables, compose them,
-    /// and report what the head columns come out as.
+    /// One rule's types, to a fixpoint.
     ///
-    /// Runs during the fixpoint, where `fault` is discarded, and again during
+    /// Collects every constraint the rule places on its variables, composes
+    /// them, and reports what the head columns come out as. Runs during the
+    /// program-level fixpoint, where `fault` is discarded, and again during
     /// checking, where it is the rule's one diagnostic.
+    ///
+    /// A single pass reads the body top to bottom, so a variable used above the
+    /// statement that binds it is `Unknown` where it is read — and a rule body
+    /// is a set, so that made a program's acceptance depend on where a line was
+    /// written. `q(v: n) <- n := a * 2, r(a: a)` was rejected and the same two
+    /// statements swapped were not.
+    ///
+    /// So the pass runs again on what it learned until nothing moves. The
+    /// earlier rounds are **silent** — the same discipline the program-level
+    /// fixpoint keeps, and for the same reason: a fault seen before the last
+    /// round may be an artefact of what that round had not yet read.
+    ///
+    /// Bounded rather than trusted, as [`Cx::round_limit`] is: within one rule
+    /// the lattice has no finite height either, since `x := [y]` beside
+    /// `y := [x]` deepens both by an array every round. A rule that does not
+    /// settle falls out with its variables open, which phase 3 reports.
     fn type_rule(&self, rule: &core::Rule) -> RuleTypes {
-        let mut vars: BTreeMap<String, Ty> = BTreeMap::new();
+        let limit = self.round_limit();
+        let mut seed: BTreeMap<String, Ty> = BTreeMap::new();
+        for _ in 0..limit {
+            let next: BTreeMap<String, Ty> = self
+                .type_pass(rule, &seed)
+                .walked
+                .into_iter()
+                .filter(|(_, ty)| !ty.is_poisoned())
+                .collect();
+            if next == seed {
+                break;
+            }
+            seed = next;
+        }
+        self.type_pass(rule, &seed)
+    }
+
+    fn type_pass(&self, rule: &core::Rule, seed: &BTreeMap<String, Ty>) -> RuleTypes {
+        let mut vars: BTreeMap<String, Ty> = seed.clone();
         let mut fault: Option<Diagnostic> = None;
         let mut asserts: Vec<(&String, &Type, Span)> = Vec::new();
         let mut filters: Vec<Assert> = Vec::new();
@@ -489,6 +533,8 @@ impl Cx {
             }
         }
 
+        let walked = vars.clone();
+
         // Assertions, now that every other statement has had its say.
         //
         // An assertion *replaces* a variable's type rather than composing with
@@ -579,6 +625,7 @@ impl Cx {
 
         RuleTypes {
             vars,
+            walked,
             head,
             fault,
             filters,
@@ -1234,10 +1281,10 @@ impl Cx {
         if let Some(d) = self.check_safety(rule) {
             return Some(d);
         }
-        // Scope, also before typing, and for the same reason plus one: it needs
-        // no types, so nothing it says can be poisoned by an earlier fault —
-        // and `type_rule` walks the body in source order, so running it first
-        // would make this message depend on where a line was written.
+        // Scope, also before typing, and for the same reason: it needs no types,
+        // so nothing it says can be poisoned by an earlier fault. It is
+        // structural — reads and binds, no order — so it does not care that
+        // `type_rule` needs several rounds to reach the same conclusion.
         if let Some(d) = check_aggregate_scope(rule) {
             return Some(d);
         }

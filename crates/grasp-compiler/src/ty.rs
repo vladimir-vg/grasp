@@ -90,6 +90,23 @@ impl Ty {
             _ => false,
         }
     }
+
+    /// Whether a reported mistake is anywhere in here.
+    ///
+    /// `Error` absorbs everything it composes with, so a variable that once
+    /// conflicted stays `Error` for the rest of the pass — which is what makes
+    /// the mistake speak once. Anything that carries a type from one pass into
+    /// the next has to drop these, or the pass that would report the conflict
+    /// starts out already absorbing it and says nothing at all.
+    pub fn is_poisoned(&self) -> bool {
+        match self {
+            Ty::Error => true,
+            Ty::Optional(t) | Ty::Array(t) => t.is_poisoned(),
+            Ty::Dict(k, v) => k.is_poisoned() || v.is_poisoned(),
+            Ty::Record(fields) => fields.iter().any(|(_, t)| t.is_poisoned()),
+            _ => false,
+        }
+    }
 }
 
 fn sorted(fields: impl IntoIterator<Item = (String, Ty)>) -> Vec<(String, Ty)> {

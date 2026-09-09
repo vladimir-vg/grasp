@@ -105,6 +105,29 @@ makes this rule short.
 
 > ``variable `x` is used as `i64` here and as `string` at line N``
 
+### Collecting them is a fixpoint
+
+A constraint can name a variable that another constraint types, and a rule body
+is a set, so "collect every constraint" cannot mean one walk from the top:
+
+```grasp
+q(v: n) <-
+    n := a * 2
+    r(a: a)
+```
+
+`n := a * 2` is read before anything says what `a` is. So the collection runs
+again on what it learned, until nothing moves — which for a chain of matches
+takes as many rounds as the chain is long, and is bounded the same way the
+per-program loop is. A rule that does not settle falls out with its variables
+open, which phase 3 reports.
+
+The rounds before the last are **silent**, for the reason the per-program loop's
+are: a conflict seen in an early round may be an artefact of what that round had
+not yet read. A reported type does not carry into the next round either, since it
+absorbs everything it composes with and would make the conflict compose cleanly
+the second time.
+
 ### Safety, checked here
 
 Every variable in the head, and every variable a negated atom, filter or

@@ -1,0 +1,182 @@
+# `overview.md`: "a rule body is a set, not a sequence", and `semantics.md`:
+# "Order does not exist." Inference is the one pass that could quietly make
+# that false, because it is the one pass that walks the body — so this file
+# pins the property where it is easiest to lose.
+#
+# The mechanism is in `Cx::type_rule`: the walk runs again on what it learned
+# until nothing moves. A single pass rejects every `source` below while
+# accepting the `equivalent_to` beside it, which is the same program with two
+# lines swapped.
+#
+# Each pair is written twice, once as `equivalent_to` — the two spellings
+# compile to the same grasp-dbsp, which is the property — and once as
+# `expected_types`, so a regression that makes *both* orders fail is caught by
+# something other than an equivalence that holds vacuously.
+
+# The plainest form: `n := a * 2` reads a variable the atom below it binds.
+# One pass sees `a` as unknown there and reports the literal `2` as having no
+# type.
+- name: a match reads a variable an atom below it binds
+  source: |
+    r :: relation(a: i64)
+    r(a:) <- input
+
+    q(v: n) <-
+        n := a * 2
+        r(a: a)
+  equivalent_to: |
+    r :: relation(a: i64)
+    r(a:) <- input
+
+    q(v: n) <-
+        r(a: a)
+        n := a * 2
+
+- name: and the type it settles on
+  source: |
+    r :: relation(a: i64)
+    r(a:) <- input
+
+    q(v: n) <-
+        n := a * 2
+        r(a: a)
+  expected_types:
+    q:   {v: i64}
+    q:0: {a: i64, n: i64}
+
+# A chain, so one extra round is not enough: `x` waits on `y`, which waits on
+# `z`, which waits on the atom at the bottom. The round bound is what makes
+# writing this safe.
+- name: a chain of matches settles bottom-up
+  source: |
+    r :: relation(a: f64)
+    r(a:) <- input
+
+    q(v: x) <-
+        x := y + 1
+        y := z * 2
+        z := a
+        r(a: a)
+  equivalent_to: |
+    r :: relation(a: f64)
+    r(a:) <- input
+
+    q(v: x) <-
+        r(a: a)
+        z := a
+        y := z * 2
+        x := y + 1
+
+- name: and the types the chain settles on
+  source: |
+    r :: relation(a: f64)
+    r(a:) <- input
+
+    q(v: x) <-
+        x := y + 1
+        y := z * 2
+        z := a
+        r(a: a)
+  expected_types:
+    q:   {v: f64}
+    q:0: {a: f64, x: f64, y: f64, z: f64}
+
+# A filter above the statement binding what it compares. A filter contributes
+# no type of its own, so this is purely a question of what the variable is
+# where the filter reads it.
+- name: a filter reads a variable bound below it
+  source: |
+    r :: relation(a: i64)
+    r(a:) <- input
+
+    q(v: n) <-
+        n > 0
+        n := a + 1
+        r(a: a)
+  equivalent_to: |
+    r :: relation(a: i64)
+    r(a:) <- input
+
+    q(v: n) <-
+        r(a: a)
+        n := a + 1
+        n > 0
+
+# An aggregate result computed on above the aggregate producing it. The group
+# is structural, so it does not move either way; what moves is whether `s` has
+# a type where `m` reads it.
+#
+# Note that `s > 150` in the same position would *not* have needed the
+# fixpoint: a comparison against a literal constrains `s` rather than reading
+# it, so one pass settles it from below. The arithmetic is the case that does.
+- name: an aggregate result is read above its aggregate
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    big(dept: d, double: m) <-
+        m := s * 2
+        emp(dept: d, sal: r)
+        s := sum<r>
+  equivalent_to: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    big(dept: d, double: m) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+        m := s * 2
+
+- name: and the types around the aggregate
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    big(dept: d, double: m) <-
+        m := s * 2
+        emp(dept: d, sal: r)
+        s := sum<r>
+  expected_types:
+    big:   {dept: string, double: i64}
+    big:0: {d: string, m: i64, r: i64, s: i64}
+
+# A rejection has to survive the extra rounds too. This pair is the reason the
+# seed carries no reported type: `Error` absorbs everything it composes with,
+# so a second walk seeded with the first walk's conflict would compose cleanly
+# and say nothing at all — the program would be accepted with a poisoned
+# variable in it.
+#
+# Both orders are rejected, at the same place. What the two messages do *not*
+# agree on is which type is "here": the diagnostic points at an occurrence, and
+# "here" is that occurrence's type. That is a property of the span, not of the
+# body's order — an error naming the second of two conflicting things names a
+# real occurrence either way.
+- name: a conflict is reported wherever it is written
+  source: |
+    r :: relation(a: i64)
+    s :: relation(b: string)
+    r(a:) <- input
+    s(b:) <- input
+
+    q(v: x) <-
+        s(b: x)
+        r(a: x)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "used as `i64` here and as `string` elsewhere"
+
+- name: the same conflict written the other way round
+  source: |
+    r :: relation(a: i64)
+    s :: relation(b: string)
+    r(a:) <- input
+    s(b:) <- input
+
+    q(v: x) <-
+        r(a: x)
+        s(b: x)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "used as `string` here and as `i64` elsewhere"

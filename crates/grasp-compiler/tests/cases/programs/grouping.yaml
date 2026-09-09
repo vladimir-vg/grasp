@@ -273,8 +273,45 @@
       pass: infer
       message: "an atom is one of the things `s` is folded over"
 
-# There is no `equivalent_to` case here, and the reason is a separate bug:
-# `infer` types a rule body in source order, so writing `s > 150` above
-# `s := sum<r>` is rejected with "nothing determines this type" even though a
-# rule body is a set. Until that is fixed, no aggregate rule can have its
-# order-independence pinned.
+# The group is derived from the head and the body's reads, never from where a
+# line was written — so an aggregate placed above the atom it folds groups the
+# same way, and compiles to the same program.
+- name: the group does not depend on statement order
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    big(dept: d, total: s) <-
+        s := sum<r>
+        emp(dept: d, sal: r)
+  equivalent_to: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    big(dept: d, total: s) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+
+# The same, with everything that surrounds an aggregate moved at once: two
+# group columns, a filter on the result, and a match reading the group. If any
+# of them decided the group by position rather than by what it reads, these
+# two would not agree.
+- name: nor does anything built around it
+  source: |
+    emp :: relation(dept: string, team: string, sal: i64)
+    emp(dept:, team:, sal:) <- input
+
+    big(dept: d, team: t, label: m, total: s) <-
+        s > 150
+        m := concat(d, t)
+        s := sum<r>
+        emp(dept: d, team: t, sal: r)
+  equivalent_to: |
+    emp :: relation(dept: string, team: string, sal: i64)
+    emp(dept:, team:, sal:) <- input
+
+    big(dept: d, team: t, label: m, total: s) <-
+        emp(dept: d, team: t, sal: r)
+        m := concat(d, t)
+        s := sum<r>
+        s > 150
