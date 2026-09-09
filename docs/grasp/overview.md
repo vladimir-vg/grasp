@@ -75,6 +75,9 @@ premise, and several of the principles invert with it.
   `f64`, `string`, `optional(T)`, `record(...)`, `array(T)`, `dict(K,V)` and
   `json` — and `relation(...)` over them.
 - External relations, declared `r(cols:) <- input`.
+- Running against a sequence of transactions: rows arrive weighted, a relation
+  is the rows whose accumulated weight is positive, and what a transaction
+  reports is what changed. See [`semantics.md`](semantics.md#time).
 - Compilation through a join graph, a cost-based optimizer, a per-rule
   computation DAG and SCC stratification, described in
   [`compilation.md`](compilation.md), and emission described in

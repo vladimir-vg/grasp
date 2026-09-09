@@ -62,13 +62,25 @@ edge(src:, dst:) <- input
 ```
 
 ```
-edge :: zset(record(src: i64, dst: i64))
-edge := input("edge")
+edge_1 :: zset(record(src: i64, dst: i64))
+edge_1 := input("edge")
+edge   := distinct(edge_1)
 ```
 
 The typespec must be written, not inferred: grasp-dbsp takes an `input` node's
 schema from its `::` annotation, and that is also why the input cannot be
 inlined into another call.
+
+**The `distinct` is what makes an input relation a set.** The outside world
+writes a Z-set — a row arrives with a weight, and weights accumulate across
+transactions — while grasp says a relation is the rows whose accumulated weight
+is positive ([`semantics.md`](semantics.md#time)). So the *raw* stream takes an
+intermediate name and the relation keeps its own; the naming rule above is
+unchanged, but it is the `input` node that moves rather than the relation.
+
+It has a price worth stating: `distinct` is not linear, so every input relation
+now carries an integral of its own. An input feeding only linear operators used
+to be stateless and is not any more.
 
 A relation with a typespec and **no producer** — no rule, no fact, no `<- input`
 — is empty for the life of the program, and emits as a standalone `empty()`:
@@ -399,11 +411,11 @@ Datalog relations are sets, and `distinct` is what makes them so.
 
 For more than two rules, `sum(rule₁, rule₂, …)` is n-ary and saves the nesting.
 
-**`distinct` wraps whatever defines a relation, and nothing else.** Facts, rules,
-or both: a relation defined by facts *and* rules is one `distinct` over the sum
-of the two ([above](#facts)). It does not wrap an `input`, whose rows are
-whatever was pushed, nor a recursive stream, which grasp-dbsp deduplicates every
-round already ([below](#recursion)).
+**`distinct` wraps whatever gives a relation its rows.** Facts, rules, or both —
+a relation defined by facts *and* rules is one `distinct` over the sum of the two
+([above](#facts)) — and an [`input`](#external-relations), where the weights come
+from outside. The one exception is a recursive stream, which grasp-dbsp
+deduplicates every round already ([below](#recursion)).
 
 ## Recursion
 
@@ -522,8 +534,9 @@ path(src: x, dst: y) <-
 and one `fixpoint`:
 
 ```
-edge :: zset(record(src: i64, dst: i64))
-edge := input("edge")
+edge_1 :: zset(record(src: i64, dst: i64))
+edge_1 := input("edge")
+edge   := distinct(edge_1)
 
 circuit path_scc(edge: e, path: p) {
     path  :: zset(record(src: i64, dst: i64))

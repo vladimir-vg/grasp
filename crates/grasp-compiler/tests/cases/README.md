@@ -335,7 +335,11 @@ declared column is an error rather than being quietly coerced.
 emits rows nobody expected, which is the bug class these tests exist to catch.
 
 Retractions and incrementality need no special support: they are a negative
-weight and a second epoch.
+weight and a second transaction. A negative weight is not a *delete*, though —
+it is a weight against an accumulated total, so retracting a row that was never
+asserted removes nothing and leaves a debt that the next assertion pays off
+rather than answering. [`semantics.md`](../../../../docs/grasp/semantics.md#time)
+is the rule; `programs/time.yaml` is what pins it.
 
 **Facts are specified now, but no output case can use one yet.** grasp-dbsp gained
 `constant` for exactly this, and

@@ -1,0 +1,136 @@
+# What an input relation holds, and what a transaction reports.
+#
+# "An input relation is the rows whose accumulated weight is positive." A row
+# arrives with a weight: `+1` asserts it, `-1` retracts it, and the relation is
+# the rows whose total over every transaction so far is above zero. That is
+# "relations are sets" applied to data arriving over time rather than to two
+# rules deriving one tuple — and it is the same `distinct` enforcing both.
+
+- name: a row asserted twice and retracted once is still there
+  source: |
+    r :: relation(v: i64)
+    r(v:) <- input
+
+  input:
+    - r:
+        - [1, {v: 1}]
+    - r:
+        - [1, {v: 1}]
+    - r:
+        - [-1, {v: 1}]
+
+  # It enters once and does not enter again; the retraction takes the total from
+  # 2 to 1, which is still a member, so nothing changes.
+  expected_exact_output:
+    - r:
+        - [1, {v: 1}]
+    - {}
+    - {}
+
+# A retraction of a row never asserted removes nothing — but it does leave the
+# total negative, so the assertion that merely balances it produces nothing
+# either. Only the one that takes the total above zero puts the row in.
+- name: a retraction before an assertion leaves the total negative
+  source: |
+    r :: relation(v: i64)
+    r(v:) <- input
+
+  input:
+    - r:
+        - [-1, {v: 1}]
+    - r:
+        - [1, {v: 1}]
+    - r:
+        - [1, {v: 1}]
+
+  expected_exact_output:
+    - {}
+    - {}
+    - r:
+        - [1, {v: 1}]
+
+- name: two retractions need three assertions to answer them
+  source: |
+    r :: relation(v: i64)
+    r(v:) <- input
+
+  input:
+    - r:
+        - [-1, {v: 1}]
+        - [-1, {v: 1}]
+    - r:
+        - [1, {v: 1}]
+        - [1, {v: 1}]
+    - r:
+        - [1, {v: 1}]
+
+  expected_exact_output:
+    - {}
+    - {}
+    - r:
+        - [1, {v: 1}]
+
+# What a rule reads is the relation, so the threshold reaches everything
+# downstream and not only a direct observer.
+- name: a rule sees the relation, not the weights
+  source: |
+    r :: relation(v: i64)
+    r(v:) <- input
+
+    q :: relation(w: i64)
+    q(w: x) <- r(v: x)
+
+  input:
+    - r:
+        - [-1, {v: 1}]
+    - r:
+        - [1, {v: 1}]
+        - [1, {v: 1}]
+
+  expected_exact_output:
+    - {}
+    - q:
+        - [1, {w: 1}]
+
+- name: a negated atom over an input sees the relation
+  source: |
+    n :: relation(v: i64)
+    bad :: relation(v: i64)
+    n(v:) <- input
+    bad(v:) <- input
+
+    ok(v: x) <-
+        n(v: x)
+        not bad(v: x)
+
+  input:
+    - n:
+        - [1, {v: 1}]
+      bad:
+        - [-1, {v: 1}]
+
+  expected_exact_output:
+    - ok:
+        - [1, {v: 1}]
+
+# An aggregate reads the relation too, so a row whose total is one is folded
+# once however many times it was asserted.
+- name: an aggregate folds the relation, not the weights
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    payroll(dept: d, total: s) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+
+  input:
+    - emp:
+        - [1, {dept: "eng", sal: 100}]
+    - emp:
+        - [1, {dept: "eng", sal: 100}]
+
+  expected_exact_output:
+    - payroll:
+        - [1, {dept: "eng", total: 100}]
+    - {}

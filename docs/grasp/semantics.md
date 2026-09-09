@@ -7,20 +7,58 @@ What a program means. The forms are in [`syntax.md`](syntax.md), their types in
 ## Programs and relations
 
 A program is a set of **specs** and **rules**. A rule derives tuples for one
-relation; several rules may derive for the same one. A relation's value is every
-tuple derivable by any of its rules, and nothing else.
+relation; several rules may derive for the same one. A relation's value at a
+transaction is every tuple derivable by any of its rules, and nothing else —
+[`Time`](#time) says what a transaction is and why the value has one.
 
 **Relations are sets.** A tuple derived twice — by two rules, or by two ways
 through one rule, or asserted twice as a fact — appears once. This is the one
 place grasp and its target differ by default: grasp-dbsp's `plus` adds weights
 and its `constant` sums the weights of identical rows, so
 [`mapping.md`](mapping.md#rules-and-unions) emits a `distinct` to restore set
-semantics — at the relation, and wherever else multiplicity is *observable*,
-which is exactly an [aggregate](#aggregation).
+semantics. It lands in three places: at the relation, at an
+[input](#time) — where the outside world writes the weights — and wherever else
+multiplicity would be *observable*, which is exactly an
+[aggregate](#aggregation).
 
 **Order does not exist.** Rules may be written in any order, body statements may
 be written in any order, and neither changes the program. A relation has no row
 order, and nothing observes one.
+
+## Time
+
+A program does not run once. It runs against a sequence of **transactions**: in
+each one, rows arrive from outside, every relation is brought up to date
+together, and the results are reported. The logical clock advances between
+transactions and not within them, so a transaction is the unit in which a
+program's answer is well defined.
+
+**A row arrives with a weight, and a transaction is unordered.** `+1` asserts a
+row, `-1` retracts it. A transaction may carry several weights for one row; they
+are summed, so `+1, -1, +1` and `+1` are the same transaction. That is the same
+"order does not exist" as above, applied to data instead of to statements.
+
+**An input relation is the rows whose accumulated weight is positive**, summed
+over every transaction so far. So `+1, +1, -1` leaves the row in — the total is
+still one. `-1, -1, +1` leaves it out, and so does the next `+1`: the total is
+zero, and only the one after that puts the row in. A retraction of a row never
+asserted removes nothing and is not an error, but it does leave a debt, and
+assertions that merely pay it off produce nothing. This is "relations are sets"
+applied to data arriving over time rather than to two rules deriving one tuple,
+and it is the same `distinct` that enforces both.
+
+**Everything derived follows.** A relation's value *at a transaction* is the
+least fixpoint of its rules over the input relations as of that transaction.
+Recursion, negation and aggregation all read the relations of the transaction
+they are in; nothing reads across one.
+
+**What is observable is change.** Running a transaction reports, per relation,
+which rows entered and which left since the previous one — not the relation's
+contents. A program that wants the contents accumulates the changes. A row that
+enters and leaves within one transaction is reported neither way.
+
+Facts are unaffected by all of this: they are program text, delivered once, and
+[cannot be retracted](#facts).
 
 ## Facts
 
@@ -115,6 +153,9 @@ over a set of relations.
 edge :: relation(src: i64, dst: i64)
 edge(src:, dst:) <- input
 ```
+
+What `<- input` supplies is a stream of weighted rows, and the relation is the
+rows whose accumulated weight is positive — see [`Time`](#time).
 
 `input` must be the only body statement, every head column takes the shorthand
 form, and the relation must have a spec — nothing else can say what its columns

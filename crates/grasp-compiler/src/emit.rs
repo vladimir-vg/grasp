@@ -218,9 +218,17 @@ fn emit_relation(out: &mut String, relation: &Relation, names: &mut Names) {
     match &relation.source {
         // "The typespec must be written, not inferred: grasp-dbsp takes an
         //  `input` node's schema from its `::` annotation."
+        //
+        // The `distinct` is what makes an input relation a set: the outside
+        // world writes a Z-set, and the relation is the rows whose accumulated
+        // weight is positive. The raw stream takes the intermediate name and
+        // the relation keeps its own, so "the node named `r` is relation `r`'s
+        // stream" still holds — it is the `input` node that moves.
         Source::Input => {
-            let _ = writeln!(out, "{node} :: {ty}");
-            let _ = writeln!(out, "{node} := input({:?})", relation.name);
+            let raw = names.intermediate(node);
+            let _ = writeln!(out, "{raw} :: {ty}");
+            let _ = writeln!(out, "{raw} := input({:?})", relation.name);
+            let _ = writeln!(out, "{node} := distinct({raw})");
         }
         // "A relation with a typespec and no producer is empty for the life of
         //  the program, and emits as a standalone `empty()`." Its typespec is
