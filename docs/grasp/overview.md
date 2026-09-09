@@ -95,18 +95,15 @@ This is the first cut, and it is narrower than the Erlang implementation the
 design comes from. What is missing is missing on purpose.
 
 - **Element access and slicing.** `arr[0]` and `arr[2:]` have no spelling in
-  grasp. grasp-dbsp can do both now — `get` reads an element and `filter_array`
-  over the index is a slice — so what is missing is grasp's own syntax, not the
-  capability. Indexed unnest, `(i, v) := *arr`, no longer waits on it and works
-  today.
+  grasp. grasp-dbsp can do both, and an array pattern already uses both — `[x,
+  y] := arr` reads by position and `[x, *r]` slices — so what is missing is a
+  syntax for writing one directly, not the capability. A slice also wants a
+  range, and a range is not a value here.
 
-- **Array destructure, and a dict's remainder.** `[x, y] := arr` reads elements
-  by position, which is the element access above; `[x, y, *r]` needs a slice
-  besides. `{k:, **rest} := d` needs the entries the pattern did not name, which
-  means subtracting keys — a `without_keys` builtin grasp-dbsp does not have.
-  The dict and record forms that need only `get` and `length` work:
-  `{k:} := d`, `{k:, **} := d`, `record(k:) := r`, `record(k:, **) := r`, and
-  `record(k:, **rest) := r`, whose remainder is known before the program runs.
+- **A dict's remainder.** `{k:, **rest} := d` needs the entries the pattern did
+  not name, which means subtracting keys — a `without_keys` builtin grasp-dbsp
+  does not have, and the one destructure row that does not work. A *record's*
+  remainder does, its fields being known before the program runs.
 
 - **The rest of the type vocabulary.** `dynamic` — the top type, and the one
   most likely to be wanted first, since it is what an untyped subset of the

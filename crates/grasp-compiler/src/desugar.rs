@@ -177,16 +177,13 @@ fn pattern_of(p: &ast::Pattern) -> Result<core::Pattern, Diagnostic> {
             rest: rest.clone(),
             span: *span,
         },
-        // `[x, y] := arr` reads elements by position, and grasp-dbsp's `get`
-        // covers a document and a dict but not an array; `[x, *r]` needs a
-        // slice besides. Both are `overview.md`'s "Element access".
-        ast::Pattern::Array { span, .. } => {
-            return Err(Diagnostic::unimplemented(
-                Pass::Desugar,
-                *span,
-                "array destructuring",
-            ));
-        }
+        // Positional, so its variables keep the order they were written in —
+        // the sorting above is for patterns that name their parts.
+        ast::Pattern::Array { elems, rest, span } => core::Pattern::Array {
+            elems: elems.clone(),
+            rest: rest.clone(),
+            span: *span,
+        },
     })
 }
 

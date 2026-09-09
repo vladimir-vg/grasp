@@ -275,6 +275,8 @@ promise is one mechanism rather than two.
 | `keys(d)` | `keys(d)` → `array(K)` |
 | `length(d)` | `length(d)` |
 | `{a:} := d` destructure | `get(d, "a")` per key, guarded by `length(d) = N` |
+| `[x, y] := arr` destructure | `get(arr, 0)` per position, guarded by `length(arr) = N` |
+| `[x, *r] := arr` remainder | `filter_array(arr, function((e, i) -> i >= N))` |
 | `(k, v) := **d` unnest | `flat_map` over `entries(d)` |
 
 `entries(d)` yields `array(record(key: K, value: V))`, sorted by key, which is

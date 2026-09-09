@@ -449,6 +449,44 @@ impl Cx {
                         }
                         constrain(&mut vars, name, ty, *vs, &mut fault);
                     }
+                    // `inference.md`: "`arr` is `array(E)`; `x` and `y` are
+                    // `E`." Definite, as a dict pattern's are: `array:get`
+                    // yields `optional(E)` and the pattern's promise is that
+                    // the position is filled.
+                    core::Pattern::Array {
+                        elems,
+                        rest,
+                        span: ps,
+                    } => {
+                        let (subject, err) = self.rhs_ty(rhs, &vars);
+                        if let Some(d) = err {
+                            note(d, &mut fault);
+                        }
+                        let element = match &subject {
+                            Ty::Array(e) => (**e).clone(),
+                            Ty::Unknown => Ty::Unknown,
+                            other => {
+                                note(
+                                    Diagnostic::error(
+                                        Pass::Infer,
+                                        *ps,
+                                        format!("`{other}` is not an array to destructure"),
+                                    ),
+                                    &mut fault,
+                                );
+                                Ty::Error
+                            }
+                        };
+                        for var in elems {
+                            constrain(&mut vars, var, element.clone(), *ps, &mut fault);
+                        }
+                        // The remainder is an array of the same elements — the
+                        // one destructure whose rest needs no type of its own.
+                        if let core::Rest::Bind(r) = rest {
+                            constrain(&mut vars, r, Ty::Array(Box::new(element)), *ps, &mut fault);
+                        }
+                    }
+
                     // `inference.md`: "`d` is `dict(string, V)`; `x` is `V`."
                     // Definite, not `optional(V)` — the pattern's promise is
                     // that the key is there, and `plan` is where the row
@@ -1188,6 +1226,33 @@ impl Cx {
             // dict's. Without this check `d[1]` on a `dict(string, …)` reaches
             // grasp-dbsp, which reports it against text the program never
             // wrote.
+            // `array:get(a, i)` — an element, `optional(E)` because the index
+            // may be past the end. The index is an `i64`; a pattern only ever
+            // writes a literal one, so this is a check on the emitter as much
+            // as on a program.
+            B::ArrayGet => {
+                if let Some(d) = arity(2) {
+                    return (Ty::Error, Some(d));
+                }
+                match &args[0] {
+                    Ty::Array(e) if matches!(args[1], Ty::I64 | Ty::Int) => {
+                        (Ty::Optional(e.clone()), None)
+                    }
+                    Ty::Unknown => (Ty::Unknown, None),
+                    _ => wrong(),
+                }
+            }
+            // `array:drop(a, n)` — the same array, shorter.
+            B::ArrayDrop => {
+                if let Some(d) = arity(2) {
+                    return (Ty::Error, Some(d));
+                }
+                match &args[0] {
+                    Ty::Array(_) if matches!(args[1], Ty::I64 | Ty::Int) => (args[0].clone(), None),
+                    Ty::Unknown => (Ty::Unknown, None),
+                    _ => wrong(),
+                }
+            }
             B::DictGet => {
                 if let Some(d) = arity(2) {
                     return (Ty::Error, Some(d));

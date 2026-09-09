@@ -246,3 +246,99 @@
     out(a: a, b: b) <-
         src(d: d)
         {b:, a:} := d
+
+# An array pattern is positional where the other two are named, and its size
+# check is `=` or `>=` rather than only `=`. Both are filters — an array's
+# length is data, so the record asymmetry does not arise.
+- name: an exact array pattern checks the length
+  source: |
+    src :: relation(id: i64, xs: array(i64))
+    src(id:, xs:) <- input
+
+    out(id: id, a: a, b: b) <-
+        src(id: id, xs: xs)
+        [a, b] := xs
+
+  input:
+    - src:
+        - [1, {id: 1, xs: [10, 20]}]
+        - [1, {id: 2, xs: [30, 40, 50]}]
+        - [1, {id: 3, xs: [60]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {id: 1, a: 10, b: 20}]
+
+- name: the rest marker asks only for a prefix
+  source: |
+    src :: relation(id: i64, xs: array(i64))
+    src(id:, xs:) <- input
+
+    out(id: id, a: a, b: b) <-
+        src(id: id, xs: xs)
+        [a, b, *] := xs
+
+  input:
+    - src:
+        - [1, {id: 1, xs: [10, 20]}]
+        - [1, {id: 2, xs: [30, 40, 50]}]
+        - [1, {id: 3, xs: [60]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {id: 1, a: 10, b: 20}]
+        - [1, {id: 2, a: 30, b: 40}]
+
+# `*e` binds what is left, which is where the slice went. There is no slice
+# *expression* in grasp — the emitter writes one, and this is the only thing
+# that asks it to.
+- name: a bound array remainder is the elements left over
+  source: |
+    src :: relation(id: i64, xs: array(i64))
+    src(id:, xs:) <- input
+
+    out(id: id, a: a, left: e) <-
+        src(id: id, xs: xs)
+        [a, *e] := xs
+
+  input:
+    - src:
+        - [1, {id: 1, xs: [10, 20, 30]}]
+        - [1, {id: 2, xs: [40]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {id: 1, a: 10, left: [20, 30]}]
+        - [1, {id: 2, a: 40, left: []}]
+
+# Positional, so the variables are not sorted and two orders are two patterns.
+- name: an array pattern binds by position
+  source: |
+    src :: relation(xs: array(string))
+    src(xs:) <- input
+
+    out(first: p, second: q) <-
+        src(xs: xs)
+        [p, q] := xs
+
+  input:
+    - src:
+        - [1, {xs: ["a", "b"]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {first: "a", second: "b"}]
+
+- name: an array pattern needs an array
+  source: |
+    src :: relation(n: i64)
+    src(n:) <- input
+
+    out(a: a) <-
+        src(n: n)
+        [a] := n
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "is not an array to destructure"

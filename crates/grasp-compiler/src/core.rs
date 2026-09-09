@@ -129,6 +129,16 @@ pub enum Pattern {
         kind: UnnestKind,
         span: Span,
     },
+    /// `[x, y, …] := arr` — the variables it binds, by position, and what it
+    /// says about the elements past them.
+    ///
+    /// Positional, so unlike a destructure over names these are *not* sorted:
+    /// `[x, y]` and `[y, x]` bind differently and are two patterns.
+    Array {
+        elems: Vec<String>,
+        rest: Rest,
+        span: Span,
+    },
     /// `{a: x, …} := d` — the keys it names, paired with the variables they
     /// bind, and what it says about the ones it does not name.
     ///
@@ -157,6 +167,14 @@ pub enum Pattern {
 
 pub use crate::ast::{Rest, UnnestKind};
 
+/// The variable a `*r` or `**r` binds, where there is one.
+fn rest_binding(rest: &Rest) -> Option<&str> {
+    match rest {
+        Rest::Bind(v) => Some(v.as_str()),
+        _ => None,
+    }
+}
+
 impl Pattern {
     /// The variables this pattern binds.
     ///
@@ -170,10 +188,12 @@ impl Pattern {
             Pattern::Dict { fields, rest, .. } | Pattern::Record { fields, rest, .. } => fields
                 .iter()
                 .map(|(_, v)| v.as_str())
-                .chain(match rest {
-                    Rest::Bind(v) => Some(v.as_str()),
-                    _ => None,
-                })
+                .chain(rest_binding(rest))
+                .collect(),
+            Pattern::Array { elems, rest, .. } => elems
+                .iter()
+                .map(String::as_str)
+                .chain(rest_binding(rest))
                 .collect(),
         }
     }
@@ -284,6 +304,19 @@ pub enum Builtin {
     DictGet,
     /// `boolean:not(e)` — what `not e` desugars to in expression position.
     BooleanNot,
+    /// `array:get(a, i)` — an element by 0-based position, `optional(E)`.
+    ///
+    /// What an array pattern reads each of its variables with. Not a name a
+    /// program can write, for `dict:get`'s reason: grasp has no element-access
+    /// syntax yet, and a namespaced spelling would be one by the back door.
+    ArrayGet,
+    /// `array:drop(a, n)` — the elements from position `n` on.
+    ///
+    /// What an array pattern's `*r` binds. It exists because the grasp-dbsp
+    /// expression it becomes binds a name — `filter_array(a, function((e, i) ->
+    /// i >= n))` — and grasp's expressions do not, so the binder is introduced
+    /// at emission rather than carried through the middle of the compiler.
+    ArrayDrop,
 }
 
 impl Builtin {
@@ -325,6 +358,8 @@ impl Builtin {
         Builtin::RecordGet,
         Builtin::DictGet,
         Builtin::BooleanNot,
+        Builtin::ArrayGet,
+        Builtin::ArrayDrop,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -343,6 +378,8 @@ impl Builtin {
             Builtin::Entries => "entries",
             Builtin::RecordGet => "record:get",
             Builtin::DictGet => "dict:get",
+            Builtin::ArrayGet => "array:get",
+            Builtin::ArrayDrop => "array:drop",
             Builtin::BooleanNot => "boolean:not",
         }
     }

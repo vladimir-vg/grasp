@@ -199,7 +199,6 @@ impl Diagnostic {
     /// front of the pipeline refuses, and the list goes when they do.
     pub const UNIMPLEMENTED: &[&str] = &[
         "narrowing inside a container",
-        "array destructuring",
         "binding a dict's remaining entries",
         "keyword arguments",
     ];

@@ -194,14 +194,35 @@
         d := {a: x}
   expected_ok: true
 
-# "Both it and `**e` with a binding are rejected until then." —
-# `docs/grasp/semantics.md`, "Desugaring".
-- name: array destructure
-  skip: "array destructure needs array element access — overview.md#future-work"
+# array_pattern ::= "[" [pat_elems] ["," rest] "]"
+- name: an array destructure
   source: |
+    s :: relation(arr: array(i64))
+    s(arr:) <- input
+
     r(a: x, b: y) <-
         s(arr: arr)
         [x, y] := arr
+  expected_ok: true
+
+- name: an array destructure ignoring the rest
+  source: |
+    s :: relation(arr: array(i64))
+    s(arr:) <- input
+
+    r(a: x) <-
+        s(arr: arr)
+        [x, *] := arr
+  expected_ok: true
+
+- name: an array destructure binding the rest
+  source: |
+    s :: relation(arr: array(i64))
+    s(arr:) <- input
+
+    r(a: x, rest: e) <-
+        s(arr: arr)
+        [x, *e] := arr
   expected_ok: true
 
 - name: a dict destructure binding the rest

@@ -478,9 +478,9 @@ like any other. Written in the shorthand, since that is how they are written.
 
 | written | means |
 |---|---|
-| `[x, y] := arr` | `length(arr) = 2`, `x := arr[0]`, `y := arr[1]` |
+| `[x, y] := arr` | `length(arr) = 2`, `x := array:get(arr, 0)`, `x :: E`, and so on |
 | `[x, y, *] := arr` | `length(arr) >= 2`, then the two bindings |
-| `[x, y, *r] := arr` | as above, and `r := arr[2:]` |
+| `[x, y, *r] := arr` | as above, and `r` is the elements from position 2 on |
 | `{a:} := d` | `length(d) = 1`, `a := dict:get(d, "a")`, `a :: V` |
 | `{a:, **} := d` | `a := dict:get(d, "a")`, `a :: V` — no size check |
 | `{a:, **e} := d` | as above, and `e := dict:without_keys(d, ["a"])` |
@@ -536,11 +536,15 @@ apart: `["x", "x"]` unnests to one row without one and to two rows with it,
 which is the [set](#programs-and-relations) rule doing what it always does
 rather than an exception to it.
 
-Two forms named above are not yet available: `arr[i]` and `arr[2:]` need array
-element access, and `dict:without_keys` needs its builtin. Both are
-[future work](overview.md#future-work), and the patterns that depend on them —
-every array destructure, and `**e` over a *dict* — are rejected until then. So is
-`(i, v) := *arr`, for the first of those reasons.
+One form named above is not yet available: `{a:, **e} := d` needs the entries
+the pattern did not name, which is `dict:without_keys` and is
+[future work](overview.md#future-work). Every other row works.
+
+**An array pattern is positional**, so its variables are not reordered and
+`[x, y]` and `[y, x]` are two patterns — unlike a dict's or a record's, which
+name what they take and are one pattern in any order. Its size check is `=` or
+`>=` where a dict's is only `=`, and both are filters: an array's length is data,
+so a row whose array is the wrong length is simply not derived.
 
 ## Builtins
 

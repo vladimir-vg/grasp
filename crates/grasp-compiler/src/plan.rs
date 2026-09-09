@@ -845,6 +845,13 @@ fn plan_rule(
                     });
                     continue;
                 }
+                if let core::Pattern::Array { elems, rest, span } = lhs {
+                    let core::Rhs::Expr(subject) = rhs else {
+                        unreachable!("an aggregate has no pattern to destructure")
+                    };
+                    destructure_array(&mut deps, typed, subject, elems, rest, *span);
+                    continue;
+                }
                 if let core::Pattern::Dict { fields, rest, span }
                 | core::Pattern::Record { fields, rest, span } = lhs
                 {
@@ -1401,6 +1408,108 @@ fn destructure(
             consumes,
             key: format!("{name} := {}", key::expr(&value)),
             body: Body::Bind(name.clone(), value),
+        });
+    }
+}
+
+/// One array destructure, as the dependents it stands for.
+///
+/// Positional where a dict's is named, and with a size check that is `=` or
+/// `>=` rather than only `=`: `[x, y]` says the array has exactly two elements
+/// and `[x, y, *]` says it has at least two. Both are filters, an array's
+/// length being data — the record asymmetry does not arise here.
+fn destructure_array(
+    deps: &mut Vec<Dependent>,
+    typed: &infer::TypedRule,
+    subject: &core::Expr,
+    elems: &[String],
+    rest: &core::Rest,
+    span: Span,
+) {
+    let consumes = free(subject);
+    let length = core::Expr::Call {
+        callee: core::Builtin::Length,
+        args: vec![subject.clone()],
+        span,
+    };
+    let want = core::Expr::Lit {
+        value: Lit::Int(elems.len() as i64),
+        span,
+    };
+    let size = core::Expr::Binary {
+        op: if matches!(rest, core::Rest::None) {
+            BinOp::Eq
+        } else {
+            BinOp::Ge
+        },
+        lhs: Box::new(length),
+        rhs: Box::new(want),
+        span,
+    };
+    deps.push(Dependent {
+        kind: Kind::Filter,
+        binds: Vec::new(),
+        consumes: consumes.clone(),
+        key: key::expr(&size),
+        body: Body::Filter(size),
+    });
+
+    let at = |i: usize| core::Expr::Call {
+        callee: core::Builtin::ArrayGet,
+        args: vec![
+            subject.clone(),
+            core::Expr::Lit {
+                value: Lit::Int(i as i64),
+                span,
+            },
+        ],
+        span,
+    };
+    for (i, var) in elems.iter().enumerate() {
+        let get = at(i);
+        deps.push(Dependent {
+            kind: Kind::Match,
+            binds: vec![var.clone()],
+            consumes: consumes.clone(),
+            key: format!("{var} := {}", key::expr(&get)),
+            body: Body::Bind(var.clone(), get),
+        });
+        // The size filter has already made the position good, but the type
+        // does not know that: `array:get` is `optional(E)` and the variable is
+        // an `E`. Same shape as a dict pattern's, and for the same reason.
+        let ty = settled(typed, var);
+        deps.push(Dependent {
+            kind: Kind::Filter,
+            binds: Vec::new(),
+            consumes: [var.clone()].into_iter().collect(),
+            key: format!("{var} :: {ty}"),
+            body: Body::Assert(infer::Assert {
+                variable: var.clone(),
+                ty,
+                cast: false,
+                span,
+            }),
+        });
+    }
+
+    if let core::Rest::Bind(name) = rest {
+        let drop = core::Expr::Call {
+            callee: core::Builtin::ArrayDrop,
+            args: vec![
+                subject.clone(),
+                core::Expr::Lit {
+                    value: Lit::Int(elems.len() as i64),
+                    span,
+                },
+            ],
+            span,
+        };
+        deps.push(Dependent {
+            kind: Kind::Match,
+            binds: vec![name.clone()],
+            consumes,
+            key: format!("{name} := {}", key::expr(&drop)),
+            body: Body::Bind(name.clone(), drop),
         });
     }
 }

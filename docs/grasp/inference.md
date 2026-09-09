@@ -72,7 +72,8 @@ For each variable in a rule, collect every constraint on it, then compose them.
 | unnest `(v) := *arr` | `arr` is `array(E)`; `v` is `E` |
 | unnest `(i, v) := *arr` | and `i` is `i64`, whatever `E` is |
 | unnest `(k, v) := **d` | `d` is `dict(K,V)`; `k` is `K`, `v` is `V` |
-| destructure `[x, y] := arr` | `arr` is `array(E)`; `x` and `y` are `E` |
+| destructure `[x, y] := arr` | `arr` is `array(E)`; `x` and `y` are `E`, definite |
+| destructure `[x, *r] := arr` | and `r` is `array(E)` |
 | destructure `{a:} := d` | `d` is `dict(string, V)`; `a` is `V`, definite |
 | destructure `record(a:) := s` | `s` is a record with field `a`; `a` is its type |
 | destructure `record(a:, **e) := s` | and `e` is a record of `s`'s other fields |

@@ -222,6 +222,16 @@ pub fn pattern(p: &core::Pattern) -> String {
             };
             format!("({}) {star}", vars.join(", "))
         }
+        // Positional, so written order *is* the canonical order.
+        core::Pattern::Array { elems, rest, .. } => {
+            let mut parts: Vec<String> = elems.clone();
+            match rest {
+                core::Rest::None => {}
+                core::Rest::Ignore => parts.push("*".to_string()),
+                core::Rest::Bind(v) => parts.push(format!("*{v}")),
+            }
+            format!("[{}]", parts.join(", "))
+        }
         core::Pattern::Dict { fields, rest, .. } => {
             format!("{{{}}}", destructure(fields, rest))
         }

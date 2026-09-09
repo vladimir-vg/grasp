@@ -1201,6 +1201,22 @@ fn call_text(scope: &Scope<'_>, callee: core::Builtin, args: &[core::Expr]) -> S
             format!("get({}, {})", expr_text(dict, None), expr_text(k, None))
         }
         (core::Builtin::BooleanNot, [e]) => format!("(not {})", expr_text(e, None)),
+        (core::Builtin::ArrayGet, [array, index]) => {
+            format!(
+                "get({}, {})",
+                expr_text(array, None),
+                expr_text(index, None)
+            )
+        }
+        // The one place the emitter introduces a binder of its own. `e` and `i`
+        // are free here: an expression is emitted inside a `map`'s function,
+        // whose one parameter is the row, and `array:drop` never nests inside
+        // another array function — a pattern produces at most one.
+        (core::Builtin::ArrayDrop, [array, from]) => format!(
+            "filter_array({}, function(({ELEMENT}, {INDEX}) -> ({INDEX} >= {})))",
+            expr_text(array, None),
+            expr_text(from, None)
+        ),
         _ => {
             let text: Vec<String> = args.iter().map(|a| expr_text(a, None)).collect();
             format!("{}({})", callee.as_str(), text.join(", "))
