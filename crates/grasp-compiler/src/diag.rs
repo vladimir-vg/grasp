@@ -199,7 +199,6 @@ impl Diagnostic {
     /// nobody named trips the `debug_assert` below rather than landing silently
     /// in a bucket.
     pub const UNIMPLEMENTED: &[&str] = &[
-        "aggregation",
         "unnesting",
         "type assertions",
         "destructuring patterns",

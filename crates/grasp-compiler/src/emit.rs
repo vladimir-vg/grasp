@@ -25,10 +25,10 @@
 //! costs nothing and removes the question. It is a function of the plan, so
 //! two equivalent programs still agree byte for byte.
 
-use crate::ast::{BinOp, Lit, Type, UnOp};
+use crate::ast::{Aggregator, BinOp, Lit, Type, UnOp};
 use crate::core;
 use crate::key;
-use crate::plan::{Field, Group, Node, Op, Plan, Relation, Rule, Source};
+use crate::plan::{Agg, Field, Group, Node, Op, Plan, Relation, Rule, Source};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
@@ -36,6 +36,10 @@ use std::fmt::Write;
 ///
 /// One name for all of them: functions never nest, so it can never shadow.
 const ROW: &str = "row";
+
+/// The binder an aggregator's projection takes, which is one group value
+/// rather than a row.
+const VALUE: &str = "v";
 
 /// Emit a planned program.
 pub fn emit(plan: &Plan) -> String {
@@ -305,6 +309,9 @@ fn emit_rule(out: &mut String, relation: &Relation, rule: &Rule, names: &mut Nam
             Op::Antijoin { left, right } => {
                 emit_antijoin(out, &base, names, rule, &at, *left, *right, &node.schema)
             }
+            Op::Aggregate { input, group, aggs } => {
+                emit_aggregate(out, &base, names, &at[*input], group, aggs, &node.schema)
+            }
             Op::Narrow {
                 input,
                 name: v,
@@ -413,6 +420,146 @@ fn emit_antijoin(
         record_text(&fields)
     );
     name
+}
+
+/// Group, fold, flatten — `compilation.md`'s three nodes, and the extras that
+/// several aggregates in one rule need.
+///
+/// The group is the index key, so it is indexed first; each aggregator folds
+/// the same indexed stream; and the result is flattened back, because a
+/// relation is flat. Two or more aggregates then have to be brought together,
+/// which is a `join_index` per extra one on the key they already share.
+///
+/// `count<>` folds a constant. grasp counts rows in the group and grasp-dbsp
+/// counts the projections that are not absent, so a projection that can never
+/// be absent makes the two agree — and a literal is the simplest of those.
+///
+/// `avg` is the one aggregator whose types differ across the two languages:
+/// grasp says `f64`, grasp-dbsp says `optional(f64)` because a mean of no
+/// contributing rows is undefined. So it is narrowed, on the same terms as a
+/// division — the row with no answer does not appear.
+#[allow(clippy::too_many_arguments)]
+fn emit_aggregate(
+    out: &mut String,
+    base: &str,
+    names: &mut Names,
+    input: &str,
+    group: &[String],
+    aggs: &[Agg],
+    schema: &BTreeSet<String>,
+) -> String {
+    let mut projected: BTreeSet<String> = BTreeSet::new();
+    for a in aggs {
+        if let Some(e) = &a.arg {
+            crate::plan::collect_free(e, &mut projected);
+        }
+    }
+    let val: Vec<String> = projected.into_iter().collect();
+    let indexed = names.intermediate(base);
+    let _ = writeln!(
+        out,
+        "{indexed} := map_index({input}, function(({ROW}) -> record(key: {}, value: {})))",
+        row_record(group),
+        row_record(&val)
+    );
+
+    // One `aggregate` per aggregator over the one indexed stream, each wrapped
+    // so that the values combine as records rather than as bare scalars.
+    let mut combined: Option<String> = None;
+    let mut carried: Vec<String> = Vec::new();
+    for a in aggs {
+        let folded = names.intermediate(base);
+        let projection = match &a.arg {
+            Some(e) => expr_in(VALUE, e, None),
+            None => "0".to_string(),
+        };
+        let _ = writeln!(
+            out,
+            "{folded} := aggregate({indexed}, {}, function(({VALUE}) -> {projection}))",
+            aggregator_text(a.function)
+        );
+        let wrapped = names.intermediate(base);
+        let _ = writeln!(
+            out,
+            "{wrapped} := map_index({folded}, function((k, {VALUE}) -> \
+             record(key: k, value: record({}: {VALUE}))))",
+            a.out
+        );
+        combined = Some(match combined {
+            None => wrapped,
+            Some(acc) => {
+                let joined = names.intermediate(base);
+                let mut fields: Vec<(String, String)> = carried
+                    .iter()
+                    .map(|v| (v.clone(), format!("a.{v}")))
+                    .collect();
+                fields.push((a.out.clone(), format!("b.{}", a.out)));
+                let _ = writeln!(
+                    out,
+                    "{joined} := join_index({acc}, {wrapped}, function((k, a, b) -> \
+                     record(key: k, value: {})))",
+                    record_text(&fields)
+                );
+                joined
+            }
+        });
+        carried.push(a.out.clone());
+    }
+    let combined = combined.expect("an aggregate step holds at least one aggregate");
+
+    let fields: Vec<(String, String)> = schema
+        .iter()
+        .map(|v| {
+            let from = if group.contains(v) {
+                format!("k.{v}")
+            } else {
+                format!("{VALUE}.{v}")
+            };
+            (v.clone(), from)
+        })
+        .collect();
+    let mut flat = names.intermediate(base);
+    let _ = writeln!(
+        out,
+        "{flat} := map({combined}, function((k, {VALUE}) -> {}))",
+        record_text(&fields)
+    );
+
+    for a in aggs {
+        if a.function != Aggregator::Avg || !schema.contains(&a.out) {
+            continue;
+        }
+        let present = names.intermediate(base);
+        let _ = writeln!(
+            out,
+            "{present} := filter({flat}, function(({ROW}) -> ({ROW}.{} != NONE)))",
+            a.out
+        );
+        let fields: Vec<(String, String)> = schema
+            .iter()
+            .map(|v| {
+                let value = if *v == a.out {
+                    format!("coalesce({ROW}.{v}, 0.0)")
+                } else {
+                    format!("{ROW}.{v}")
+                };
+                (v.clone(), value)
+            })
+            .collect();
+        let narrowed = names.intermediate(base);
+        let _ = writeln!(
+            out,
+            "{narrowed} := map({present}, function(({ROW}) -> {}))",
+            record_text(&fields)
+        );
+        flat = narrowed;
+    }
+    flat
+}
+
+fn aggregator_text(a: Aggregator) -> &'static str {
+    // grasp's five are grasp-dbsp's five, under the same names.
+    key::aggregator(a)
 }
 
 /// A record of variables read straight off the row — a `map_index`'s key or
@@ -729,6 +876,12 @@ fn record_text(fields: &[(String, String)]) -> String {
 /// emitter has to say the answer out loud, and `cast` is how grasp-dbsp hears
 /// it. Everywhere else `want` is threaded through and never used.
 pub fn expr_text(e: &core::Expr, want: Option<&Type>) -> String {
+    expr_in(ROW, e, want)
+}
+
+/// One expression against a named binder.
+pub fn expr_in(binder: &str, e: &core::Expr, want: Option<&Type>) -> String {
+    let expr_text = |e: &core::Expr, want: Option<&Type>| expr_in(binder, e, want);
     match e {
         core::Expr::Lit {
             value: Lit::None, ..
@@ -739,7 +892,7 @@ pub fn expr_text(e: &core::Expr, want: Option<&Type>) -> String {
         core::Expr::Lit { value, .. } => lit_text(value),
         // Every free variable of a rule body is a field of the row the previous
         // node handed on. `plan` guarantees it is there.
-        core::Expr::Var { name, .. } => format!("{ROW}.{name}"),
+        core::Expr::Var { name, .. } => format!("{binder}.{name}"),
         core::Expr::Unary { op, operand, .. } => match op {
             UnOp::Neg => format!("(-{})", expr_text(operand, None)),
             UnOp::Not => format!("(not {})", expr_text(operand, None)),
@@ -750,7 +903,7 @@ pub fn expr_text(e: &core::Expr, want: Option<&Type>) -> String {
             binop_text(*op),
             expr_text(rhs, None)
         ),
-        core::Expr::Call { callee, args, .. } => call_text(*callee, args),
+        core::Expr::Call { callee, args, .. } => call_text(binder, *callee, args),
         core::Expr::ArrayLit { elems, .. } => {
             let element = match strip(want) {
                 Some(Type::Array(t)) => Some(t.as_ref()),
@@ -808,7 +961,8 @@ pub fn expr_text(e: &core::Expr, want: Option<&Type>) -> String {
 /// callables, so the emitter puts back what desugaring took apart — and a
 /// program that wrote one by hand reaches the same text as the sugar, which is
 /// what lets the two be asserted equivalent.
-fn call_text(callee: core::Builtin, args: &[core::Expr]) -> String {
+fn call_text(binder: &str, callee: core::Builtin, args: &[core::Expr]) -> String {
+    let expr_text = |e: &core::Expr, want: Option<&Type>| expr_in(binder, e, want);
     match (callee, args) {
         (core::Builtin::RecordGet, [subject, field]) => {
             if let core::Expr::Lit {

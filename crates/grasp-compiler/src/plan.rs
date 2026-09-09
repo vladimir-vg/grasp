@@ -33,7 +33,7 @@
 //! filter from the liveness analysis and from the node order, and `v :: T` will
 //! need the same construction.
 
-use crate::ast::{BinOp, Type};
+use crate::ast::{Aggregator, BinOp, Type};
 use crate::core;
 use crate::diag::{Diagnostic, Pass, Span};
 use crate::infer;
@@ -122,6 +122,15 @@ pub struct Node {
     pub schema: BTreeSet<String>,
 }
 
+/// One aggregate: a variable, the aggregator that fills it, and what it folds.
+#[derive(Debug, Clone)]
+pub struct Agg {
+    pub out: String,
+    pub function: Aggregator,
+    /// `None` for `count<>`, which "takes no argument and counts rows".
+    pub arg: Option<core::Expr>,
+}
+
 /// One field of an output row.
 #[derive(Debug)]
 pub struct Field {
@@ -177,6 +186,22 @@ pub enum Op {
         left: usize,
         right: usize,
     },
+    /// Group, fold, and flatten back.
+    ///
+    /// One node for what `compilation.md` calls three, and for the same reason
+    /// the antijoin is one: "grouping is the index key, so the group columns
+    /// are indexed first, folded, then flattened back", and nothing may come
+    /// between. Several aggregates share the node because they share the group
+    /// — that is the whole of grasp's implicit grouping.
+    ///
+    /// `group` is what the rule still needs that no aggregate produced, which
+    /// is `semantics.md`'s "the head's non-aggregate columns" arrived at from
+    /// the other side: liveness already knows it.
+    Aggregate {
+        input: usize,
+        group: Vec<String>,
+        aggs: Vec<Agg>,
+    },
     /// Keep the rows of `left` that `right` has no match for, and flatten.
     ///
     /// Two grasp-dbsp operators under one node, like [`Op::Narrow`]: `antijoin`
@@ -214,7 +239,8 @@ impl Op {
             Op::Filter { input, .. }
             | Op::Map { input, .. }
             | Op::MapIndex { input, .. }
-            | Op::Narrow { input, .. } => vec![*input],
+            | Op::Narrow { input, .. }
+            | Op::Aggregate { input, .. } => vec![*input],
             Op::Join { left, right } | Op::Antijoin { left, right } => vec![*left, *right],
         }
     }
@@ -350,10 +376,22 @@ fn stratified(
     for component in components {
         for head in component {
             for rule in rules.get(head).into_iter().flatten() {
+                // "Mark the edge NEGATIVE when `s` appears under `not`, or is
+                // the subject of an aggregate." A rule's aggregate is grouped
+                // over its whole body, so every relation in it is a subject.
+                let aggregating = rule.rule.body.iter().any(|s| {
+                    matches!(
+                        s,
+                        core::Stmt::Match {
+                            rhs: core::Rhs::Aggregate { .. },
+                            ..
+                        }
+                    )
+                });
                 for stmt in &rule.rule.body {
                     let core::Stmt::Atom {
                         relation,
-                        negated: true,
+                        negated,
                         span,
                         ..
                     } = stmt
@@ -362,6 +400,22 @@ fn stratified(
                     };
                     if !component.contains(relation) {
                         continue;
+                    }
+                    if !negated {
+                        if !aggregating {
+                            continue;
+                        }
+                        // "An aggregate over a relation still being computed
+                        //  would read a partial value, and which partial value
+                        //  would depend on evaluation order."
+                        return Err(vec![Diagnostic::error(
+                            Pass::Plan,
+                            *span,
+                            format!(
+                                "aggregate over `{relation}` is in the same recursive \
+                                 component as this rule"
+                            ),
+                        )]);
                     }
                     // The spec words this for two relations. A relation that
                     // negates itself is the same fault and wants its own
@@ -522,10 +576,7 @@ pub fn gaps(typed: &infer::Typed) -> Vec<Diagnostic> {
         for stmt in &rule.body {
             match stmt {
                 core::Stmt::Atom { .. } => {}
-                core::Stmt::Match { lhs, rhs, span } => {
-                    if matches!(rhs, core::Rhs::Aggregate { .. }) {
-                        note("aggregation", *span);
-                    }
+                core::Stmt::Match { lhs, span, .. } => {
                     if matches!(lhs, core::Pattern::Unnest { .. }) {
                         note("unnesting", *span);
                     }
@@ -690,6 +741,11 @@ enum Item {
     Join,
     Cross,
     Dep(usize),
+    /// Every aggregate of the rule, which share one group and so are one step.
+    /// Always after the other dependents — an aggregate consumes a whole group
+    /// and must come after everything contributing to it — and before any
+    /// dependent that reads what it produced.
+    Aggregate,
 }
 
 fn plan_rule(
@@ -700,6 +756,7 @@ fn plan_rule(
     let mut fresh = Fresh::new(typed);
     let mut atoms: Vec<Atom> = Vec::new();
     let mut deps: Vec<Dependent> = Vec::new();
+    let mut aggs: Vec<Agg> = Vec::new();
 
     for stmt in &rule.body {
         match stmt {
@@ -801,8 +858,20 @@ fn plan_rule(
                 let core::Pattern::Var { name, .. } = lhs else {
                     unreachable!("unnest is reported by `gaps`")
                 };
-                let core::Rhs::Expr(e) = rhs else {
-                    unreachable!("an aggregate is reported by `gaps`")
+                // Every aggregate in a rule shares one group, so they are one
+                // step rather than one dependent each — and that step is always
+                // last, an aggregate consuming a whole group and so having to
+                // come after everything contributing to it.
+                let e = match rhs {
+                    core::Rhs::Expr(e) => e,
+                    core::Rhs::Aggregate { function, arg, .. } => {
+                        aggs.push(Agg {
+                            out: name.clone(),
+                            function: *function,
+                            arg: arg.clone(),
+                        });
+                        continue;
+                    }
                 };
                 deps.push(Dependent {
                     kind: Kind::Match,
@@ -910,14 +979,26 @@ fn plan_rule(
         place_ready(&mut avail, &deps, &spanning_deps, &mut placed, &mut trace);
     }
 
+    // The aggregates go here, after everything that feeds them. A filter over
+    // an aggregate's result — a rule's `having` — could not be placed before
+    // this point and is placed now.
+    if !aggs.is_empty() {
+        trace.push(Item::Aggregate);
+        avail.extend(aggs.iter().map(|a| a.out.clone()));
+        place_ready(&mut avail, &deps, &spanning_deps, &mut placed, &mut trace);
+    }
+
     debug_assert!(
         placed.iter().all(|p| *p),
         "a body statement consumes a variable nothing binds, which `infer`'s \
          safety check rejects before here"
     );
 
+    // Name order, so several aggregates sharing a group are combined in an
+    // order the program fixes rather than the file.
+    aggs.sort_by(|a, b| a.out.cmp(&b.out));
     Ok(lower(
-        rule, &atoms, &mut deps, trace, &mut fresh, typed, columns,
+        rule, &atoms, &mut deps, aggs, trace, &mut fresh, typed, columns,
     ))
 }
 
@@ -1123,7 +1204,7 @@ fn cost(
                 want.extend(deps[d].consumes.iter().cloned());
             }
             // Not a kill, for the reason the same step in `lower` gives.
-            Item::Enter(_) | Item::Ground | Item::Join | Item::Cross => {}
+            Item::Enter(_) | Item::Ground | Item::Join | Item::Cross | Item::Aggregate => {}
         }
         later[i] = want;
     }
@@ -1137,7 +1218,7 @@ fn cost(
                     born.insert(v.clone());
                 }
             }
-            Item::Ground | Item::Join | Item::Cross => {}
+            Item::Ground | Item::Join | Item::Cross | Item::Aggregate => {}
         }
         peak = peak.max(born.intersection(&later[i + 1]).count());
     }
@@ -1152,6 +1233,7 @@ fn trace_key(trace: &[Item], atoms: &[Atom], deps: &[Dependent]) -> String {
             Item::Enter(a) => atoms[*a].key.clone(),
             Item::Dep(d) => deps[*d].key.clone(),
             Item::Ground => "()".to_string(),
+            Item::Aggregate => "<>".to_string(),
             Item::Join => "><".to_string(),
             Item::Cross => "**".to_string(),
         })
@@ -1169,6 +1251,11 @@ fn equals(name: &str, e: &core::Expr, span: Span) -> core::Expr {
         rhs: Box::new(e.clone()),
         span,
     }
+}
+
+/// The variables an expression reads, for a caller outside this module.
+pub fn collect_free(e: &core::Expr, out: &mut BTreeSet<String>) {
+    out.extend(free(e));
 }
 
 fn free(e: &core::Expr) -> BTreeSet<String> {
@@ -1223,6 +1310,8 @@ enum Step {
     Narrow(String, core::Expr),
     /// The head: replace the row wholesale.
     Row(Vec<(String, core::Expr, Option<Type>)>),
+    /// See [`Op::Aggregate`]. The group is worked out from liveness.
+    Aggregate(Vec<Agg>),
     /// See [`Op::Antijoin`]. `entry` is column to key variable, and `equal`
     /// the columns a repeated variable ties together.
     Antijoin {
@@ -1237,6 +1326,7 @@ fn lower(
     rule: &core::Rule,
     atoms: &[Atom],
     deps: &mut [Dependent],
+    aggs: Vec<Agg>,
     trace: Vec<Item>,
     fresh: &mut Fresh,
     typed: &infer::TypedRule,
@@ -1266,8 +1356,12 @@ fn lower(
     }
 
     let mut steps: Vec<Step> = Vec::new();
+    let mut aggs = Some(aggs);
     for item in &trace {
         match item {
+            Item::Aggregate => steps.push(Step::Aggregate(
+                aggs.take().expect("one aggregate step per rule"),
+            )),
             Item::Enter(a) => steps.push(Step::Enter(*a)),
             Item::Ground => steps.push(Step::Ground),
             Item::Join => steps.push(Step::Join),
@@ -1347,6 +1441,10 @@ fn lower(
             // Neither changes the row's shape: an antijoin keeps the rows of
             // the stream it subtracts from, and it subtracts nothing else.
             Step::Filter(_) | Step::Antijoin { .. } => {}
+            Step::Aggregate(aggs) => {
+                let shape = shapes.last_mut().expect("a stream");
+                shape.extend(aggs.iter().map(|a| a.out.clone()));
+            }
             Step::Bind(name, _) | Step::Narrow(name, _) => {
                 shapes.last_mut().expect("a stream").insert(name.clone());
             }
@@ -1380,6 +1478,14 @@ fn lower(
             // here alive even where nothing downstream wants it.
             Step::Antijoin { entry, .. } => {
                 want.extend(entry.iter().map(|(_, v)| v.clone()));
+            }
+            Step::Aggregate(aggs) => {
+                for a in aggs {
+                    want.remove(&a.out);
+                    if let Some(e) = &a.arg {
+                        want.extend(free(e));
+                    }
+                }
             }
             Step::Bind(name, e) => {
                 want.remove(name);
@@ -1577,6 +1683,24 @@ fn lower(
                     .filter(|v| carry.contains(v))
                     .collect();
                 let n = push(&mut nodes, Op::Antijoin { left, right }, schema);
+                *stack.last_mut().expect("a stream") = n;
+            }
+            Step::Aggregate(aggs) => {
+                let input = *stack.last().expect("a stream to group");
+                // What is still wanted and no aggregate produced: the group.
+                // `semantics.md` says "the head's non-aggregate columns", and
+                // liveness has already worked out which those are.
+                let outs: BTreeSet<&str> = aggs.iter().map(|a| a.out.as_str()).collect();
+                let group: Vec<String> = nodes[input]
+                    .schema
+                    .iter()
+                    .filter(|v| carry.contains(*v) && !outs.contains(v.as_str()))
+                    .cloned()
+                    .collect();
+                let mut schema: BTreeSet<String> = group.iter().cloned().collect();
+                schema.extend(aggs.iter().map(|a| a.out.clone()));
+                schema.retain(|v| carry.contains(v));
+                let n = push(&mut nodes, Op::Aggregate { input, group, aggs }, schema);
                 *stack.last_mut().expect("a stream") = n;
             }
             Step::Filter(expr) => {

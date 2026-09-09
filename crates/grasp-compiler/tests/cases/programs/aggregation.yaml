@@ -1,0 +1,207 @@
+# Aggregation. "Grouping is implicit: the group is the head's non-aggregate
+# columns. This is what makes aggregation read like the rest of the language:
+# there is no `group by`, because the head already says what the result is
+# keyed by."
+
+- name: sum groups by the head's other columns
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    payroll(dept: d, total: s) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+
+  input:
+    - emp:
+        - [1, {dept: "eng", sal: 100}]
+        - [1, {dept: "eng", sal: 200}]
+        - [1, {dept: "ops", sal: 50}]
+
+  expected_exact_output:
+    - payroll:
+        - [1, {dept: "eng", total: 300}]
+        - [1, {dept: "ops", total: 50}]
+
+# A head with no column besides the aggregate groups by nothing: one row for
+# the whole relation.
+- name: an aggregate with no other head column groups by nothing
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    total :: relation(all: i64)
+    total(all: s) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+
+  input:
+    - emp:
+        - [1, {dept: "eng", sal: 100}]
+        - [1, {dept: "ops", sal: 50}]
+
+  expected_exact_output:
+    - total:
+        - [1, {all: 150}]
+
+- name: several aggregates share one group
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    span(dept: d, lo: a, hi: b, n: c) <-
+        emp(dept: d, sal: r)
+        a := min<r>
+        b := max<r>
+        c := count<>
+
+  input:
+    - emp:
+        - [1, {dept: "eng", sal: 100}]
+        - [1, {dept: "eng", sal: 200}]
+        - [1, {dept: "ops", sal: 7}]
+
+  expected_exact_output:
+    - span:
+        - [1, {dept: "eng", lo: 100, hi: 200, n: 2}]
+        - [1, {dept: "ops", lo: 7, hi: 7, n: 1}]
+
+# "The argument may be an expression: `sum<p * q>` aggregates the product."
+- name: an aggregate over an expression
+  source: |
+    line :: relation(order: string, price: i64, qty: i64)
+    line(order:, price:, qty:) <- input
+
+    billed(order: o, total: t) <-
+        line(order: o, price: p, qty: q)
+        t := sum<p * q>
+
+  input:
+    - line:
+        - [1, {order: "a", price: 3, qty: 4}]
+        - [1, {order: "a", price: 5, qty: 2}]
+
+  expected_exact_output:
+    - billed:
+        - [1, {order: "a", total: 22}]
+
+# "`avg` yields `f64` whatever it was given, since a mean is not an integer."
+# grasp-dbsp's yields `optional(f64)`, a mean of nothing being undefined, so
+# this is the one aggregator whose result has to be narrowed on the way out.
+- name: avg yields f64 over integers
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    mean :: relation(dept: string, m: f64)
+    mean(dept: d, m: a) <-
+        emp(dept: d, sal: r)
+        a := avg<r>
+
+  input:
+    - emp:
+        - [1, {dept: "eng", sal: 100}]
+        - [1, {dept: "eng", sal: 101}]
+
+  expected_exact_output:
+    - mean:
+        - [1, {dept: "eng", m: 100.5}]
+
+# "An empty group produces no row. A group exists because some row is in it;
+#  there is no set of keys to produce zeros against."
+- name: an empty group produces no row
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    dept :: relation(name: string)
+    emp(dept:, sal:) <- input
+    dept(name:) <- input
+
+    payroll(dept: d, total: s) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+
+  input:
+    - emp:
+        - [1, {dept: "eng", sal: 100}]
+      dept:
+        - [1, {name: "eng"}]
+        - [1, {name: "empty"}]
+
+  expected_exact_output:
+    - payroll:
+        - [1, {dept: "eng", total: 100}]
+
+# A filter over an aggregate's result cannot be placed until the aggregate has
+# run, which is the one thing that comes after it.
+- name: a filter may read an aggregate result
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    big(dept: d) <-
+        emp(dept: d, sal: r)
+        s := sum<r>
+        s > 150
+
+  input:
+    - emp:
+        - [1, {dept: "eng", sal: 100}]
+        - [1, {dept: "eng", sal: 200}]
+        - [1, {dept: "ops", sal: 50}]
+
+  expected_exact_output:
+    - big:
+        - [1, {dept: "eng"}]
+
+# Aggregation is stratified on the same terms as negation: the aggregated
+# relation must be in a strictly lower stratum. "An aggregate over a relation
+# still being computed would read a partial value, and which partial value
+# would depend on evaluation order."
+- name: an aggregate may not read its own recursive component
+  source: |
+    e :: relation(a: i64, b: i64)
+    e(a:, b:) <- input
+
+    p :: relation(v: i64, n: i64)
+    p(v: x, n: 0) <- e(a: x, b: 0)
+    p(v: x, n: c) <-
+        p(v: x, n: m)
+        c := sum<m>
+
+  expected_diagnostics:
+    - severity: error
+      pass: plan
+      message: "is in the same recursive component as this rule"
+
+# And the case that must not be rejected: aggregating a strictly lower stratum
+# from inside a recursive component is what stratification exists to allow.
+- name: a recursive component may aggregate a lower stratum
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    weight :: relation(node: i64, w: i64)
+    edge(src:, dst:) <- input
+    weight(node:, w:) <- input
+
+    heavy :: relation(node: i64, total: i64)
+    heavy(node: n, total: t) <-
+        weight(node: n, w: w)
+        t := sum<w>
+
+    reach(v: y) <-
+        heavy(node: y, total: t)
+        t > 5
+    reach(v: y) <-
+        reach(v: x)
+        edge(src: x, dst: y)
+
+  input:
+    - weight:
+        - [1, {node: 1, w: 10}]
+        - [1, {node: 2, w: 1}]
+      edge:
+        - [1, {src: 1, dst: 2}]
+
+  expected_exact_output:
+    - reach:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
