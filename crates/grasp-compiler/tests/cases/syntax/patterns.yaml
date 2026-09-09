@@ -183,6 +183,44 @@
       pass: parse
       line: 3
 
+# A body statement is one per line, so an expression may not reach across one to
+# take the bracket that opens the next. Both brackets: a `(` would make the
+# line above a call and a `[` would make it a subscript, and in each case the
+# parser would run the two lines together and report the `:=` it then trips
+# over — an error naming neither line.
+- name: a paren opening a line does not call the line above
+  source: |
+    p :: relation(a: i64, arr: array(i64))
+    p(a:, arr:) <- input
+
+    r(v: v) <-
+        p(a: a, arr: arr)
+        n := a
+        (v) := *arr
+  expected_ok: true
+
+- name: a bracket opening a line does not subscript the line above
+  source: |
+    p :: relation(d: dict(string, i64), arr: array(i64))
+    p(d:, arr:) <- input
+
+    r(v: x) <-
+        p(d: d, arr: arr)
+        n := d
+        [x, y] := arr
+  expected_ok: true
+
+# Written where it belongs, the same text is a call.
+- name: a paren on the same line still calls
+  source: |
+    p :: relation(s: string)
+    p(s:) <- input
+
+    r(v: n) <-
+        p(s: s)
+        n := length(s)
+  expected_ok: true
+
 # A brace form is parsed once and read as a pattern only if `:=` follows, so
 # the same text is a literal on the right of one.
 - name: a brace on the right of the arrow is a literal, not a pattern

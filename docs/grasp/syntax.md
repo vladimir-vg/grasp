@@ -247,17 +247,27 @@ its keys are literal; looking one up by a computed key is `d[k]`, which is an
 expression and belongs there.
 
 A **subscript** is postfix, beside `.`, and reads a dict: `d[k]` where `k` is
-any expression. A `[` that opens a line is not one — the body's statements are
-delimited by line and an expression may not reach across one — so
+any expression.
+
+**A bracket that opens a line belongs to that line.** The body's statements are
+delimited by line, so an expression may not reach across one to take the bracket
+that begins the next:
 
 ```grasp
     n := d
     [x, y] := arr
 ```
 
-is a match and then an array pattern, never `d[x, y]`. Everywhere else, a `[`
-directly after an expression is a subscript and a `[` anywhere else begins an
-array literal.
+is a match and then an array pattern, never `d[x, y]`. The same rule covers `(`:
+
+```grasp
+    n := a
+    (v) := *arr
+```
+
+is a match and then an unnest, never the call `a(v)`. Everywhere else a `[`
+directly after an expression is a subscript, a `(` directly after a name is a
+call, and either one elsewhere begins an array literal or a grouping.
 
 A brace form at body-statement level is parsed once and then read as a pattern
 if `:=` follows it. That is also where a pattern's extra requirement is

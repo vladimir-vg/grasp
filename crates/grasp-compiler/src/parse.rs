@@ -112,6 +112,19 @@ impl<'a> Parser<'a> {
         self.kind() == Some(k)
     }
 
+    /// Whether the token `n` along opens a bracket **on this line**.
+    ///
+    /// A body statement is one per line, so an expression may not reach across
+    /// one to take the bracket that opens the next: `n := a` above
+    /// `(v) := *arr` is a match and then an unnest, never the call `a(v)`, and
+    /// above `[x] := arr` never the subscript `a[x]`. Without this the parser
+    /// runs the two lines together and reports the `:=` it then trips over,
+    /// which names neither line.
+    fn opens_here(&self, n: usize, bracket: &Tok) -> bool {
+        self.peek_at(n)
+            .is_some_and(|t| &t.kind == bracket && !t.first_on_line)
+    }
+
     fn bump(&mut self) -> &'a Token {
         let t = &self.toks[self.pos];
         self.pos += 1;
@@ -1017,10 +1030,8 @@ impl<'a> Parser<'a> {
     /// `postfix ::= primary ("." name | "[" expr "]")*`
     ///
     /// A `[` opening a line is an array destructure pattern, not a subscript on
-    /// whatever the line above ended with — the body's statements are delimited
-    /// by line, and an expression may not reach across one to take it. That is
-    /// the whole disambiguation, and it is why the token's `first_on_line`
-    /// matters here.
+    /// whatever the line above ended with — see [`Parser::opens_here`], which
+    /// is the whole disambiguation and covers `(` for the same reason.
     fn postfix(&mut self) -> Result<Parsed, Diagnostic> {
         let mut base = self.primary()?;
         loop {
@@ -1035,7 +1046,7 @@ impl<'a> Parser<'a> {
                 });
                 continue;
             }
-            if self.at(&Tok::LBracket) && !self.peek().is_some_and(|t| t.first_on_line) {
+            if self.opens_here(0, &Tok::LBracket) {
                 self.bump();
                 let key = self.expr()?.expr;
                 let close = self.expect(&Tok::RBracket, "`]`")?;
@@ -1106,10 +1117,10 @@ impl<'a> Parser<'a> {
             Tok::LBrace => self.dict_literal(start),
             Tok::Ident(name) => {
                 let name = name.clone();
-                if name == "record" && self.kind_at(1) == Some(&Tok::LParen) {
+                if name == "record" && self.opens_here(1, &Tok::LParen) {
                     return self.record_literal(start);
                 }
-                if self.kind_at(1) == Some(&Tok::LParen) {
+                if self.opens_here(1, &Tok::LParen) {
                     return self.call(name, start);
                 }
                 let span = self.bump().span;
