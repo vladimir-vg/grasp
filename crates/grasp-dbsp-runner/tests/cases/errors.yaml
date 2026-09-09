@@ -674,6 +674,42 @@
     - pass: typecheck
       message: "calls itself through"
 
+# The cycle walk has to reach every expression that can hold a call. It used
+# to stop at `cast` and at a dict, so this recursed until the stack ran out —
+# an internal error where a diagnostic was owed.
+- name: recursion through a cast is still a cycle
+  source: |
+    function f(x) { return cast(f(x), i64) }
+    a := input("a")
+    a :: zset(record(v: i64))
+    out := map(a, function((r) -> record(v: f(r.v))))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "calls itself through"
+
+- name: recursion through a dict literal is still a cycle
+  source: |
+    function f(x) { return {"k" => f(x)} }
+    a := input("a")
+    a :: zset(record(v: i64))
+    out := map(a, function((r) -> record(v: f(r.v))))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "calls itself through"
+
+- name: recursion through a select is still a cycle
+  source: |
+    function f(x) { return select(x, function((e) -> f(x))) }
+    a := input("a")
+    a :: zset(record(v: array(i64)))
+    out := map(a, function((r) -> record(v: f(r.v))))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "calls itself through"
+
 - name: mutual recursion is a cycle too
   source: |
     function ping(x) { return pong(x) }

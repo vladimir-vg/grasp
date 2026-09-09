@@ -219,7 +219,11 @@ fn a_numeric_literal_is_pinned_to_its_context() {
                 TypedExpr::Field(b, _) | TypedExpr::Cast(b, _) | TypedExpr::DictFrom(b) => {
                     walk(b, out)
                 }
-                TypedExpr::Var(_) => {}
+                TypedExpr::Select { array, body } => {
+                    walk(array, out);
+                    walk(body, out);
+                }
+                TypedExpr::Var(_) | TypedExpr::Elem(_) => {}
             }
         }
         for node in &plan.nodes {

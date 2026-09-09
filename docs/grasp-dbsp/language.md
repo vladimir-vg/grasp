@@ -330,6 +330,7 @@ expr       := literal
             | unop expr
             | expr binop expr
             | NAME "(" [expr ("," expr)*] ")"             # a builtin, or a named function
+            | "select" "(" expr "," anon_function ")"     # one element per element
 
 unop       := "-" | "not"
 binop      := "+" | "-" | "*" | "/" | "%"
@@ -481,6 +482,44 @@ one row per element, so **fan-out follows the data** rather than the source text
 posts :: zset(record(id: i64, tags: array(string)))
 tags  := flat_map(posts, function((r) -> r.tags))
 ```
+
+### `select`
+
+`select(a, function((e) -> body))` evaluates `body` once per element of the
+array `a`, with `e` bound to that element, and collects the results into an
+array. It is the **one construct in the language that binds a name inside an
+expression**.
+
+It exists for `flat_map`. That operator emits one row per element of the array
+its function returns, so the output row *is* the element — and a row's other
+columns cannot survive the fan-out unless the function can build an array of
+whole rows. Nothing else could build one:
+
+```
+person :: zset(record(name: string, tags: array(string)))
+tagged := flat_map(person, function((r) ->
+    select(r.tags, function((e) -> record(name: r.name, tag: e)))))
+```
+
+`entries` already yields `array(record(key: K, value: V))`, so a dict fans out
+through the same shape, and `select` is what puts the row back beside each entry.
+
+- **The function is not a value.** It is written where it is used, the way
+  `cast`'s second argument is a type rather than an expression. There is no
+  function type and nothing may pass one around.
+- **The body sees the enclosing function's parameters**, which is what makes it
+  worth having: `r.name` above comes from the row, `e` from the element.
+- **A binder may not shadow a name already in scope.** There is one reading of a
+  name, and no rule to remember about which one wins.
+- **`select` is an expression.** `x := select(a, f)` is not a node definition;
+  it belongs inside a function body.
+
+There is deliberately no `fold`. A fold can express a filter, and overlaps
+`length` and `sum` — a redundancy an emitter would have to choose between with
+no information. An array `filter` is a different matter: `select` cannot change
+an array's length and the `filter` *operator* works on rows, so it would be a
+genuinely new capability rather than a second way to write one. It is not here
+because nothing needs it yet.
 
 ### Builtins
 
@@ -892,8 +931,8 @@ each thing.
 These may not name a node, a function or a parameter: the 21 operator names,
 the 5 aggregator names, the builtin names, the type constructors (`bool`,
 `i64`, `f64`, `string`, `json`, `optional`, `record`, `array`, `dict`, `sql`,
-`zset`, `indexed_zset`), `cast`, and `true`, `false`, `NONE`, `null`, `function`,
-`return`, `and`, `or`, `not`, `circuit`, `fixpoint`.
+`zset`, `indexed_zset`), `cast`, `select`, and `true`, `false`, `NONE`, `null`,
+`function`, `return`, `and`, `or`, `not`, `circuit`, `fixpoint`.
 
 `if` is reserved by being a builtin, like every other builtin name. `then` and
 `else` were held for a syntactic conditional and are not reserved: the

@@ -173,6 +173,24 @@ pub enum TypedExpr {
     Unary(UnOp, Box<TypedExpr>),
     Binary(BinOp, Box<TypedExpr>, Box<TypedExpr>),
     Call(Builtin, Vec<TypedExpr>),
+    /// A `select` binder, by position in the frame — the same index space
+    /// [`TypedExpr::Var`] uses, since both read one slot of the argument list.
+    ///
+    /// It is a variant of its own all the same, because inlining treats the two
+    /// oppositely: a `Var` is *replaced* by the argument written at the call
+    /// site, and an `Elem` is *shifted* into the caller's frame. Telling them
+    /// apart by the size of the index would make a magnitude carry meaning.
+    Elem(usize),
+    /// `select(array, function((e) -> body))`.
+    ///
+    /// The binder has no name here. Two identical computations written with
+    /// different binder names must be one node: `push_node` deduplicates on
+    /// equality and the content id is a structural hash, so a name would give
+    /// them two ids and two `persistent_id`s.
+    Select {
+        array: Box<TypedExpr>,
+        body: Box<TypedExpr>,
+    },
 }
 
 /// Evaluate an expression against positionally-bound arguments.
@@ -189,7 +207,32 @@ pub fn eval(e: &TypedExpr, args: &[&DynValue]) -> DynValue {
         // the default keeps the evaluator total rather than trusting that.
         TypedExpr::IntLit(v) => DynValue::I64(*v),
         TypedExpr::FloatLit(v) => DynValue::F64(Flt::new(*v)),
-        TypedExpr::Var(i) => args[*i].clone(),
+        TypedExpr::Var(i) | TypedExpr::Elem(i) => args[*i].clone(),
+        // The one place an expression is evaluated more than once under
+        // different bindings. The frame grows by exactly one slot, appended, so
+        // every index already in scope keeps its meaning.
+        //
+        // One `Vec` per evaluation, reused across the elements. That is a real
+        // per-row cost in an interpreted walk, named here so it is a known one.
+        TypedExpr::Select { array, body } => match eval(array, args) {
+            DynValue::Array(items) => {
+                let mut frame: Vec<&DynValue> = Vec::with_capacity(args.len() + 1);
+                frame.extend_from_slice(args);
+                frame.push(&DynValue::None);
+                DynValue::Array(
+                    items
+                        .iter()
+                        .map(|item| {
+                            *frame.last_mut().expect("the binder's slot") = item;
+                            eval(body, &frame)
+                        })
+                        .collect(),
+                )
+            }
+            // The checker admits only an array, so this is defensive — and
+            // absence rather than an empty array, as `DictFrom` has it.
+            _ => DynValue::None,
+        },
         TypedExpr::Field(base, index) => match eval(base, args) {
             DynValue::Record(fields) => fields.get(*index).cloned().unwrap_or(DynValue::None),
             _ => DynValue::None,

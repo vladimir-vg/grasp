@@ -213,6 +213,19 @@ fn hash_expr(h: &mut Xxh3Default, e: &TypedExpr) {
             0u8.hash(h);
             v.hash(h);
         }
+        // 13 and 14 because 0-12 are taken. The tags are not in variant order
+        // and must never be reused or renumbered: a content id is a
+        // `persistent_id`, so moving one silently renames every node that
+        // carries it.
+        TypedExpr::Elem(i) => {
+            13u8.hash(h);
+            i.hash(h);
+        }
+        TypedExpr::Select { array, body } => {
+            14u8.hash(h);
+            hash_expr(h, array);
+            hash_expr(h, body);
+        }
         // Unreachable in a checked plan — `commit` pins every literal — but
         // hashed distinctly rather than merged with `Const`.
         TypedExpr::IntLit(v) => {

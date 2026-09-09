@@ -1,7 +1,8 @@
 //! Type inference and name resolution.
 //!
 //! Produces a [`Plan`]: nodes in dependency order, each with a [`BatchType`] and
-//! an operator whose function arguments have been lowered to [`TypedExpr`].
+//! an operator whose function arguments have been lowered to
+//! [`TypedExpr`](crate::expr::TypedExpr).
 //!
 //! Resolving `row.name` to a positional index happens here. That is what allows
 //! record *values* to be positional at runtime, and it is why nothing in the hot
@@ -183,7 +184,29 @@ fn check_function_cycles(funcs: &Functions<'_>) -> TResult<()> {
             }
             ExprKind::Record(fields) => fields.iter().for_each(|(_, v)| calls(v, out)),
             ExprKind::List(items) => items.iter().for_each(|i| calls(i, out)),
-            _ => {}
+            ExprKind::Cast(i, _) => calls(i, out),
+            ExprKind::Dict(crate::lang::DictLit::From(i)) => calls(i, out),
+            ExprKind::Dict(crate::lang::DictLit::Pairs(pairs)) => {
+                pairs.iter().for_each(|(k, v)| {
+                    calls(k, out);
+                    calls(v, out);
+                })
+            }
+            ExprKind::Select { array, body, .. } => {
+                calls(array, out);
+                calls(body, out);
+            }
+            // Exhaustive on purpose. This was a wildcard, and `cast` and `dict`
+            // fell through it — so `function f(x) { return cast(f(x), i64) }`
+            // reached `instantiate` and recursed until the stack ran out, which
+            // is an internal error where a diagnostic was owed. Listing the
+            // leaves makes the next variant a compile error instead.
+            ExprKind::None
+            | ExprKind::Bool(_)
+            | ExprKind::Int(_)
+            | ExprKind::Float(_)
+            | ExprKind::Str(_)
+            | ExprKind::Var(_) => {}
         }
     }
 

@@ -312,6 +312,15 @@ pub(super) fn check_op(
     if let Some(r) = check_algebraic(&cx, plan)? {
         return Ok(r);
     }
+    // `select` looks like an operator call and is not one. Both `x := select(…)`
+    // and `map(t, select(…))` land here, and "unknown operator" would send a
+    // reader looking for a missing feature rather than a misplaced expression.
+    if op == "select" {
+        return err(
+            span,
+            "`select` is an expression, not an operator: it belongs inside a              function body, as `map(s, function((row) -> select(…)))`",
+        );
+    }
     err(span, format!("unknown operator `{op}`"))
 }
 

@@ -183,6 +183,29 @@ pub enum ExprKind {
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Call(String, Vec<Expr>),
+    /// `select(a, function((e) -> body))` — one output element per element of
+    /// `a`, with `e` bound to it.
+    ///
+    /// The **one** construct in this language that binds a name inside an
+    /// expression. The function is syntactic and not a value, the way
+    /// [`ExprKind::Cast`]'s type is: it is held here rather than being an
+    /// operand, so no function type reaches [`crate::value::TypeDesc`] and no
+    /// closure reaches [`crate::value::DynValue`].
+    ///
+    /// It exists because `flat_map`'s function returns an array and there was
+    /// no way to *build* one from another array — so a row's other columns
+    /// could not survive a fan-out. Nothing about the operator changed.
+    ///
+    /// An array `filter` would fit here with almost nothing new: one variant,
+    /// one eval arm, one hash tag, and the same binder. A `fold` would not, and
+    /// is refused rather than deferred — it can express filter and overlaps
+    /// `length` and `sum`, which is a redundancy an emitter must choose between
+    /// with no information.
+    Select {
+        array: Box<Expr>,
+        param: String,
+        body: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,7 +266,7 @@ const TYPE_NAMES: &[&str] = &[
 /// from the real names rather than duplicating them.
 const KEYWORDS: &[&str] = &[
     "true", "false", "NONE", "null", "function", "return", "and", "or", "not", "cast", "circuit",
-    "fixpoint",
+    "fixpoint", "select",
 ];
 
 /// Whether `name` is reserved, and so may not name a node or a parameter.
@@ -1187,6 +1210,39 @@ impl Parser {
                     }
                 }
                 return Ok(self.mk(start, ExprKind::Record(fields)));
+            }
+            // `select(a, function((e) -> body))` is parsed here for the same
+            // reason `cast` is: its second argument is a function, and a
+            // function is not an expression.
+            "select" => {
+                self.expect(&Tok::LParen, "`(` after select")?;
+                let array = self.expr()?;
+                self.expect(&Tok::Comma, "`,` before the function of a select")?;
+                if !matches!(self.peek(), Tok::Ident(n) if n == "function") {
+                    return self.err(
+                        "`select`'s second argument must be a function, written \
+                         `function((e) -> …)`",
+                    );
+                }
+                self.bump();
+                let fun = self.fun_literal()?;
+                self.expect(&Tok::RParen, "`)` closing select")?;
+                // Checked here so the AST cannot hold an ill-formed `select`:
+                // one element in, one name to call it.
+                let [param] = fun.params.as_slice() else {
+                    return self.err(format!(
+                        "`select`'s function takes one parameter, the element; found {}",
+                        fun.params.len()
+                    ));
+                };
+                return Ok(self.mk(
+                    start,
+                    ExprKind::Select {
+                        array: Box::new(array),
+                        param: param.clone(),
+                        body: Box::new(fun.body),
+                    },
+                ));
             }
             // `dict(a)` builds a dict from an array. The literal is written
             // `{k => v}` — see the `Tok::LBrace` arm below.

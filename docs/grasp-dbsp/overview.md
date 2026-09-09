@@ -76,7 +76,10 @@ implicit numeric promotion deleted, both to satisfy the third and fifth.
   operator.
 - Expressions in function bodies: literals, parameters, record field access,
   `record(...)` and `[…]` construction, arithmetic, comparison and logic,
-  `if(cond, a, b)`, `cast(x, T)`, and a small builtin library.
+  `if(cond, a, b)`, `cast(x, T)`, `select(a, function((e) -> …))`, and a small
+  builtin library. `select` is the only construct that binds a name inside an
+  expression, and it is what lets a `flat_map`'s function build the rows it
+  fans out to rather than only choosing an array already in the row.
 - Documents, as the `json` type. There is deliberately no pattern language:
   `cast` converts one out and `get` reaches inside one, so the type costs no new
   grammar at all.
@@ -132,12 +135,12 @@ become an output — by declared name, or by content id for a node that has none
   still free to settle — which stops being true after the first stored batch.
   That freedom is what let `SqlString` be removed rather than deprecated.
 
-- **Element access** — `e[0]` on an `array(T)`. Arrays are values and
-  `flat_map` turns one into rows, but nothing reads an element by index. `get`
-  does this for a document; a typed array has no equivalent. This is what blocks
-  grasp's subscript and slice syntax, and its indexed unnest `(i, v) := *arr` —
-  which needs an element's position, so it follows from the same addition. Plain
-  `(v) := *arr` is `flat_map` and works today.
+- **Element access** — `e[0]` on an `array(T)`. Arrays are values, `flat_map`
+  turns one into rows and `select` maps over one, but nothing reads an element
+  by index. `get` does this for a document; a typed array has no equivalent.
+  This is what blocks grasp's subscript and slice syntax, and its indexed unnest
+  `(i, v) := *arr` — which needs an element's position, so it follows from the
+  same addition. Plain `(v) := *arr` is `flat_map` over a `select`, and works.
 
 - **Document odds and ends.** A `shape(doc)` builtin — a program that must
   branch on what a document holds attempts casts in order today, which works and

@@ -78,8 +78,13 @@ fn pin(e: &mut TypedExpr, ty: &TypeDesc) {
                 pin(a, ty);
             }
         }
+        // A `select`'s type is a concrete `array(U)`, its body having been
+        // committed against the element type — so, like `Record`, it carries
+        // nothing upward and must not be rewritten from outside.
         TypedExpr::Const(_)
         | TypedExpr::Var(_)
+        | TypedExpr::Elem(_)
+        | TypedExpr::Select { .. }
         | TypedExpr::Field(..)
         | TypedExpr::Record(_)
         | TypedExpr::Array(_)
@@ -256,10 +261,11 @@ pub(super) fn check_fun(
             ),
         );
     }
-    let env: Vec<(&str, &TypeDesc)> = names
+    let env: Vec<(&str, &TypeDesc, Bound)> = names
         .iter()
         .map(|s| s.as_str())
         .zip(params.iter())
+        .map(|(n, t)| (n, t, Bound::Param))
         .collect();
     let (mut e, ty) = infer(body, &env, funcs, expected)?;
     let t = commit(&mut e, ty, body.span, what)?;
@@ -272,9 +278,72 @@ pub(super) fn check_fun(
 /// This is the whole of inlining. An argument used twice in the body is
 /// therefore evaluated twice; sharing it would need a slot table, which is what
 /// body bindings will bring.
+/// How a name in scope got there.
+///
+/// A parameter is supplied by the caller and is what inlining replaces; a
+/// `select` binder is supplied by the expression around it and is what inlining
+/// *shifts*. One stack holds both, so a lookup is one search and the tag picks
+/// which reference to emit — and so a callee, whose environment is built from
+/// its parameters alone, cannot see a binder of the caller at all. Hygiene by
+/// construction rather than by a rule to remember.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Bound {
+    Param,
+    Binder,
+}
+
+pub(super) type Scope<'a> = [(&'a str, &'a TypeDesc, Bound)];
+
+/// Moves a callee's `select` binders into the caller's frame.
+///
+/// A binder's index is its position in the frame it was checked in, which for a
+/// function body is `params.len()` and up. At the call site the frame is a
+/// different size, so every binder moves by the difference — and nothing else
+/// does, arguments being already absolute in the caller's frame.
+///
+/// Without this, an argument that is itself a binder reference gets spliced
+/// under a binder and silently means the wrong thing. It cannot be caught by
+/// checking, which runs before substitution, so `substitute`'s own tests are
+/// where it is pinned.
+fn shift(e: &TypedExpr, by: isize) -> TypedExpr {
+    match e {
+        TypedExpr::Elem(i) => TypedExpr::Elem((*i as isize + by) as usize),
+        TypedExpr::Select { array, body } => TypedExpr::Select {
+            array: Box::new(shift(array, by)),
+            body: Box::new(shift(body, by)),
+        },
+        TypedExpr::Field(b, i) => TypedExpr::Field(Box::new(shift(b, by)), *i),
+        TypedExpr::Record(f) => TypedExpr::Record(f.iter().map(|x| shift(x, by)).collect()),
+        TypedExpr::Array(f) => TypedExpr::Array(f.iter().map(|x| shift(x, by)).collect()),
+        TypedExpr::Dict(e) => TypedExpr::Dict(
+            e.iter()
+                .map(|(k, v)| (shift(k, by), shift(v, by)))
+                .collect(),
+        ),
+        TypedExpr::DictFrom(i) => TypedExpr::DictFrom(Box::new(shift(i, by))),
+        TypedExpr::Unary(op, i) => TypedExpr::Unary(*op, Box::new(shift(i, by))),
+        TypedExpr::Binary(op, l, r) => {
+            TypedExpr::Binary(*op, Box::new(shift(l, by)), Box::new(shift(r, by)))
+        }
+        TypedExpr::Call(f, a) => TypedExpr::Call(*f, a.iter().map(|x| shift(x, by)).collect()),
+        TypedExpr::Cast(i, c) => TypedExpr::Cast(Box::new(shift(i, by)), c.clone()),
+        leaf @ (TypedExpr::Const(_)
+        | TypedExpr::IntLit(_)
+        | TypedExpr::FloatLit(_)
+        | TypedExpr::Var(_)) => leaf.clone(),
+    }
+}
+
 fn substitute(e: &TypedExpr, args: &[TypedExpr]) -> TypedExpr {
     match e {
         TypedExpr::Var(i) => args[*i].clone(),
+        // Already shifted into this frame by `instantiate`, and not a parameter
+        // of the function being inlined, so it stands.
+        TypedExpr::Elem(i) => TypedExpr::Elem(*i),
+        TypedExpr::Select { array, body } => TypedExpr::Select {
+            array: Box::new(substitute(array, args)),
+            body: Box::new(substitute(body, args)),
+        },
         TypedExpr::Field(b, i) => TypedExpr::Field(Box::new(substitute(b, args)), *i),
         TypedExpr::Record(f) => TypedExpr::Record(f.iter().map(|x| substitute(x, args)).collect()),
         TypedExpr::Array(f) => TypedExpr::Array(f.iter().map(|x| substitute(x, args)).collect()),
@@ -302,7 +371,7 @@ fn substitute(e: &TypedExpr, args: &[TypedExpr]) -> TypedExpr {
 
 fn infer(
     e: &Expr,
-    env: &[(&str, &TypeDesc)],
+    env: &Scope<'_>,
     funcs: &Functions<'_>,
     expected: Option<&TypeDesc>,
 ) -> TResult<(TypedExpr, Ty)> {
@@ -325,10 +394,50 @@ fn infer(
         ),
 
         ExprKind::Var(name) => {
-            let Some(i) = env.iter().position(|(n, _)| n == name) else {
+            // Innermost first. Shadowing is rejected where a binder is
+            // introduced, so this cannot differ from a forward search today —
+            // it is written this way so that relaxing that rule stays a
+            // one-line change rather than becoming a correctness bug.
+            let Some(i) = env.iter().rposition(|(n, _, _)| n == name) else {
                 return err(span, format!("unknown parameter `{name}`"));
             };
-            (TypedExpr::Var(i), Ty::Known(env[i].1.clone()))
+            let reference = match env[i].2 {
+                Bound::Param => TypedExpr::Var(i),
+                Bound::Binder => TypedExpr::Elem(i),
+            };
+            (reference, Ty::Known(env[i].1.clone()))
+        }
+
+        ExprKind::Select { array, param, body } => {
+            let (mut ae, at) = infer(array, env, funcs, Option::None)?;
+            definite(&at, "select", span)?;
+            let at = commit(&mut ae, at, array.span, "the array of a `select`")?;
+            let TypeDesc::Array(element) = at.non_null() else {
+                return err(span, format!("`select` needs an array, found `{at}`"));
+            };
+            if env.iter().any(|(n, _, _)| n == param) {
+                return err(
+                    span,
+                    format!("`{param}` is already in scope; a `select` may not shadow a name"),
+                );
+            }
+            // The element type an enclosing typespec asks of this `select`, so
+            // an empty container in the body has somewhere to take a type from.
+            let want = match expected.map(TypeDesc::non_null) {
+                Some(TypeDesc::Array(t)) => Some(&**t),
+                _ => Option::None,
+            };
+            let mut inner: Vec<(&str, &TypeDesc, Bound)> = env.to_vec();
+            inner.push((param.as_str(), element, Bound::Binder));
+            let (mut be, bt) = infer(body, &inner, funcs, want)?;
+            let bt = commit(&mut be, bt, body.span, "the body of a `select`")?;
+            (
+                TypedExpr::Select {
+                    array: Box::new(ae),
+                    body: Box::new(be),
+                },
+                Ty::Known(TypeDesc::Array(Box::new(bt))),
+            )
         }
 
         ExprKind::Field(base, field) => {
@@ -751,7 +860,7 @@ fn conversion(from: &Ty, to: &TypeDesc, span: Span) -> TResult<Conv> {
 fn instantiate(
     def: &crate::lang::FunctionDef,
     args: &[Expr],
-    env: &[(&str, &TypeDesc)],
+    env: &Scope<'_>,
     funcs: &Functions<'_>,
     span: Span,
 ) -> TResult<(TypedExpr, Ty)> {
@@ -783,17 +892,26 @@ fn instantiate(
         arg_exprs.push(e);
     }
 
-    let body_env: Vec<(&str, &TypeDesc)> = def
+    // The callee's parameters and nothing else: a function is a template with
+    // no access to the caller's scope, so a `select` binder of the caller is
+    // invisible here — which is what makes the substitution below safe.
+    let body_env: Vec<(&str, &TypeDesc, Bound)> = def
         .params
         .iter()
         .map(|s| s.as_str())
         .zip(param_types.iter())
+        .map(|(n, t)| (n, t, Bound::Param))
         .collect();
     let (body, ty) = infer(&def.body, &body_env, funcs, Option::None).map_err(|mut d| {
         d.message = format!("in `{}`, instantiated at {span}: {}", def.name, d.message);
         d
     })?;
-    Ok((substitute(&body, &arg_exprs), ty))
+    // Any binder the callee opened was numbered against a frame of its own
+    // parameters; here the frame is the caller's. Move them, then replace the
+    // parameters. Arguments are already absolute in this frame and are not
+    // shifted.
+    let moved = shift(&body, env.len() as isize - def.params.len() as isize);
+    Ok((substitute(&moved, &arg_exprs), ty))
 }
 
 /// Operations that need a definite value reject an optional operand rather than
@@ -1087,4 +1205,104 @@ fn infer_builtin(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    //! Inlining a function whose body binds a name.
+    //!
+    //! These four are unit tests rather than fixtures because only one of them
+    //! fails when the shift is missing, and it is a shape nobody writes by
+    //! accident: a callee that binds a `select` *around* a use of its
+    //! parameter, called from inside another `select`. The failure is silent —
+    //! the indices are still right when the body is checked, and substitution
+    //! happens afterwards — so nothing else in the suite can find it.
+
+    use super::{shift, substitute};
+    use crate::expr::TypedExpr;
+
+    /// `Elem(0) + Var(0)` under a `select` over `Var(0)` — the body of
+    /// `function g(a) { return select(a, function((w) -> w + a)) }`, where the
+    /// binder `w` sits at index 1 because `g` has one parameter.
+    fn callee_binding_around_its_parameter() -> TypedExpr {
+        TypedExpr::Select {
+            array: Box::new(TypedExpr::Var(0)),
+            body: Box::new(TypedExpr::Binary(
+                crate::lang::BinOp::Add,
+                Box::new(TypedExpr::Elem(1)),
+                Box::new(TypedExpr::Var(0)),
+            )),
+        }
+    }
+
+    /// Inlining moves a callee's binders into the caller's frame; a call site
+    /// with more parameters than the callee moves them further.
+    #[test]
+    fn a_callee_binder_moves_into_the_callers_frame() {
+        let moved = shift(&callee_binding_around_its_parameter(), 2 - 1);
+        let TypedExpr::Select { body, .. } = &moved else {
+            unreachable!()
+        };
+        let TypedExpr::Binary(_, w, a) = &**body else {
+            unreachable!()
+        };
+        assert_eq!(**w, TypedExpr::Elem(2), "the binder moved");
+        assert_eq!(**a, TypedExpr::Var(0), "a parameter did not");
+    }
+
+    /// The case the whole scheme exists for. `g(e)` is called from inside a
+    /// `select` whose binder `e` is `Elem(1)`, so the argument is itself a
+    /// binder reference. Without the shift it collides with the callee's own
+    /// binder and the body computes `w + w`.
+    #[test]
+    fn an_argument_that_is_a_binder_survives_being_substituted_under_one() {
+        let caller_frame = 2; // [row, e]
+        let moved = shift(&callee_binding_around_its_parameter(), caller_frame - 1);
+        let out = substitute(&moved, &[TypedExpr::Elem(1)]);
+
+        let TypedExpr::Select { array, body } = &out else {
+            unreachable!()
+        };
+        assert_eq!(**array, TypedExpr::Elem(1), "the array is the caller's `e`");
+        let TypedExpr::Binary(_, w, a) = &**body else {
+            unreachable!()
+        };
+        assert_eq!(**w, TypedExpr::Elem(2), "`w` is the callee's own binder");
+        assert_eq!(
+            **a,
+            TypedExpr::Elem(1),
+            "`a` is the caller's `e`, and must not have collided with `w`"
+        );
+        assert_ne!(w, a, "this is the bug: they were both Elem(0)");
+    }
+
+    /// Two binders in one frame keep their own slots.
+    #[test]
+    fn nested_selects_number_their_binders_apart() {
+        // select(Var(0), (x) -> select(Elem(1), (y) -> Elem(1) + Elem(2)))
+        let e = TypedExpr::Select {
+            array: Box::new(TypedExpr::Var(0)),
+            body: Box::new(TypedExpr::Select {
+                array: Box::new(TypedExpr::Elem(1)),
+                body: Box::new(TypedExpr::Binary(
+                    crate::lang::BinOp::Add,
+                    Box::new(TypedExpr::Elem(1)),
+                    Box::new(TypedExpr::Elem(2)),
+                )),
+            }),
+        };
+        assert_eq!(substitute(&e, &[TypedExpr::Var(0)]), e, "binders stand");
+    }
+
+    /// A callee with no binder of its own is unaffected by the shift, which is
+    /// why every existing program keeps its meaning.
+    #[test]
+    fn a_callee_without_a_binder_is_unchanged() {
+        let body = TypedExpr::Binary(
+            crate::lang::BinOp::Add,
+            Box::new(TypedExpr::Var(0)),
+            Box::new(TypedExpr::Var(0)),
+        );
+        assert_eq!(shift(&body, 3), body);
+    }
 }

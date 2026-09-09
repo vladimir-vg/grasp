@@ -167,3 +167,152 @@
       exploded:
         - [1, "x"]
         - [1, "y"]
+
+# `select` is the only construct in the language that binds a name inside an
+# expression. It exists because a `flat_map`'s function returns an array and
+# there was no way to *build* one from another array — so a row's other columns
+# could not survive a fan-out. The operator did not change; the expression
+# language grew.
+
+- name: select carries the row through a fan-out
+  source: |
+    person := input("person")
+    person :: zset(record(name: string, tags: array(string)))
+    tagged := flat_map(person, function((r) ->
+        select(r.tags, function((e) -> record(name: r.name, tag: e)))))
+
+  input:
+    - person:
+        - [1, {name: "ann", tags: ["x", "y"]}]
+        - [1, {name: "bo", tags: ["z"]}]
+
+  expected_exact_output:
+    - tagged:
+        - [1, {name: "ann", tag: "x"}]
+        - [1, {name: "ann", tag: "y"}]
+        - [1, {name: "bo", tag: "z"}]
+
+# `entries` already yields `array(record(key, value))`, so a dict fans out
+# through the same shape.
+- name: select over a dict's entries
+  source: |
+    person := input("person")
+    person :: zset(record(name: string, tags: dict(string, i64)))
+    tagged := flat_map(person, function((r) ->
+        select(entries(r.tags), function((e) ->
+            record(name: r.name, tag: e.key, n: e.value)))))
+
+  input:
+    - person:
+        - [1, {name: "ann", tags: {"x": 1, "y": 2}}]
+
+  expected_exact_output:
+    - tagged:
+        - [1, {name: "ann", tag: "x", n: 1}]
+        - [1, {name: "ann", tag: "y", n: 2}]
+
+- name: a select in an ordinary map builds an array
+  source: |
+    nums := input("nums")
+    nums :: zset(record(id: i64, xs: array(i64)))
+    doubled := map(nums, function((r) ->
+        record(id: r.id, xs: select(r.xs, function((e) -> e * 2)))))
+
+  input:
+    - nums:
+        - [1, {id: 1, xs: [1, 2, 3]}]
+
+  expected_exact_output:
+    - doubled:
+        - [1, {id: 1, xs: [2, 4, 6]}]
+
+- name: selects nest, and each binder keeps its own slot
+  source: |
+    g := input("g")
+    g :: zset(record(k: i64, rows: array(record(v: i64, ns: array(i64)))))
+    out := flat_map(g, function((r) ->
+        select(r.rows, function((a) ->
+            record(k: r.k, v: a.v, total: select(a.ns, function((b) -> b + a.v)))))))
+
+  input:
+    - g:
+        - [1, {k: 7, rows: [{v: 10, ns: [1, 2]}]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {k: 7, v: 10, total: [11, 12]}]
+
+# The case the binder scheme exists for: a named function that binds a `select`
+# around a use of its own parameter, called from inside another `select`. The
+# argument is itself a binder reference, so it has to survive being substituted
+# under one. Without the shift in `instantiate` this quietly computes `w + w`.
+- name: a function binding a select, called from inside one
+  source: |
+    function g(a) { return select(a.ns, function((w) -> w + a.v)) }
+    t := input("t")
+    t :: zset(record(k: i64, rows: array(record(v: i64, ns: array(i64)))))
+    out := flat_map(t, function((r) ->
+        select(r.rows, function((e) -> record(k: r.k, got: g(e))))))
+
+  input:
+    - t:
+        - [1, {k: 1, rows: [{v: 100, ns: [1, 2]}]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {k: 1, got: [101, 102]}]
+
+- name: a select may not shadow a name in scope
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(i64)))
+    out := map(t, function((r) -> record(v: select(r.xs, function((r) -> r)))))
+
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+      message: "already in scope"
+
+- name: select needs an array
+  source: |
+    t := input("t")
+    t :: zset(record(v: i64))
+    out := map(t, function((r) -> record(v: select(r.v, function((e) -> e)))))
+
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+      message: "`select` needs an array"
+
+- name: select is an expression, not an operator
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(i64)))
+    out := select(t, function((e) -> e))
+
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+      message: "`select` is an expression, not an operator"
+
+- name: select's second argument must be a function
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(i64)))
+    out := map(t, function((r) -> record(v: select(r.xs, r.xs))))
+
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "must be a function"
+
+- name: select's function takes one parameter
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(i64)))
+    out := map(t, function((r) -> record(v: select(r.xs, function((a, b) -> a)))))
+
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "takes one parameter"
