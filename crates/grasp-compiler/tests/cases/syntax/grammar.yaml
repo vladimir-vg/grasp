@@ -164,16 +164,15 @@
   expected_ok: true
 
 # call ::= identifier "(" [args] ")" — only ever a subexpression
-# The grammar admits keyword arguments in a call, but no builtin takes any, so
-# only the positional form is exercisable today.
-- name: a call with several positional arguments
+# Which variant a call means is `programs/calls.yaml`; this is the production.
+- name: a call with a positional argument and a named one
   source: |
     s :: relation(x: i64, y: i64, arr: array(i64))
 
     r(v: a, w: b) <-
         s(x: x, y: y, arr: arr)
         a := integer:abs(x)
-        b := array:at(arr, y)
+        b := array:at(arr, index: y)
   expected_ok: true
 
 - name: a call inside a filter

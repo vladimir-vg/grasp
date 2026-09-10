@@ -200,8 +200,8 @@ correspond directly, with one spelling difference:
 | `and`, `or`, `not` | same |
 | `++` | `concat(a, b)` |
 | `s.field` | `s.field` |
-| `record:get(s, "f")` | `s.f` |
-| `dict:get(d, k)` | `get(d, k)` |
+| `record:get(s, field: "f")` | `s.f` |
+| `dict:get(d, key: k)` | `get(d, k)` |
 | `boolean:not(e)` | `not e` |
 | `[a, b]` | `[a, b]` |
 | `{k => v}` | `{k => v}` |
@@ -226,14 +226,20 @@ by this point: [desugaring](semantics.md#desugaring) rewrites it to
 which is the point of putting the sugar on the grasp side — grasp-dbsp keeps
 *exactly one way to write each thing*, and grasp is what people write.
 
-Builtins pass through under the same names — `abs`, `floor`, `ceil`, `round`,
-`length`, `concat`, `lower`, `upper`, `trim`, `if`, `keys`, `entries`.
+Builtins do **not** pass through under the same names, and that is the visible
+half of grasp having [chosen its library](semantics.md#the-standard-library)
+rather than inherited one. `float:floor` and `integer:abs` are grasp's names for
+what the target spells `floor` and `abs`; `string:length`, `array:length` and
+`dict:length` are three functions over the one `length`. The rename is
+`core::Builtin::target`, and where it is `None` — `array:drop`,
+`dict:without_keys`, `record:get` — the call becomes an expression rather than
+another call.
 
-grasp-dbsp has three more that [`semantics.md`](semantics.md#builtins) does not
-offer — `get`, `cast` and `coalesce` — and grasp emits all three without
-providing any of them: `dict:get` for a dict pattern, and `cast` and `coalesce`
-in the [narrowing](#narrowing-and-dropping) a runtime filter expands into. A
-builtin the compiler writes is not a builtin the language has.
+The traffic runs the other way too. grasp-dbsp has `get`, `cast`, `coalesce` and
+`if`, and grasp offers none of them while emitting the first three: `get` for
+`dict:get`, and `cast` and `coalesce` in the [narrowing](#narrowing-and-dropping)
+a runtime filter expands into. A builtin the compiler writes is not a builtin the
+language has, and a builtin the target has is not one the language takes.
 
 ## Computation DAG nodes
 

@@ -11,13 +11,14 @@ What the forms *mean* is [`semantics.md`](semantics.md); what their types are is
 ```
 keywords     not  and  or  input  true  false  NONE
 types        boolean  i64  f64  string  json  optional  record  array  dict
-             relation
+declarations relation  function
 aggregators  sum  count  min  max  avg
 operators    +  -  *  /  %  ++
 comparison   =  !=  <  <=  >  >=
 binding      :=
 annotation   ::
 arrow        <-
+returns      ->
 dict entry   =>
 punctuation  (  )  [  ]  {  }  :  ,  .  _
 patterns     *  **
@@ -73,11 +74,16 @@ statement ends the rule.
 ## Grammar
 
 ```
-program        ::= (spec | rule)*
+program        ::= (spec | fn_spec | rule)*
 
 spec           ::= relation_name "::" "relation" "(" [col_types] ")"
 col_types      ::= col_type ("," col_type)* [","]
 col_type       ::= name ":" type
+
+fn_spec        ::= callable_name "::" "function" NEWLINE (INDENT variant NEWLINE)+
+variant        ::= "(" [params] ")" "->" type
+params         ::= type ("," type)* ("," name ":" type)*
+                 | name ":" type ("," name ":" type)*
 
 rule           ::= fact | single_line_rule | multiline_rule
 
@@ -131,7 +137,8 @@ annotation forms take. What each type *means* is [`types.md`](types.md); this is
 only its shape.
 
 ```
-relation_name  ::= identifier
+relation_name  ::= identifier          -- under no reserved namespace
+callable_name  ::= identifier          -- under a reserved namespace
 name           ::= identifier          -- a column or field name
 variable       ::= [a-zA-Z_][a-zA-Z0-9_]*   -- single segment: no namespace
 
@@ -142,9 +149,17 @@ type           ::= "boolean" | "i64" | "f64" | "string" | "json"
                  | "record" "(" [type_fields] ")"
                  | "array" "(" type ")"
                  | "dict" "(" key_type "," type ")"
+                 | type_var                    -- only in a variant
 type_fields    ::= name ":" type ("," name ":" type)* [","]
 key_type       ::= "boolean" | "i64" | "f64" | "string"
+type_var       ::= [A-Z][a-zA-Z0-9]*
 ```
+
+A **type variable** — `T`, `K`, `V` — is legal in a function typespec and
+nowhere else: it says that `array:at`'s result is the array's element type
+without naming one. An initial capital is the whole of the rule, no type's own
+name being spelled that way, so a variable needs no declaration to be told from
+a type.
 
 ### Expressions
 
@@ -302,6 +317,27 @@ There is no statement that is a bare call, so nothing has to disambiguate.
 Inside an expression, `name(` is a call. An atom cannot appear there, so the two
 never compete.
 
+### Typespecs
+
+A relation's is one line; a function's is a **block**, one variant per line,
+indented past the name:
+
+```grasp
+array:slice :: function
+    (array(T)) -> array(T)
+    (array(T), stop: i64) -> array(T)
+    (array(T), start: i64, stop: i64) -> array(T)
+```
+
+Written in bulk — one block per name, however many ways there are to call it —
+so that a function's typespec is in one place. **There is one typespec per
+name**, and a second is a conflict rather than an addition; so are two variants
+of one [shape](#resolving-a-call). A function typespec declares a name in the
+[standard library](semantics.md#the-standard-library) and must therefore be
+namespaced: grasp has no user-defined functions.
+
+`docs/grasp/stdlib.grasp` is the library written this way.
+
 ## Name resolution
 
 **A name under a reserved namespace is a callable; every other name is a
@@ -313,13 +349,35 @@ A relation may be called `length`.
 Column names, variable names and namespace-qualified names are separate scopes
 and unaffected.
 
+### Resolving a call
+
+A callable may have several variants, and the one a call means is decided by its
+**shape**: how many arguments it gives by position, and the *set* of keyword
+names it gives. Erlang's dispatch rather than C++'s — **by shape, not by type**.
+
+```
+array:at(a, index: i)     shape (_, index:)
+array:at(a, i)            shape (_, _)        — no such variant
+```
+
+Keywords are a set, so `f(a, start: 1, stop: 9)` and `f(a, stop: 9, start: 1)`
+are one call, and two variants that differ only in the order they write their
+keywords are two answers to the same one.
+
+Resolution runs before any type is looked at. That is what lets `array:slice`
+carry eight variants over `start:` `stop:` `step:` without a defaulting
+mechanism, and it is why a call whose shape no variant has is reported in the
+words of the call rather than as a type error about an argument.
+
 ### Reserved words
 
 These may not name a relation, a variable or a column:
 
 - **keywords** — `not`, `and`, `or`, `input`, `true`, `false`, `NONE`
 - **type names** — `boolean`, `i64`, `f64`, `string`, `json`, `optional`,
-  `record`, `array`, `dict`, `relation`
+  `record`, `array`, `dict`
+- **declaration kinds** — `relation`, `function`; the word a typespec uses to
+  say what it declares
 - **aggregators** — `sum`, `count`, `min`, `max`, `avg`
 
 Builtin names are *not* reserved as such; they are unavailable as relation names

@@ -75,6 +75,11 @@ impl Ty {
             Type::Record(fields) => Ty::Record(sorted(
                 fields.iter().map(|(n, t)| (n.clone(), Ty::known(t))),
             )),
+            // A type variable is a function typespec's, and a typespec does not
+            // reach the core: desugaring drops it, having nothing to lower.
+            Type::Var(name) => {
+                unreachable!("`{name}` is a type variable, which only a typespec holds")
+            }
         }
     }
 

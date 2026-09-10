@@ -20,19 +20,26 @@
 //! canonical order and refuse the two that grasp-dbsp cannot express.
 
 use crate::ast;
+use crate::ast::Shape;
 use crate::core;
-use crate::diag::{Diagnostic, Pass};
+use crate::diag::{Diagnostic, Pass, Span};
 
 pub fn desugar(program: &ast::Program) -> Result<core::Program, Vec<Diagnostic>> {
     let mut out = Vec::with_capacity(program.len());
     for decl in program {
-        out.push(decl_of(decl).map_err(|d| vec![d])?);
+        if let Some(decl) = decl_of(decl).map_err(|d| vec![d])? {
+            out.push(decl);
+        }
     }
     Ok(out)
 }
 
-fn decl_of(decl: &ast::Decl) -> Result<core::Decl, Diagnostic> {
-    Ok(match decl {
+/// `None` for a function typespec, which is the one declaration with nothing
+/// below it: what the compiler knows about a callable is [`core::Builtin`], and
+/// a spec restates that rather than supplying it.
+fn decl_of(decl: &ast::Decl) -> Result<Option<core::Decl>, Diagnostic> {
+    Ok(Some(match decl {
+        ast::Decl::Function(_) => return Ok(None),
         ast::Decl::Spec(s) => core::Decl::Spec(core::Spec {
             relation: s.relation.clone(),
             columns: s.columns.clone(),
@@ -56,7 +63,7 @@ fn decl_of(decl: &ast::Decl) -> Result<core::Decl, Diagnostic> {
                 span: r.span,
             })
         }
-    })
+    }))
 }
 
 /// A head's or a fact's arguments, which carry no wildcard.
@@ -316,16 +323,21 @@ fn expr_of(e: &ast::Expr) -> Result<core::Expr, Diagnostic> {
                     format!("there is no callable `{name}`"),
                 ));
             };
-            if !keyword.is_empty() {
-                return Err(Diagnostic::unimplemented(
-                    Pass::Desugar,
-                    *span,
-                    "keyword arguments",
-                ));
+            let sig = resolve(callee, positional, keyword, *span)?;
+            // Resolution is what puts the arguments in order: below here a call
+            // is positional, and every pass after indexes it.
+            let mut args: Vec<core::Expr> =
+                positional.iter().map(expr_of).collect::<Result<_, _>>()?;
+            for param in sig.keyword {
+                let (_, value) = keyword
+                    .iter()
+                    .find(|(name, _)| name == param)
+                    .expect("the shape matched, so every keyword is there");
+                args.push(expr_of(value)?);
             }
             core::Expr::Call {
                 callee,
-                args: positional.iter().map(expr_of).collect::<Result<_, _>>()?,
+                args,
                 span: *span,
             }
         }
@@ -348,5 +360,40 @@ fn expr_of(e: &ast::Expr) -> Result<core::Expr, Diagnostic> {
                 .collect::<Result<_, Diagnostic>>()?,
             span: *span,
         },
+    })
+}
+
+/// Which variant of a callable a call means — `syntax.md`, "Name resolution".
+///
+/// **By shape, not by type**: the number of arguments given by position and the
+/// *set* of keyword names given, which is Erlang's dispatch rather than C++'s.
+/// Types are checked afterwards, in `infer`, against the variant this picked —
+/// so a call that matches no shape is reported here, in the words of the call,
+/// rather than as a type error about an argument the program did not write.
+fn resolve(
+    callee: core::Builtin,
+    positional: &[ast::Expr],
+    keyword: &[(String, ast::Expr)],
+    span: Span,
+) -> Result<&'static core::Signature, Diagnostic> {
+    let shape = Shape::new(
+        positional.len(),
+        keyword.iter().map(|(name, _)| name.clone()),
+    );
+    callee.resolve(&shape).ok_or_else(|| {
+        let name = callee.as_str();
+        let taken: Vec<String> = callee
+            .signatures()
+            .iter()
+            .map(|s| format!("`{}`", s.shape()))
+            .collect();
+        Diagnostic::error(
+            Pass::Desugar,
+            span,
+            format!(
+                "`{name}` is called {}, and this call is `{shape}`",
+                taken.join(" or ")
+            ),
+        )
     })
 }

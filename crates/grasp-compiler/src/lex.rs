@@ -59,6 +59,8 @@ pub enum Tok {
     Annot,
     /// `<-`
     Arrow,
+    /// `->` — a function typespec's result, and nothing else.
+    Returns,
     /// `=>`
     FatArrow,
     /// `**`
@@ -105,6 +107,7 @@ impl Tok {
             Tok::Assign => "`:=`".to_string(),
             Tok::Annot => "`::`".to_string(),
             Tok::Arrow => "`<-`".to_string(),
+            Tok::Returns => "`->`".to_string(),
             Tok::FatArrow => "`=>`".to_string(),
             Tok::StarStar => "`**`".to_string(),
         }
@@ -373,6 +376,7 @@ impl<'a> Lexer<'a> {
             (b':', Some(b'=')) => (Tok::Assign, 2),
             (b':', Some(b':')) => (Tok::Annot, 2),
             (b'<', Some(b'-')) => (Tok::Arrow, 2),
+            (b'-', Some(b'>')) => (Tok::Returns, 2),
             (b'<', Some(b'=')) => (Tok::Le, 2),
             (b'>', Some(b'=')) => (Tok::Ge, 2),
             (b'!', Some(b'=')) => (Tok::Ne, 2),

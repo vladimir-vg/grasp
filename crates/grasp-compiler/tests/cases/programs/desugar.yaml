@@ -105,7 +105,7 @@
         s(x: x, y: y)
         d := {"a" => x, "b" => y}
 
-# `s.f`  ->  `record:get(s, "f")`
+# `s.f`  ->  `record:get(s, field: "f")`
 - name: field access is record:get
   source: |
     s :: relation(rec: record(f: i64))
@@ -118,9 +118,9 @@
 
     r(v: n) <-
         s(rec: rec)
-        n := record:get(rec, "f")
+        n := record:get(rec, field: "f")
 
-# `s.a.b`  ->  `record:get(record:get(s, "a"), "b")`
+# `s.a.b`  ->  `record:get(record:get(s, field: "a"), field: "b")`
 - name: chained field access nests
   source: |
     s :: relation(rec: record(a: record(b: i64)))
@@ -133,7 +133,7 @@
 
     r(v: n) <-
         s(rec: rec)
-        n := record:get(record:get(rec, "a"), "b")
+        n := record:get(record:get(rec, field: "a"), field: "b")
 
 # `not e` in an expression  ->  `boolean:not(e)`
 - name: not in an expression is boolean:not
@@ -164,7 +164,7 @@
 
     r(x: x, v: n) <-
         s(x: x, rec: rec, a: a, b: b)
-        n := {"tag" => record:get(rec, "f"), "joined" => string:concat(a, b)}
+        n := {"tag" => record:get(rec, field: "f"), "joined" => string:concat(a, b)}
 
 # `equivalent_to` says nothing about whether either side is right, so pin the
 # sources here too.
@@ -185,5 +185,5 @@
     r(x: x, v: n, w: d) <-
         s(x: x, rec: rec, a: a, b: b)
         n := boolean:not(string:concat(a, b) = "x")
-        d := {"tag" => record:get(rec, "f")}
+        d := {"tag" => record:get(rec, field: "f")}
   expected_ok: true

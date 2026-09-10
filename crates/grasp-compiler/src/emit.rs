@@ -825,6 +825,10 @@ fn definite_value(ty: &Type) -> String {
         Type::String => "\"\"".to_string(),
         Type::Json => "cast(0, json)".to_string(),
         Type::Optional(_) => "NONE".to_string(),
+        // A type variable is a function typespec's, and a typespec does not
+        // reach the core: desugaring drops it, having nothing to lower.
+        Type::Var(name) => unreachable!("`{name}` is a type variable, which only a typespec holds"),
+
         // An empty container has no element type of its own, so it is said.
         Type::Array(_) | Type::Dict(..) => {
             let empty = if matches!(ty, Type::Array(_)) {
@@ -1042,6 +1046,10 @@ fn ty_text(ty: &Type) -> String {
         Type::Optional(t) => format!("optional({})", ty_text(t)),
         Type::Array(t) => format!("array({})", ty_text(t)),
         Type::Dict(k, v) => format!("dict({}, {})", ty_text(k), ty_text(v)),
+        // A type variable is a function typespec's, and a typespec does not
+        // reach the core: desugaring drops it, having nothing to lower.
+        Type::Var(name) => unreachable!("`{name}` is a type variable, which only a typespec holds"),
+
         Type::Record(fields) => {
             // Sorted, as `ast::Type`'s own rendering sorts them: a record's
             // fields are a set in both languages.

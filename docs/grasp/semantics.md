@@ -219,7 +219,7 @@ match, inside a filter, and as an atom's argument.
   type, and `{name: v}` takes a bare string key. The second is sugar for the
   first, and the two may be mixed.
 - **`e.f`** reads a record field, and chains.
-- **Operators and calls** compute; the set is in [Builtins](#builtins), and
+- **Operators and calls** compute; the set is in [the standard library](#the-standard-library), and
   their precedence in [`syntax.md`](syntax.md#operator-groups).
 
 An empty `[]` or `{}` is a complete value with an open type — an empty array is
@@ -505,8 +505,8 @@ before the join graph, so everything downstream sees the smaller core.
 | `a ++ b` | `string:concat(a, b)` |
 | `{a: v}` | `{"a" => v}` |
 | `{"a": v}` | `{"a" => v}` |
-| `s.f` | `record:get(s, "f")` |
-| `s.a.b` | `record:get(record:get(s, "a"), "b")` |
+| `s.f` | `record:get(s, field: "f")` |
+| `s.a.b` | `record:get(record:get(s, field: "a"), field: "b")` |
 | `not e` in an expression | `boolean:not(e)` |
 
 The **patterns** stand for a binding plus the checks that make the pattern
@@ -515,14 +515,14 @@ like any other. Written in the shorthand, since that is how they are written.
 
 | written | means |
 |---|---|
-| `[x, y] := arr` | `array:length(arr) = 2`, `x := array:get(arr, 0)`, `x :: E`, and so on |
+| `[x, y] := arr` | `array:length(arr) = 2`, `x := array:at(arr, index: 0)`, `x :: E`, and so on |
 | `[x, y, *] := arr` | `array:length(arr) >= 2`, then the two bindings |
 | `[x, y, *r] := arr` | as above, and `r` is the elements from position 2 on |
-| `{a:} := d` | `dict:length(d) = 1`, `a := dict:get(d, "a")` |
-| `{a:, **} := d` | `a := dict:get(d, "a")` — no size check |
+| `{a:} := d` | `dict:length(d) = 1`, `a := dict:get(d, key: "a")` |
+| `{a:, **} := d` | `a := dict:get(d, key: "a")` — no size check |
 | `{a:, **e} := d` | as above, and `e := dict:without_keys(d, ["a"])` |
-| `record(a:) := s` | `a := record:get(s, "a")`; `s`'s type must have exactly that field |
-| `record(a:, **) := s` | `a := record:get(s, "a")` — extra fields allowed |
+| `record(a:) := s` | `a := record:get(s, field: "a")`; `s`'s type must have exactly that field |
+| `record(a:, **) := s` | `a := record:get(s, field: "a")` — extra fields allowed |
 | `record(a:, **e) := s` | as above, and `e` is a record of the fields left |
 
 `dict:get` has no answer for a key that is not there, so the row is not derived
@@ -610,6 +610,15 @@ division and every destructure obey. Absence is something to ask about,
 **The subject is positional and everything else is a keyword.**
 `array:slice(a, start: 0, stop: 3)`, `dict:without(d, keys: ks)`. A binary
 operation over one type stays positional: `string:concat(a, b)`.
+
+**Overloads are by shape, not by type.** A name may have several variants, and
+the one a call means is settled by [its shape](syntax.md#resolving-a-call) — the
+arguments given by position and the set of keyword names given — before any type
+is looked at. That is what lets `array:slice` be eight variants over `start:`
+`stop:` `step:` rather than one signature with a defaulting rule, and it is the
+other half of why namespacing keeps every name monomorphic: two functions over
+different types are two names, and two ways of calling one function are two
+shapes.
 
 **Operators are sugar for functions.** `a ++ b` is `string:concat(a, b)`, `not e`
 is `boolean:not(e)`, `r.f` is `record:get(r, field: "f")`, `d[k]` is

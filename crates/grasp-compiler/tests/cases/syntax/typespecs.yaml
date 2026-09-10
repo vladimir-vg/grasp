@@ -1,0 +1,254 @@
+# `fn_spec ::= callable_name "::" "function" NEWLINE (INDENT variant NEWLINE)+`
+#
+# A function's typespec is written in bulk — one block per name, however many
+# ways there are to call it — so that a second block for one name is plainly a
+# conflict rather than an addition. `docs/grasp/stdlib.grasp` is the standard
+# library written this way.
+
+- name: a function typespec
+  source: |
+    string:length :: function
+        (string) -> i64
+  expected_ok: true
+
+# "Subject positional, everything else keyword."
+- name: a keyword parameter
+  source: |
+    array:at :: function
+        (array(T), index: i64) -> T
+  expected_ok: true
+
+# The variants are the point of the block: `array:slice` is one name over
+# `start:` `stop:` `step:`, and a call picks a variant by its shape rather than
+# by a defaulting rule.
+- name: several variants under one name
+  source: |
+    array:slice :: function
+        (array(T)) -> array(T)
+        (array(T), stop: i64) -> array(T)
+        (array(T), start: i64) -> array(T)
+        (array(T), start: i64, stop: i64) -> array(T)
+        (array(T), step: i64) -> array(T)
+        (array(T), stop: i64, step: i64) -> array(T)
+        (array(T), start: i64, step: i64) -> array(T)
+        (array(T), start: i64, stop: i64, step: i64) -> array(T)
+  expected_ok: true
+
+- name: a type variable may appear anywhere a type may
+  source: |
+    dict:entries :: function
+        (dict(K, V)) -> array(record(key: K, value: V))
+  expected_ok: true
+
+- name: a variant may take no arguments at all
+  source: |
+    temporal:now :: function
+        () -> i64
+  expected_ok: true
+
+# A typespec has nothing below the parser: what the compiler knows about a
+# callable is `core::Builtin`, and a spec restates it. So a program may carry
+# one and still be an ordinary program.
+- name: a typespec beside a rule
+  source: |
+    string:length :: function
+        (string) -> i64
+
+    person :: relation(name: string)
+
+    long(name: s) <-
+        person(name: s)
+        string:length(s) > 3
+  expected_ok: true
+
+# -- type variables ---------------------------------------------------------
+
+# An initial capital is the whole of the rule, and it is why a variable needs no
+# declaration: no type's own name is spelled that way.
+- name: a type variable is not a type, and a relation has none
+  source: |
+    holder :: relation(v: T)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "`T` is a type variable, which is legal in a function typespec and nowhere else"
+
+- name: nor does a type assertion
+  source: |
+    src :: relation(x: i64)
+
+    out(v: x) <-
+        src(x: x)
+        x :: T
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "`T` is a type variable, which is legal in a function typespec and nowhere else"
+
+- name: a lowercase name that is not a type is still not a type
+  source: |
+    array:at :: function
+        (array(elem)) -> elem
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "`elem` is not a type"
+
+# -- conflicting typespecs --------------------------------------------------
+
+# "There shouldn't be conflicting typespecs for the same function or relation."
+# Resolution picks by shape, so two variants of one shape are two answers to one
+# call rather than an ambiguity to break by preferring the first.
+- name: two variants of one shape conflict
+  source: |
+    array:slice :: function
+        (array(T), start: i64) -> array(T)
+        (array(T), start: f64) -> array(T)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "`array:slice` already has a variant called `(_, start:)`"
+
+# Keywords are a set, so the order a variant writes them in is not part of its
+# identity — these two would answer the same call.
+- name: reordering the keywords does not make a second shape
+  source: |
+    array:slice :: function
+        (array(T), start: i64, stop: i64) -> array(T)
+        (array(T), stop: i64, start: i64) -> array(T)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "`array:slice` already has a variant called `(_, start:, stop:)`"
+
+- name: two typespecs for one function conflict
+  source: |
+    string:length :: function
+        (string) -> i64
+
+    string:length :: function
+        (string, from: i64) -> i64
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "`string:length` already has a function typespec, and a name has one"
+
+# The same rule over relations. Without it the later spec silently won, and the
+# program compiled against a declaration its author may not have meant.
+- name: two specs for one relation conflict
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge :: relation(src: string, dst: string)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "`edge` already has a relation typespec, and a name has one"
+
+- name: a spec and a rule for one relation are not a conflict
+  source: |
+    src :: relation(x: i64)
+    out :: relation(v: i64)
+
+    out(v: x) <- src(x: x)
+  expected_ok: true
+
+# -- what may be declared ---------------------------------------------------
+
+- name: grasp has no user-defined functions
+  source: |
+    double :: function
+        (i64) -> i64
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "`double` is under no reserved namespace, and grasp has no user-defined functions: a function typespec declares a name in the standard library"
+
+- name: nor under a namespace it invented
+  source: |
+    mine:double :: function
+        (i64) -> i64
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "`mine:double` is under no reserved namespace, and grasp has no user-defined functions: a function typespec declares a name in the standard library"
+
+- name: a typespec declares a relation or a function and nothing else
+  source: |
+    edge :: stream(src: i64)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "expected `relation` or `function`, found `stream`"
+
+- name: function is a reserved word
+  source: |
+    function(x: 1)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "`function` is a reserved word and cannot name a relation"
+
+# -- the block's shape ------------------------------------------------------
+
+- name: a typespec needs a variant
+  source: |
+    string:length :: function
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "a function typespec needs at least one variant, on its own line and indented past the name"
+
+- name: and the variant must be indented
+  source: |
+    string:length :: function
+    (string) -> i64
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "a function typespec needs at least one variant, on its own line and indented past the name"
+
+- name: one variant per line
+  source: |
+    string:length :: function
+        (string) -> i64 (string) -> string
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "unexpected token `(`; a typespec is one variant per line"
+
+- name: the variants line up
+  source: |
+    array:slice :: function
+        (array(T)) -> array(T)
+      (array(T), stop: i64) -> array(T)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "inconsistent indentation: this variant starts at column 3, but the first one starts at column 5"
+
+- name: a positional parameter cannot follow a named one
+  source: |
+    array:at :: function
+        (array(T), index: i64, i64) -> T
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "a positional parameter cannot follow a named one"
+
+- name: a parameter is named once
+  source: |
+    array:slice :: function
+        (array(T), start: i64, start: i64) -> array(T)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "duplicate parameter `start`"
+
+- name: a variant says what it gives back
+  source: |
+    string:length :: function
+        (string)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "unexpected end of input; expected `->`"

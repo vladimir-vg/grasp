@@ -27,7 +27,7 @@
 //! Everything else is the AST's, including [`crate::ast::Type`], which
 //! desugaring does not touch.
 
-use crate::ast::{Aggregator, BinOp, Lit, Type, UnOp};
+use crate::ast::{Aggregator, BinOp, Lit, Shape, Type, UnOp};
 use crate::diag::Span;
 
 pub type Program = Vec<Decl>;
@@ -378,6 +378,71 @@ impl Builtin {
         Builtin::RecordGet,
     ];
 
+    /// Every way of calling it.
+    ///
+    /// **Subject positional, everything else keyword** — `array:at(a, index: 2)`
+    /// rather than `array:at(a, 2)`, and `dict:without(d, keys: ks)`. A
+    /// same-type binary operation like `string:concat` keeps both arguments
+    /// positional, having no subject to distinguish.
+    ///
+    /// This is what a call is resolved against: desugaring matches the call's
+    /// [`Shape`] to one of these and reorders its arguments into the order the
+    /// signature writes, so that below the core a call is positional and every
+    /// pass after can index it.
+    ///
+    /// One signature each, for now. The list is here rather than as an arity
+    /// number because `array:slice` will have eight — the same name over
+    /// `start:` `stop:` `step:`, which is what makes a defaulting mechanism
+    /// unnecessary.
+    pub fn signatures(self) -> &'static [Signature] {
+        const UNARY: &[Signature] = &[Signature {
+            positional: 1,
+            keyword: &[],
+        }];
+        const BINARY: &[Signature] = &[Signature {
+            positional: 2,
+            keyword: &[],
+        }];
+        match self {
+            Builtin::BooleanNot
+            | Builtin::IntegerAbs
+            | Builtin::FloatAbs
+            | Builtin::FloatFloor
+            | Builtin::FloatCeil
+            | Builtin::FloatRound
+            | Builtin::StringLength
+            | Builtin::StringLower
+            | Builtin::StringUpper
+            | Builtin::StringTrim
+            | Builtin::ArrayLength
+            | Builtin::DictLength
+            | Builtin::DictKeys
+            | Builtin::DictEntries => UNARY,
+            Builtin::StringConcat => BINARY,
+            // The two desugaring writes and a program does not. Their arguments
+            // are positional because nothing spells them: emission builds the
+            // core call directly.
+            Builtin::ArrayDrop | Builtin::DictWithoutKeys => BINARY,
+            Builtin::ArrayAt => &[Signature {
+                positional: 1,
+                keyword: &["index"],
+            }],
+            Builtin::DictGet => &[Signature {
+                positional: 1,
+                keyword: &["key"],
+            }],
+            Builtin::RecordGet => &[Signature {
+                positional: 1,
+                keyword: &["field"],
+            }],
+        }
+    }
+
+    /// The signature a call of this shape resolves to, if any.
+    pub fn resolve(self, shape: &Shape) -> Option<&'static Signature> {
+        self.signatures().iter().find(|s| s.shape() == *shape)
+    }
+
     /// Whether it can fail to have an answer.
     ///
     /// `dict:get` on a key that is not there and `array:at` past the end have
@@ -450,5 +515,31 @@ impl Builtin {
             Builtin::DictWithoutKeys => None,
             Builtin::RecordGet => None,
         }
+    }
+}
+
+/// One way of calling a [`Builtin`]: how many arguments come by position, and
+/// which keywords follow, **in the order the core call holds them**.
+///
+/// The order is the one thing a [`Shape`] does not carry, and the only reason
+/// this type exists beside it: a shape says whether a call resolves here, and a
+/// signature says where each argument goes once it has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Signature {
+    pub positional: usize,
+    pub keyword: &'static [&'static str],
+}
+
+impl Signature {
+    pub fn shape(&self) -> Shape {
+        Shape::new(
+            self.positional,
+            self.keyword.iter().map(|k| (*k).to_string()),
+        )
+    }
+
+    /// How many arguments the core call this resolves to holds.
+    pub fn arity(&self) -> usize {
+        self.positional + self.keyword.len()
     }
 }

@@ -20,6 +20,7 @@ pub type Program = Vec<Decl>;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Decl {
     Spec(Spec),
+    Function(FnSpec),
     Fact(Fact),
     Rule(Rule),
 }
@@ -28,6 +29,7 @@ impl Decl {
     pub fn span(&self) -> Span {
         match self {
             Decl::Spec(s) => s.span,
+            Decl::Function(f) => f.span,
             Decl::Fact(f) => f.span,
             Decl::Rule(r) => r.span,
         }
@@ -39,6 +41,97 @@ pub struct Spec {
     pub relation: String,
     pub columns: Vec<(String, Type)>,
     pub span: Span,
+}
+
+/// `array:slice :: function` and the variants indented under it — one typespec
+/// per name, written in bulk.
+///
+/// grasp has **no user-defined functions**: this declares a name in the
+/// standard library, which is why the name must sit under a reserved
+/// namespace. `docs/grasp/stdlib.grasp` is the library written in this form.
+///
+/// It does not reach the core. What the compiler knows about a callable is
+/// [`crate::core::Builtin`], and a spec is a second statement of it rather than
+/// the source of it — so a spec in a program is inert, and the two are held
+/// together by a test rather than by the pipeline.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FnSpec {
+    pub name: String,
+    /// At least one, and no two of one [`Shape`].
+    pub variants: Vec<Variant>,
+    pub span: Span,
+}
+
+/// One way of calling a function: `(array(T), start: i64) -> array(T)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Variant {
+    pub positional: Vec<Type>,
+    pub keyword: Vec<(String, Type)>,
+    pub result: Type,
+    pub span: Span,
+}
+
+impl Variant {
+    pub fn shape(&self) -> Shape {
+        Shape::new(
+            self.positional.len(),
+            self.keyword.iter().map(|(name, _)| name.clone()),
+        )
+    }
+}
+
+/// What identifies one variant of a function: how many arguments come by
+/// position, and which keywords follow.
+///
+/// **Overloads are by shape, not by type** — Erlang's dispatch rather than
+/// C++'s. Resolution picks the one variant whose shape matches the call and
+/// only then checks the types, which is what lets `array:slice` carry eight
+/// variants over `start:` `stop:` `step:` without a defaulting mechanism, and
+/// what makes two variants of one shape a conflicting typespec rather than an
+/// ambiguity to resolve by preferring one.
+///
+/// Keywords are a **set**: `f(a, x: 1, y: 2)` and `f(a, y: 2, x: 1)` are one
+/// call. The order a variant writes them in is not part of its identity, and is
+/// kept only by [`crate::core::Signature`], which uses it to put the arguments
+/// in the order the core call holds them.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Shape {
+    pub positional: usize,
+    /// Sorted, so that two shapes compare as the sets they are.
+    pub keyword: Vec<String>,
+}
+
+impl Shape {
+    pub fn new(positional: usize, keyword: impl IntoIterator<Item = String>) -> Shape {
+        let mut keyword: Vec<String> = keyword.into_iter().collect();
+        keyword.sort();
+        Shape {
+            positional,
+            keyword,
+        }
+    }
+}
+
+impl fmt::Display for Shape {
+    /// `(_, start:, stop:)` — a `_` for each argument by position, and each
+    /// keyword by name. It is what a diagnostic quotes to say how a function is
+    /// called, so it shows the call rather than the types.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("(")?;
+        for i in 0..self.positional {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            f.write_str("_")?;
+        }
+        for (i, name) in self.keyword.iter().enumerate() {
+            if i > 0 || self.positional > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{name}:")?;
+        }
+        f.write_str(")")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -415,6 +508,7 @@ impl fmt::Display for Type {
             Type::F64 => f.write_str("f64"),
             Type::String => f.write_str("string"),
             Type::Json => f.write_str("json"),
+            Type::Var(name) => f.write_str(name),
             Type::Optional(t) => write!(f, "optional({t})"),
             Type::Array(t) => write!(f, "array({t})"),
             Type::Dict(k, v) => write!(f, "dict({k}, {v})"),
@@ -447,4 +541,11 @@ pub enum Type {
     Record(Vec<(String, Type)>),
     Array(Box<Type>),
     Dict(Box<Type>, Box<Type>),
+    /// `T` — a type variable, and the one thing here that is not a type.
+    ///
+    /// Legal in a [function typespec][`FnSpec`] and nowhere else: it says that
+    /// `array:at`'s result is the array's element type without naming one.
+    /// Nothing below the parser meets it, because a typespec does not reach the
+    /// core.
+    Var(String),
 }

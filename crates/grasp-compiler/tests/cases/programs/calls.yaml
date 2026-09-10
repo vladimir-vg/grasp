@@ -1,0 +1,119 @@
+# Which variant of a callable a call means — `syntax.md`, "Name resolution".
+#
+# **By shape, not by type**: the arguments given by position, and the *set* of
+# keyword names given. Erlang's dispatch rather than C++'s, so the answer is
+# settled before a type is looked at, and a call that matches no shape is
+# reported in the words of the call.
+#
+# "Subject positional, everything else keyword" is what the library's shapes
+# then are: `array:at(a, index: 2)`, not `array:at(a, 2)`.
+
+- name: the subject is positional and the rest is named
+  source: |
+    src :: relation(a: array(i64), i: i64)
+    src(a:, i:) <- input
+
+    out(v: v) <-
+        src(a: a, i: i)
+        v := array:at(a, index: i)
+
+  input:
+    - src:
+        - [1, {a: [10, 20, 30], i: 2}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: 30}]
+
+- name: a keyword argument is where the order stops mattering
+  source: |
+    src :: relation(d: dict(string, i64), r: record(a: i64))
+    src(d:, r:) <- input
+
+    out(v: v, w: w) <-
+        src(d: d, r: r)
+        v := dict:get(d, key: "a")
+        w := record:get(r, field: "a")
+
+  input:
+    - src:
+        - [1, {d: {"a": 7}, r: {a: 9}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: 7, w: 9}]
+
+# A shape that no variant has is the call being wrong, and the message says how
+# the function *is* called rather than complaining about an argument's type.
+- name: the subject's neighbours are not positional
+  source: |
+    src :: relation(a: array(i64))
+    src(a:) <- input
+
+    out(v: v) <-
+        src(a: a)
+        v := array:at(a, 2)
+  expected_diagnostics:
+    - severity: error
+      pass: desugar
+      message: "`array:at` is called `(_, index:)`, and this call is `(_, _)`"
+
+- name: nor is a dict key
+  source: |
+    src :: relation(d: dict(string, i64))
+    src(d:) <- input
+
+    out(v: v) <-
+        src(d: d)
+        v := dict:get(d, "a")
+  expected_diagnostics:
+    - severity: error
+      pass: desugar
+      message: "`dict:get` is called `(_, key:)`, and this call is `(_, _)`"
+
+# Arity is part of the shape, so too many arguments is the same objection said
+# the same way.
+- name: too many arguments is a shape that does not exist
+  source: |
+    src :: relation(x: i64)
+    src(x:) <- input
+
+    out(v: v) <-
+        src(x: x)
+        v := integer:abs(x, x)
+  expected_diagnostics:
+    - severity: error
+      pass: desugar
+      message: "`integer:abs` is called `(_)`, and this call is `(_, _)`"
+
+- name: and so is a keyword the function does not take
+  source: |
+    src :: relation(s: string)
+    src(s:) <- input
+
+    out(v: v) <-
+        src(s: s)
+        v := string:length(s, from: 2)
+  expected_diagnostics:
+    - severity: error
+      pass: desugar
+      message: "`string:length` is called `(_)`, and this call is `(_, from:)`"
+
+# A same-type binary operation has no subject to set apart, so both arguments
+# stay positional.
+- name: a binary operation keeps both arguments positional
+  source: |
+    src :: relation(a: string, b: string)
+    src(a:, b:) <- input
+
+    out(v: v) <-
+        src(a: a, b: b)
+        v := string:concat(a, b)
+
+  input:
+    - src:
+        - [1, {a: "ab", b: "cd"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: "abcd"}]

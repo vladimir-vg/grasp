@@ -170,7 +170,7 @@ design comes from. What is missing is missing on purpose.
   in the grammar depends on the production staying.
 
 - **A wider standard library.** The builtins available are the ones grasp-dbsp
-  provides, listed in [`semantics.md`](semantics.md#builtins). The namespaces for types that
+  provides, listed in [`semantics.md`](semantics.md#the-standard-library). The namespaces for types that
   do not exist yet — temporal, bytes, bits, cryptographic hashing — arrive with
   those types.
 

@@ -18,6 +18,7 @@
 use crate::ast::*;
 use crate::diag::{Diagnostic, Pass, Span};
 use crate::lex::{Tok, Token, lex};
+use std::collections::BTreeSet;
 
 // ---------------------------------------------------------------------------
 // Reserved names — `docs/grasp/syntax.md`, "Reserved words".
@@ -29,12 +30,19 @@ use crate::lex::{Tok, Token, lex};
 pub const KEYWORDS: &[&str] = &["not", "and", "or", "input", "true", "false", "NONE"];
 
 pub const TYPE_NAMES: &[&str] = &[
-    "boolean", "i64", "f64", "string", "json", "optional", "record", "array", "dict", "relation",
+    "boolean", "i64", "f64", "string", "json", "optional", "record", "array", "dict",
 ];
+
+/// The word after `::` that says what kind of thing is being declared. Neither
+/// is a type — `relation(…)` is not a value and a function is not one either —
+/// but both are reserved for the same reason a type name is: a relation called
+/// `function` would make `f :: function` two readings.
+pub const DECL_KINDS: &[&str] = &["relation", "function"];
 
 pub const AGGREGATORS: &[&str] = &["sum", "count", "min", "max", "avg"];
 
-/// The callables — `docs/grasp/semantics.md`, "Builtins". Not reserved as such:
+/// The callables — `docs/grasp/semantics.md`, "The standard library". Not
+/// reserved as such:
 /// a *column* may be called `length`. They are unavailable as relation names by
 /// the one-name rule, which is a different check.
 pub const BUILTINS: &[&str] = &[
@@ -82,6 +90,16 @@ fn is_identifier(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// Whether a name is a type variable: `T`, `K`, `V`.
+///
+/// An initial capital is the whole of the rule. Every type's own name is
+/// lowercase, so a variable needs no declaration to be told from one, and the
+/// `array(T)` in a typespec reads as it would in any other language.
+fn is_type_var(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_ascii_uppercase()) && chars.all(|c| c.is_ascii_alphanumeric())
+}
+
 /// Whether a name sits under one of the namespaces the language holds.
 ///
 /// Those hold callables and nothing else, which is what lets body-statement
@@ -92,7 +110,10 @@ pub fn in_reserved_namespace(name: &str) -> bool {
 }
 
 pub fn is_reserved(name: &str) -> bool {
-    KEYWORDS.contains(&name) || TYPE_NAMES.contains(&name) || AGGREGATORS.contains(&name)
+    KEYWORDS.contains(&name)
+        || TYPE_NAMES.contains(&name)
+        || DECL_KINDS.contains(&name)
+        || AGGREGATORS.contains(&name)
 }
 
 fn namespace_of(name: &str) -> Option<&str> {
@@ -231,17 +252,37 @@ impl<'a> Parser<'a> {
         while self.peek().is_some() {
             decls.push(self.decl()?);
         }
+        check_one_typespec_each(&decls)?;
         Ok(decls)
     }
 
     fn decl(&mut self) -> Result<Decl, Diagnostic> {
         let start = self.here();
         let (name, name_span) = self.expect_ident("a relation name")?;
-        self.check_relation_name(&name, name_span)?;
 
+        // `::` introduces a typespec, and the word after it says of what. The
+        // name is checked *after* that word rather than before, because the two
+        // kinds hold opposite rules: a relation may not be namespaced and a
+        // function must be.
         if self.at(&Tok::Annot) {
-            return Ok(Decl::Spec(self.spec(name, start)?));
+            self.bump();
+            let (kind, kind_span) = self.expect_ident("`relation` or `function`")?;
+            return match kind.as_str() {
+                "relation" => {
+                    self.check_relation_name(&name, name_span)?;
+                    Ok(Decl::Spec(self.spec(name, start)?))
+                }
+                "function" => {
+                    self.check_function_name(&name, name_span)?;
+                    Ok(Decl::Function(self.fn_spec(name, start)?))
+                }
+                _ => Err(self.error(
+                    kind_span,
+                    format!("expected `relation` or `function`, found `{kind}`"),
+                )),
+            };
         }
+        self.check_relation_name(&name, name_span)?;
 
         self.expect(&Tok::LParen, "`(` or `::`")?;
         // A head or a fact — neither may hold a wildcard.
@@ -323,6 +364,26 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// grasp has no user-defined functions: a function typespec declares a name
+    /// in the standard library, and the library lives under the held
+    /// namespaces. A bare name would also be one the [one-name rule][syntax]
+    /// cannot keep apart from a relation's.
+    ///
+    /// [syntax]: ../../../docs/grasp/syntax.md
+    fn check_function_name(&self, name: &str, span: Span) -> Result<(), Diagnostic> {
+        if in_reserved_namespace(name) {
+            return Ok(());
+        }
+        Err(self.error(
+            span,
+            format!(
+                "`{name}` is under no reserved namespace, and grasp has no \
+                 user-defined functions: a function typespec declares a name in \
+                 the standard library"
+            ),
+        ))
+    }
+
     fn check_column_name(&self, name: &str, span: Span) -> Result<(), Diagnostic> {
         if is_reserved(name) {
             return Err(self.error(
@@ -359,11 +420,6 @@ impl<'a> Parser<'a> {
     // -- spec ---------------------------------------------------------------
 
     fn spec(&mut self, relation: String, start: Span) -> Result<Spec, Diagnostic> {
-        self.expect(&Tok::Annot, "`::`")?;
-        let (kw, kw_span) = self.expect_ident("`relation`")?;
-        if kw != "relation" {
-            return Err(self.error(kw_span, format!("expected `relation`, found `{kw}`")));
-        }
         self.expect(&Tok::LParen, "`(`")?;
         let mut columns: Vec<(String, Type)> = Vec::new();
         let mut seen: Vec<(String, Span)> = Vec::new();
@@ -389,9 +445,132 @@ impl<'a> Parser<'a> {
         })
     }
 
+    // -- function typespecs -------------------------------------------------
+
+    /// The variants under `name :: function`, one per line and indented past
+    /// the name.
+    ///
+    /// Written in bulk — one block per name, however many ways there are to
+    /// call it — so that a function's typespec is in one place and a second
+    /// block for the same name is plainly a conflict rather than an addition.
+    /// The layout is a rule body's, and ends the same way: at the first line
+    /// that is not indented into it.
+    fn fn_spec(&mut self, name: String, start: Span) -> Result<FnSpec, Diagnostic> {
+        let indent = match self.peek() {
+            Some(t) if t.first_on_line && t.span.column > start.column => t.span.column,
+            _ => {
+                return Err(self.error(
+                    self.here(),
+                    "a function typespec needs at least one variant, on its own \
+                     line and indented past the name",
+                ));
+            }
+        };
+
+        let mut variants: Vec<Variant> = Vec::new();
+        while let Some(t) = self.peek() {
+            if !t.first_on_line {
+                return Err(self.error(
+                    t.span,
+                    format!(
+                        "unexpected token {}; a typespec is one variant per line",
+                        t.kind.describe()
+                    ),
+                ));
+            }
+            let column = t.span.column;
+            if column < indent {
+                if column > start.column {
+                    return Err(self.error(
+                        t.span,
+                        format!(
+                            "inconsistent indentation: this variant starts at column \
+                             {column}, but the first one starts at column {indent}"
+                        ),
+                    ));
+                }
+                break;
+            }
+            let variant = self.variant()?;
+            // "There shouldn't be conflicting typespecs for the same function."
+            // Resolution picks by shape, so two variants of one shape are two
+            // answers to one call rather than an ambiguity to break by
+            // preferring the first.
+            let shape = variant.shape();
+            if variants.iter().any(|v| v.shape() == shape) {
+                return Err(self.error(
+                    variant.span,
+                    format!("`{name}` already has a variant called `{shape}`"),
+                ));
+            }
+            variants.push(variant);
+        }
+
+        let span = start.to(variants.last().map(|v| v.span).unwrap_or(start));
+        Ok(FnSpec {
+            name,
+            variants,
+            span,
+        })
+    }
+
+    /// `variant ::= "(" [params] ")" "->" type`
+    fn variant(&mut self) -> Result<Variant, Diagnostic> {
+        let start = self.here();
+        self.expect(&Tok::LParen, "`(`")?;
+        let mut positional: Vec<Type> = Vec::new();
+        let mut keyword: Vec<(String, Type)> = Vec::new();
+        while !self.at(&Tok::RParen) {
+            // `index: i64` is named; `array(T)` is not. A type name is followed
+            // by `(` or by nothing, never by `:`, so one token of lookahead
+            // settles it — the same test a call's arguments use.
+            let named =
+                matches!(self.kind(), Some(Tok::Ident(_))) && self.kind_at(1) == Some(&Tok::Colon);
+            if named {
+                let (param, param_span) = self.expect_ident("a parameter name")?;
+                self.check_column_name(&param, param_span)?;
+                self.bump(); // `:`
+                if keyword.iter().any(|(k, _)| *k == param) {
+                    return Err(self.error(param_span, format!("duplicate parameter `{param}`")));
+                }
+                keyword.push((param, self.ty_of(true)?));
+            } else {
+                // "Subject positional, everything else keyword" — so a
+                // positional parameter after a named one would name a subject
+                // the keywords already passed.
+                if !keyword.is_empty() {
+                    return Err(self.error(
+                        self.here(),
+                        "a positional parameter cannot follow a named one",
+                    ));
+                }
+                positional.push(self.ty_of(true)?);
+            }
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+        }
+        self.expect(&Tok::RParen, "`)` or `,`")?;
+        self.expect(&Tok::Returns, "`->`")?;
+        let result = self.ty_of(true)?;
+        Ok(Variant {
+            positional,
+            keyword,
+            result,
+            span: start.to(self.previous_span()),
+        })
+    }
+
     // -- types --------------------------------------------------------------
 
     fn ty(&mut self) -> Result<Type, Diagnostic> {
+        self.ty_of(false)
+    }
+
+    /// `vars` is whether a type variable is legal here, which is only inside a
+    /// [function typespec][`Self::fn_spec`]: `T` in a relation's columns would
+    /// be a type nothing ever settles.
+    fn ty_of(&mut self, vars: bool) -> Result<Type, Diagnostic> {
         let (name, span) = self.expect_ident("a type")?;
         match name.as_str() {
             "boolean" => Ok(Type::Boolean),
@@ -401,21 +580,21 @@ impl<'a> Parser<'a> {
             "json" => Ok(Type::Json),
             "optional" => {
                 self.expect(&Tok::LParen, "`(`")?;
-                let inner = self.ty()?;
+                let inner = self.ty_of(vars)?;
                 self.expect(&Tok::RParen, "`)`")?;
                 Ok(Type::Optional(Box::new(inner)))
             }
             "array" => {
                 self.expect(&Tok::LParen, "`(`")?;
-                let inner = self.ty()?;
+                let inner = self.ty_of(vars)?;
                 self.expect(&Tok::RParen, "`)`")?;
                 Ok(Type::Array(Box::new(inner)))
             }
             "dict" => {
                 self.expect(&Tok::LParen, "`(`")?;
-                let key = self.ty()?;
+                let key = self.ty_of(vars)?;
                 self.expect(&Tok::Comma, "`,`")?;
-                let value = self.ty()?;
+                let value = self.ty_of(vars)?;
                 self.expect(&Tok::RParen, "`)`")?;
                 Ok(Type::Dict(Box::new(key), Box::new(value)))
             }
@@ -429,13 +608,28 @@ impl<'a> Parser<'a> {
                         return Err(self.error(field_span, format!("duplicate field `{field}`")));
                     }
                     self.expect(&Tok::Colon, "`:`")?;
-                    fields.push((field, self.ty()?));
+                    fields.push((field, self.ty_of(vars)?));
                     if !self.eat(&Tok::Comma) {
                         break;
                     }
                 }
                 self.expect(&Tok::RParen, "`)` or `,`")?;
                 Ok(Type::Record(fields))
+            }
+            // `T` — a type variable. Uppercase is the whole of the rule: a
+            // type's name is lowercase, so nothing has to be declared before it
+            // is used.
+            _ if is_type_var(&name) => {
+                if !vars {
+                    return Err(self.error(
+                        span,
+                        format!(
+                            "`{name}` is a type variable, which is legal in a \
+                             function typespec and nowhere else"
+                        ),
+                    ));
+                }
+                Ok(Type::Var(name))
             }
             _ => Err(self.error(span, format!("`{name}` is not a type"))),
         }
@@ -1464,6 +1658,36 @@ enum Position {
 
 const WILDCARD_MISUSE: &str = "the wildcard `_` binds nothing and cannot be used here; it is legal only \
      in an atom's argument position";
+
+/// "There shouldn't be conflicting typespecs for the same function or
+/// relation."
+///
+/// A second typespec for one name is not a redefinition to merge or a later one
+/// to prefer: it is two answers to one question, and this is the only place
+/// that holds both. Without it `infer`'s spec table keeps whichever came last,
+/// and the program compiles against a declaration its author may not have meant.
+///
+/// A relation's name may not be namespaced and a function's must be, so the two
+/// kinds cannot collide with each other — one table over both is enough, and
+/// the kind is carried only so the message can name it.
+fn check_one_typespec_each(decls: &[Decl]) -> Result<(), Diagnostic> {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for decl in decls {
+        let (name, kind, span) = match decl {
+            Decl::Spec(s) => (s.relation.as_str(), "relation", s.span),
+            Decl::Function(f) => (f.name.as_str(), "function", f.span),
+            Decl::Fact(_) | Decl::Rule(_) => continue,
+        };
+        if !seen.insert(name) {
+            return Err(Diagnostic::error(
+                Pass::Parse,
+                span,
+                format!("`{name}` already has a {kind} typespec, and a name has one"),
+            ));
+        }
+    }
+    Ok(())
+}
 
 fn check_duplicate_columns(args: &[KvArg]) -> Result<(), Diagnostic> {
     for (i, a) in args.iter().enumerate() {

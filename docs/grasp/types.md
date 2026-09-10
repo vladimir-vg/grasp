@@ -20,6 +20,12 @@ is in [`syntax.md`](syntax.md#grammar).
 | `dict(K,V)` | a key-value map, `K` a scalar |
 | `json` | a document of any shape |
 
+A **type variable** — `T`, `K`, `V` — is not in this table, being not a type but
+a stand-in for one. It is legal in a
+[function typespec](syntax.md#typespecs) and nowhere else: no value ever has
+that type, and nothing here — identity, assignability, narrowing — has anything
+to say about one.
+
 That is the whole vocabulary, and it is exactly what
 [grasp-dbsp](../grasp-dbsp/language.md#value-types) can carry. The wider set the
 Erlang implementation offers — `dynamic`, the narrower integers, `f32`,

@@ -17,9 +17,11 @@ of them knows what the backend is.
 Two passes run first, and neither is described here.
 
 - **Desugaring** rewrites the surface forms that stand for others — `x:`, `.f`,
-  `++`, and the destructure patterns with their size checks. See
-  [`semantics.md`](semantics.md#desugaring). Everything below sees the smaller
-  core.
+  `++`, and the destructure patterns with their size checks — and
+  [resolves each call](syntax.md#resolving-a-call) to one variant of one
+  callable, which is what puts its arguments in order: below here a call is
+  positional. See [`semantics.md`](semantics.md#desugaring). Everything below
+  sees the smaller core.
 - **Type inference** gives every variable and every relation column a type, and
   performs the safety check. See [`inference.md`](inference.md). Types are
   erased afterwards, so nothing below carries one.

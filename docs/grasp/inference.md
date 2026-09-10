@@ -259,7 +259,7 @@ open type, resolved by context or reported.
 
 **Builtin overloads** resolve against the now-concrete operand types. Each
 builtin has a fixed set of signatures — see
-[`semantics.md`](semantics.md#builtins) — and exactly one must match.
+[`semantics.md`](semantics.md#the-standard-library) — and exactly one must match.
 
 > ``no version of `length` takes `i64` ``
 

@@ -114,7 +114,7 @@
 
     out(v: v) <-
         src(d: d, k: k)
-        v := dict:get(d, k)
+        v := dict:get(d, key: k)
         v :: i64
 
 # The written halves of `.` and `not` keep their names, which is what lets
@@ -127,7 +127,7 @@
     out(v: v, n: n) <-
         src(r: r, b: b)
         n := boolean:not(b)
-        v := record:get(r, "a")
+        v := record:get(r, field: "a")
 
   expected_ok: true
 

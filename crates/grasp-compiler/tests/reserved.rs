@@ -10,7 +10,7 @@
 //! `docs/grasp-dbsp/language.md`.
 
 use grasp_compiler::parse::{
-    AGGREGATORS, BUILTINS, KEYWORDS, RESERVED_NAMESPACES, TYPE_NAMES, is_reserved,
+    AGGREGATORS, BUILTINS, DECL_KINDS, KEYWORDS, RESERVED_NAMESPACES, TYPE_NAMES, is_reserved,
 };
 use std::path::{Path, PathBuf};
 
@@ -87,6 +87,11 @@ fn the_reserved_words_match_syntax_md() {
         TYPE_NAMES,
     );
     assert_same(
+        "declaration kinds",
+        &backticked(bullet(words, "declaration kinds")),
+        DECL_KINDS,
+    );
+    assert_same(
         "aggregators",
         &backticked(bullet(words, "aggregators")),
         AGGREGATORS,
@@ -147,7 +152,12 @@ fn builtins_are_not_reserved_words() {
 
 #[test]
 fn every_reserved_word_is_rejected_as_a_relation_name() {
-    for word in KEYWORDS.iter().chain(TYPE_NAMES).chain(AGGREGATORS) {
+    for word in KEYWORDS
+        .iter()
+        .chain(TYPE_NAMES)
+        .chain(DECL_KINDS)
+        .chain(AGGREGATORS)
+    {
         let source = format!("{word}(x: 1)\n");
         assert!(
             grasp_compiler::parse::parse(&source).is_err(),
