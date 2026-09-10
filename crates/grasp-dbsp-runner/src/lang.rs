@@ -274,6 +274,7 @@ const TYPE_NAMES: &[&str] = &[
     "time",
     "timestamp",
     "interval",
+    "bytes",
     "optional",
     "record",
     "array",
@@ -1052,6 +1053,7 @@ impl Parser {
             "time" => Ok(TypeDesc::Time),
             "timestamp" => Ok(TypeDesc::Timestamp),
             "interval" => Ok(TypeDesc::Interval),
+            "bytes" => Ok(TypeDesc::Bytes),
             "array" => {
                 self.expect(&Tok::LParen, "`(` after array")?;
                 let elem = self.value_type()?;

@@ -106,6 +106,25 @@ pub enum Builtin {
     Microsecond,
     /// `make_interval(micros)` — a span of time. Total: every integer is one.
     MakeInterval,
+    /// `octet_length(b)` — how many bytes.
+    OctetLength,
+    /// `bytes_concat(a, b)` — one after the other.
+    BytesConcat,
+    /// `bytes_and(a, b)`, `bytes_or`, `bytes_xor` — bytewise, and **`optional`**:
+    /// two payloads of different lengths have no answer, and `ByteArray`'s own
+    /// operations panic there rather than saying so.
+    BytesAnd,
+    BytesOr,
+    BytesXor,
+    /// `to_base64(b)` / `from_base64(s)`, `to_hex(b)` / `from_hex(s)`,
+    /// `to_utf8(b)` / `from_utf8(s)` — text both ways. Each reading is
+    /// `optional`, since not every string is one.
+    ToBase64,
+    FromBase64,
+    ToHex,
+    FromHex,
+    ToUtf8,
+    FromUtf8,
     /// `total_days(iv)` … `total_microseconds(iv)` — the span in whole units of
     /// one size. Named apart from the components because they answer a
     /// different question: `minute(14:30)` is 30, `total_minutes(<100 hours>)`
@@ -155,6 +174,17 @@ impl Builtin {
             "total_minutes" => Builtin::TotalMinutes,
             "total_seconds" => Builtin::TotalSeconds,
             "total_microseconds" => Builtin::TotalMicroseconds,
+            "octet_length" => Builtin::OctetLength,
+            "bytes_concat" => Builtin::BytesConcat,
+            "bytes_and" => Builtin::BytesAnd,
+            "bytes_or" => Builtin::BytesOr,
+            "bytes_xor" => Builtin::BytesXor,
+            "to_base64" => Builtin::ToBase64,
+            "from_base64" => Builtin::FromBase64,
+            "to_hex" => Builtin::ToHex,
+            "from_hex" => Builtin::FromHex,
+            "to_utf8" => Builtin::ToUtf8,
+            "from_utf8" => Builtin::FromUtf8,
             _ => return None,
         })
     }
@@ -196,6 +226,17 @@ impl Builtin {
         "total_minutes",
         "total_seconds",
         "total_microseconds",
+        "octet_length",
+        "bytes_concat",
+        "bytes_and",
+        "bytes_or",
+        "bytes_xor",
+        "to_base64",
+        "from_base64",
+        "to_hex",
+        "from_hex",
+        "to_utf8",
+        "from_utf8",
     ];
 
     /// Number of arguments, or `None` if variadic.
@@ -207,7 +248,11 @@ impl Builtin {
             | Builtin::Concat
             | Builtin::Get
             | Builtin::Contains
-            | Builtin::MakeTimestamp => 2,
+            | Builtin::MakeTimestamp
+            | Builtin::BytesConcat
+            | Builtin::BytesAnd
+            | Builtin::BytesOr
+            | Builtin::BytesXor => 2,
             _ => 1,
         })
     }
@@ -564,6 +609,8 @@ fn compare(l: &DynValue, r: &DynValue) -> Option<std::cmp::Ordering> {
         (Timestamp(a), Timestamp(b)) => Some(a.cmp(b)),
         // One integer, so the order is the span it names.
         (Interval(a), Interval(b)) => Some(a.cmp(b)),
+        // Lexicographic, which is the order the payload already has.
+        (Bytes(a), Bytes(b)) => Some(a.cmp(b)),
         _ => Option::None,
     }
 }
@@ -764,6 +811,14 @@ fn from_json(fv: &FlatVariant, ty: &TypeDesc) -> Option<DynValue> {
                 .map(|i| from_json(&FlatVariant::from(i), elem))
                 .collect::<Option<Vec<_>>>()?,
         ),
+        // The same object the codec writes, read from the other side.
+        (Variant::Map(entries), TypeDesc::Bytes) => {
+            let text = entries.iter().find_map(|(k, v)| match (k, v) {
+                (Variant::String(k), Variant::String(v)) if k.str() == "base64" => Some(v.str()),
+                _ => Option::None,
+            })?;
+            crate::value::parse_base64(text)?
+        }
         // A document's object keys are strings, and the dict's key type says
         // what to read them as — the same pairing the JSON codec uses.
         (Variant::Map(entries), TypeDesc::Dict(kt, vt)) => DynValue::Dict(
@@ -1048,6 +1103,67 @@ fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValu
                 _ => feldera_sqllib::extract_microsecond_Time(time) % 1_000_000,
             })
         }
+        Builtin::OctetLength => match &vals[0] {
+            DynValue::Bytes(b) => DynValue::I64(b.length() as i64),
+            _ => DynValue::None,
+        },
+        Builtin::ToBase64 => match &vals[0] {
+            DynValue::Bytes(b) => DynValue::str(&crate::value::to_base64(b.as_slice())),
+            _ => DynValue::None,
+        },
+        Builtin::ToHex => match &vals[0] {
+            DynValue::Bytes(b) => DynValue::String(
+                b.as_slice()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect(),
+            ),
+            _ => DynValue::None,
+        },
+        Builtin::ToUtf8 => match &vals[0] {
+            DynValue::Bytes(b) => match std::str::from_utf8(b.as_slice()) {
+                Ok(s) => DynValue::str(s),
+                Err(_) => DynValue::None,
+            },
+            _ => DynValue::None,
+        },
+        Builtin::FromBase64 => match as_str(&vals[0]) {
+            Some(s) => crate::value::parse_base64(s).unwrap_or(DynValue::None),
+            _ => DynValue::None,
+        },
+        Builtin::FromHex => match as_str(&vals[0]) {
+            Some(s) if s.len() % 2 == 0 => {
+                let bytes: Option<Vec<u8>> = (0..s.len() / 2)
+                    .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok())
+                    .collect();
+                match bytes {
+                    Some(b) => DynValue::Bytes(feldera_sqllib::ByteArray::from_vec(b)),
+                    _ => DynValue::None,
+                }
+            }
+            _ => DynValue::None,
+        },
+        Builtin::FromUtf8 => match as_str(&vals[0]) {
+            Some(s) => DynValue::Bytes(feldera_sqllib::ByteArray::new(s.as_bytes())),
+            _ => DynValue::None,
+        },
+        Builtin::BytesConcat => match (&vals[0], &vals[1]) {
+            (DynValue::Bytes(a), DynValue::Bytes(b)) => DynValue::Bytes(a.concat(b)),
+            _ => DynValue::None,
+        },
+        // Checked here rather than left to `ByteArray`, whose `and`/`or`/`xor`
+        // panic on a length mismatch. Two payloads of different lengths have no
+        // bytewise answer, and this is how the language says so.
+        Builtin::BytesAnd | Builtin::BytesOr | Builtin::BytesXor => match (&vals[0], &vals[1]) {
+            (DynValue::Bytes(a), DynValue::Bytes(b)) if a.length() == b.length() => {
+                DynValue::Bytes(match f {
+                    Builtin::BytesAnd => a.and(b),
+                    Builtin::BytesOr => a.or(b),
+                    _ => a.xor(b),
+                })
+            }
+            _ => DynValue::None,
+        },
         Builtin::MakeInterval => match &vals[0] {
             DynValue::I64(n) => {
                 DynValue::Interval(feldera_sqllib::ShortInterval::from_microseconds(*n))

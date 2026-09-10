@@ -41,6 +41,10 @@ feldera-macros = { path = "vendor/feldera/crates/feldera-macros" }
 # includes `size_32`, `dbsp` enables `size_64`, and rkyv rejects both at once.
 # This matches how the Feldera workspace declares it.
 rkyv = { version = "0.7.45", default-features = false }
+# The wire form of `bytes`. Not a trait-implementing crate, so the version need
+# not match `dbsp`'s the way the ones above must; it matches the Feldera
+# workspace's pin because there is no reason to differ.
+base64 = "0.22.1"
 size-of = { version = "0.1.7", features = ["time-std", "ordered-float"], package = "feldera-size-of" }
 # The hash behind a node's content id, which is a `persistent_id` and so must
 # be stable across builds and processes — the same requirement, and the same

@@ -86,7 +86,7 @@ implicit numeric promotion deleted, both to satisfy the third and fifth.
   grammar at all.
 - The type system described in [`language.md`](language.md) (batch types and
   value types). The value vocabulary is `bool`, `i64`, `f64`, `string`,
-  `date`, `time`, `timestamp`, `interval`, `optional(T)`, `record(...)`,
+  `bytes`, `date`, `time`, `timestamp`, `interval`, `optional(T)`, `record(...)`,
   `array(T)`, `dict(K,V)` and `json`. A dict's entries are sorted and
   deduplicated by construction, and its keys are the scalars — the ones with a
   JSON object-key spelling.
@@ -130,14 +130,15 @@ become an output — by declared name, or by content id for a node that has none
   `row_number`, `lag`, `asof_join`, `star_join`. All exist in `dbsp`; none are
   implemented.
 - **The rest of the value vocabulary.** The other integer widths and `f32`; and
-  the Feldera `sql.*` types still absent — `ByteArray`, `SqlDecimal`, `Uuid`.
+  the Feldera `sql.*` types still absent — `SqlDecimal` and `Uuid`.
   Shallow but wide: each needs a `DynValue` variant, a `TypeDesc` variant, a
   parser name, JSON coding and an ordering that upholds the invariants in
   [`mapping.md`](mapping.md), and the decimal type additionally needs
   `SqlSerdeConfig` for its JSON format.
 
   The temporal types have landed — `date`, `time`, `timestamp` and `interval`,
-  on `Date`, `Time`, `Timestamp` and `ShortInterval`. Feldera's `TimestampTz`
+  on `Date`, `Time`, `Timestamp` and `ShortInterval` — and `bytes` on
+  `ByteArray`. Feldera's `TimestampTz`
   and `LongInterval` are **not** wanted: the first stores exactly what
   `Timestamp` does and differs only in printing, and the second is months, which
   [`language.md`](language.md) declines to measure.

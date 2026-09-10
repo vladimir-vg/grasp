@@ -77,6 +77,16 @@ pub fn encode_value(v: &DynValue, ty: &TypeDesc) -> JResult<J> {
             v.dict_key_string()
                 .expect("a temporal value has a written form"),
         ),
+        // An object rather than a string, so a second encoding can join it later
+        // and what a payload holds is written in the payload.
+        (DynValue::Bytes(b), TypeDesc::Bytes) => {
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "base64".to_string(),
+                J::String(crate::value::to_base64(b.as_slice())),
+            );
+            J::Object(obj)
+        }
         (DynValue::Record(fields), TypeDesc::Record(schema)) => {
             if fields.len() != schema.len() {
                 return bad(format!(
@@ -152,6 +162,25 @@ pub fn decode_value(j: &J, ty: &TypeDesc) -> JResult<DynValue> {
         // A temporal value travels as a string, in the one spelling its type
         // reads back — the same round trip a dict key rests on, and the same
         // function on both sides of it.
+        // An object rather than a string, so that a second encoding can join it
+        // without the old form changing meaning — and so that what a payload
+        // holds is written in the payload.
+        TypeDesc::Bytes => {
+            let text = j
+                .as_object()
+                .filter(|o| o.len() == 1)
+                .and_then(|o| o.get("base64"))
+                .and_then(|v| v.as_str());
+            let Some(text) = text else {
+                return bad(format!(
+                    "expected a `bytes` as `{{\"base64\": \"…\"}}`, found `{j}`"
+                ));
+            };
+            match crate::value::parse_base64(text) {
+                Some(v) => v,
+                None => return bad(format!("`{text}` is not base64")),
+            }
+        }
         TypeDesc::Date | TypeDesc::Time | TypeDesc::Timestamp | TypeDesc::Interval => {
             let Some(s) = j.as_str() else {
                 return bad(format!("expected a `{ty}` as a string, found `{j}`"));
@@ -267,6 +296,7 @@ fn type_key_name(ty: &TypeDesc) -> &'static str {
         TypeDesc::Time => "time",
         TypeDesc::Timestamp => "timestamp",
         TypeDesc::Interval => "interval",
+        TypeDesc::Bytes => "bytes",
         _ => "",
     }
 }

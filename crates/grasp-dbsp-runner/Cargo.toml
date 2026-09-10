@@ -9,6 +9,7 @@ edition = "2024"
 dbsp = { workspace = true }
 feldera-sqllib = { workspace = true }
 feldera-macros = { workspace = true }
+base64 = { workspace = true }
 rkyv = { workspace = true }
 size-of = { workspace = true }
 xxhash-rust = { workspace = true }

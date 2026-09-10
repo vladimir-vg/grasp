@@ -83,7 +83,7 @@ language's. [`mapping.md`](mapping.md) records which Rust types these become.
 ```
 value_type := scalar | record_type | array_type | dict_type | "json"
 
-scalar      := bool | i64 | f64 | string | temporal
+scalar      := bool | i64 | f64 | string | bytes | temporal
                  | optional "(" value_type ")"
 temporal    := date | time | timestamp | interval
 
@@ -92,7 +92,7 @@ field       := FIELD_NAME ":" value_type
 
 array_type  := "array" "(" value_type ")"
 dict_type   := "dict" "(" key_type "," value_type ")"
-key_type    := "bool" | "i64" | "f64" | "string"
+key_type    := "bool" | "i64" | "f64" | "string" | "bytes"
                  | "date" | "time" | "timestamp" | "interval"
 ```
 
@@ -109,6 +109,20 @@ that would be genuinely distinct.
 
 **Absence is `optional(T)`.** There is no separate nullable flag, and an
 `optional` never wraps another.
+
+**`bytes` is binary data of any length**, and a scalar: it orders
+lexicographically, so `min` folds it and it may key a dict. There is no
+bit-granular type beside it and no fixed-size one.
+
+It travels as an **object** — `{"base64": "SGVsbG8="}` — rather than as a bare
+string, so a second encoding can join it later without the old form changing
+meaning. As a dict *key* it is the string `"base64:SGVsbG8="`, tagged the same
+way: a key is a string where a value is an object, which is already true of an
+`i64` (`1` as a value, `"1"` as a key).
+
+`bytes_and`, `bytes_or` and `bytes_xor` are **`optional`**: two payloads of
+different lengths have no bytewise answer. `ByteArray`'s own operations panic
+there, which is why these check rather than delegate.
 
 **The temporal types are `date`, `time` and `timestamp`**, and they are scalars:
 each orders as the instant it names, so `<` means what a reader expects, `min`
@@ -640,6 +654,13 @@ above and with each other.
 | `hour` / `minute` / `second` / `microsecond` | `time \| timestamp → i64` | a time's components |
 | `make_interval` | `i64 → interval` | microseconds |
 | `total_days` … `total_microseconds` | `interval → i64` | the span in whole units of one size |
+| `octet_length` | `bytes → i64` | how many bytes |
+| `bytes_concat` | `bytes × bytes → bytes` | one after the other |
+| `bytes_and` / `bytes_or` / `bytes_xor` | `bytes × bytes → optional(bytes)` | bytewise; `NONE` on a length mismatch |
+| `to_base64` / `to_hex` | `bytes → string` | every payload has both |
+| `to_utf8` | `bytes → optional(string)` | not every payload is text |
+| `from_base64` / `from_hex` | `string → optional(bytes)` | not every string is one |
+| `from_utf8` | `string → bytes` | every string is |
 
 Every builtin but `coalesce` and `slice` rejects an `optional` argument, for the
 reason under [Absence](#absence). Those two inspect absence rather than being

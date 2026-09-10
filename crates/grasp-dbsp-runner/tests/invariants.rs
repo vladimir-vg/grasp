@@ -225,6 +225,7 @@ fn any_type() -> impl Strategy<Value = TypeDesc> {
         Just(TypeDesc::Time),
         Just(TypeDesc::Timestamp),
         Just(TypeDesc::Interval),
+        Just(TypeDesc::Bytes),
     ]
 }
 
@@ -283,6 +284,9 @@ fn value_of(ty: TypeDesc) -> BoxedStrategy<DynValue> {
             .boxed(),
         // Bounded by what `Display` can write: `Timestamp` prints a calendar
         // date, and the parser reads years 1..=9999 back.
+        TypeDesc::Bytes => prop::collection::vec(any::<u8>(), 0..8)
+            .prop_map(|b| DynValue::Bytes(feldera_sqllib::ByteArray::from_vec(b)))
+            .boxed(),
         // Bounded well inside `i64`, so that the sum in an addition test cannot
         // overflow — the round trip itself holds for any value.
         TypeDesc::Interval => (-1_000_000_000_000_000i64..=1_000_000_000_000_000)

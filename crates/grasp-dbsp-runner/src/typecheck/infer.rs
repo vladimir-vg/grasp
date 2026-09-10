@@ -802,6 +802,8 @@ fn extractable(t: &TypeDesc) -> bool {
         // one spelling its own `Display` writes — so extracting one is the same
         // operation a dict key already is.
         TypeDesc::Date | TypeDesc::Time | TypeDesc::Timestamp | TypeDesc::Interval => true,
+        // A document holds it as the same object the codec writes.
+        TypeDesc::Bytes => true,
         TypeDesc::Record(fields) => fields.iter().all(|(_, f)| extractable(f.non_null())),
         TypeDesc::Array(elem) => extractable(elem.non_null()),
         // A document's object keys are strings, and a dict key parses from one,
@@ -1359,6 +1361,55 @@ fn infer_builtin(
                 pin(&mut exprs[i], &want[i]);
             }
             Ty::Known(TypeDesc::Timestamp)
+        }
+        Builtin::OctetLength | Builtin::ToBase64 | Builtin::ToHex | Builtin::ToUtf8 => {
+            definite(&args[0], name, span)?;
+            let t = args[0].settle().expect("definite() rejected the none case");
+            if t.non_null() != &TypeDesc::Bytes {
+                return err(span, format!("`{name}` reads `bytes`, found `{t}`"));
+            }
+            pin(&mut exprs[0], &TypeDesc::Bytes);
+            match b {
+                Builtin::OctetLength => Ty::Known(TypeDesc::I64),
+                // Not every payload is text, so reading one out may have no
+                // answer. The other two always do — every payload has a
+                // spelling — which is why only this one is `optional`.
+                Builtin::ToUtf8 => Ty::Known(optional(TypeDesc::String)),
+                _ => Ty::Known(TypeDesc::String),
+            }
+        }
+        Builtin::FromBase64 | Builtin::FromHex | Builtin::FromUtf8 => {
+            definite(&args[0], name, span)?;
+            let t = args[0].settle().expect("definite() rejected the none case");
+            if t.non_null() != &TypeDesc::String {
+                return err(span, format!("`{name}` reads a `string`, found `{t}`"));
+            }
+            pin(&mut exprs[0], &TypeDesc::String);
+            match b {
+                // Every string is UTF-8 here, so this one cannot fail.
+                Builtin::FromUtf8 => Ty::Known(TypeDesc::Bytes),
+                _ => Ty::Known(optional(TypeDesc::Bytes)),
+            }
+        }
+        Builtin::BytesConcat | Builtin::BytesAnd | Builtin::BytesOr | Builtin::BytesXor => {
+            for (i, arg) in args.iter().enumerate() {
+                definite(arg, name, span)?;
+                let t = arg.settle().expect("definite() rejected the none case");
+                if t.non_null() != &TypeDesc::Bytes {
+                    return err(
+                        span,
+                        format!("`{name}` takes two `bytes`, but argument {i} is `{t}`"),
+                    );
+                }
+                pin(&mut exprs[i], &TypeDesc::Bytes);
+            }
+            match b {
+                // Bytewise, so two payloads of different lengths have no
+                // answer. `ByteArray`'s own operations panic there; this says
+                // so instead.
+                Builtin::BytesConcat => Ty::Known(TypeDesc::Bytes),
+                _ => Ty::Known(optional(TypeDesc::Bytes)),
+            }
         }
         Builtin::MakeInterval => {
             definite(&args[0], name, span)?;

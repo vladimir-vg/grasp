@@ -1,0 +1,214 @@
+# `bytes` — binary data, any length.
+#
+# A scalar like the rest: it orders lexicographically, `min` folds it, and it may
+# key a dict. There is no bit-granular type beside it and no fixed-size one; a
+# `bytes` is a `bytes`.
+#
+# On the wire it is an **object**, `{"base64": "…"}`, so that a second encoding
+# can join it later without the old form changing meaning. As a dict *key* it is
+# the string `"base64:…"`, tagged the same way — a key is a string where a value
+# is an object, which is already true of an `i64`.
+
+- name: bytes travel as a tagged object
+  source: |
+    t := input("t")
+    t :: zset(record(b: bytes))
+
+    out := map(t, function((r) -> record(b: r.b, n: octet_length(r.b))))
+
+  input:
+    - t:
+        - [1, {b: {base64: "SGVsbG8="}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {b: {base64: "SGVsbG8="}, n: 5}]
+
+- name: and are read from one
+  source: |
+    t := input("t")
+    t :: zset(record(b: bytes))
+
+    out := map(t, function((r) -> record(text: to_utf8(r.b))))
+
+  input:
+    - t:
+        - [1, {b: {base64: "SGVsbG8="}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {text: "Hello"}]
+
+- name: an empty payload is still a payload
+  source: |
+    t := input("t")
+    t :: zset(record(b: bytes))
+
+    out := map(t, function((r) -> record(n: octet_length(r.b))))
+
+  input:
+    - t:
+        - [1, {b: {base64: ""}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {n: 0}]
+
+# -- text, both ways ----------------------------------------------------------
+
+- name: three encodings, and back
+  source: |
+    t := input("t")
+    t :: zset(record(s: string))
+
+    made := map(t, function((r) -> record(b: from_utf8(r.s))))
+    out := map(made, function((r) -> record(
+        b64: to_base64(r.b), hex: to_hex(r.b), text: to_utf8(r.b))))
+
+  input:
+    - t:
+        - [1, {s: "Hello"}]
+
+  expected_exact_output:
+    - made:
+        - [1, {b: {base64: "SGVsbG8="}}]
+      out:
+        - [1, {b64: "SGVsbG8=", hex: "48656c6c6f", text: "Hello"}]
+
+# Reading text in may fail; writing it out always works, since every payload has
+# a base64 and a hex spelling. Only `to_utf8` is optional in that direction.
+- name: a reading that is not one derives nothing
+  source: |
+    t := input("t")
+    t :: zset(record(s: string))
+
+    out := map(t, function((r) -> record(
+        s: r.s, b64: from_base64(r.s), hex: from_hex(r.s))))
+
+  input:
+    - t:
+        - [1, {s: "SGVsbG8="}]
+        - [1, {s: "48656c6c6f"}]
+        - [1, {s: "not base64!"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {s: "SGVsbG8=", b64: {base64: "SGVsbG8="}, hex: null}]
+        # Eleven characters is not a base64 length, so that reading has no answer.
+        - [1, {s: "48656c6c6f", b64: null, hex: {base64: "SGVsbG8="}}]
+        - [1, {s: "not base64!", b64: null, hex: null}]
+
+- name: bytes that are not text
+  source: |
+    t := input("t")
+    t :: zset(record(b: bytes))
+
+    out := map(t, function((r) -> record(text: to_utf8(r.b))))
+
+  input:
+    - t:
+        - [1, {b: {base64: "/w=="}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {text: null}]
+
+# -- bytewise -----------------------------------------------------------------
+#
+# `optional`, because two payloads of different lengths have no bytewise answer.
+# `ByteArray`'s own `and`/`or`/`xor` panic there; this says so instead.
+
+- name: bytewise and, or, xor
+  source: |
+    t := input("t")
+    t :: zset(record(a: bytes, b: bytes))
+
+    out := map(t, function((r) -> record(
+        and: bytes_and(r.a, r.b), or: bytes_or(r.a, r.b), xor: bytes_xor(r.a, r.b))))
+
+  input:
+    - t:
+        - [1, {a: {base64: "8A=="}, b: {base64: "zw=="}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {and: {base64: "wA=="}, or: {base64: "/w=="}, xor: {base64: "Pw=="}}]
+
+- name: different lengths have no bytewise answer
+  source: |
+    t := input("t")
+    t :: zset(record(a: bytes, b: bytes))
+
+    out := map(t, function((r) -> record(v: bytes_and(r.a, r.b))))
+
+  input:
+    - t:
+        - [1, {a: {base64: "8A=="}, b: {base64: "z88="}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: null}]
+
+- name: concatenation takes any two
+  source: |
+    t := input("t")
+    t :: zset(record(a: bytes, b: bytes))
+
+    out := map(t, function((r) -> record(both: to_utf8(bytes_concat(r.a, r.b)))))
+
+  input:
+    - t:
+        - [1, {a: {base64: "SGVsbG8="}, b: {base64: "IQ=="}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {both: "Hello!"}]
+
+# -- scalar -------------------------------------------------------------------
+
+- name: bytes order lexicographically, so min folds them
+  source: |
+    t := input("t")
+    t :: zset(record(k: i64, b: bytes))
+
+    by_k := map_index(t, function((r) -> record(key: r.k, value: r)))
+    least := aggregate(by_k, min, function((v) -> v.b))
+
+  input:
+    - t:
+        - [1, {k: 1, b: {base64: "/w=="}}]
+        - [1, {k: 1, b: {base64: "AA=="}}]
+
+  expected_exact_output:
+    - least:
+        - [1, 1, {base64: "AA=="}]
+
+- name: and key a dict, tagged as a string
+  source: |
+    t := input("t")
+    t :: zset(record(b: bytes, n: i64))
+
+    out := map(t, function((r) -> record(m: {r.b => r.n})))
+
+  input:
+    - t:
+        - [1, {b: {base64: "SGVsbG8="}, n: 7}]
+
+  expected_exact_output:
+    - out:
+        - [1, {m: {"base64:SGVsbG8=": 7}}]
+
+- name: a document holds one as the object the codec writes
+  source: |
+    t := input("t")
+    t :: zset(record(doc: json))
+
+    out := map(t, function((r) -> record(b: cast(get(r.doc, "payload"), optional(bytes)))))
+
+  input:
+    - t:
+        - [1, {doc: {payload: {base64: "SGVsbG8="}}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {b: {base64: "SGVsbG8="}}]

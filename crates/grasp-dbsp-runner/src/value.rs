@@ -173,6 +173,16 @@ pub enum DynValue {
     /// a calendar — so this language does not measure them, and
     /// `1 month = 30 days` is not a rule invented to have one.
     Interval(feldera_sqllib::ShortInterval),
+    /// `bytes` — binary data, any length.
+    ///
+    /// **Appended, and new variants must be too**: the variant order is the
+    /// archived discriminant, which is a storage format.
+    ///
+    /// `feldera_sqllib::ByteArray` rather than a `Vec<u8>` of our own, for its
+    /// serializer: the derived one resolves a payload byte by byte, and the
+    /// hand-written one copies it in bulk — measured 47x faster on a 16 KiB
+    /// value. It orders lexicographically, so this is a scalar like the rest.
+    Bytes(feldera_sqllib::ByteArray),
 }
 
 impl DynValue {
@@ -223,6 +233,11 @@ impl DynValue {
             DynValue::Time(t) => Some(time_string(t)),
             DynValue::Timestamp(t) => Some(t.to_string()),
             DynValue::Interval(iv) => Some(interval_string(iv)),
+            // Tagged, so a second encoding can join it without the old keys
+            // changing meaning. A key is a string where a value is an object —
+            // which is already true of an `i64`, `1` as a value and `"1"` as a
+            // key.
+            DynValue::Bytes(b) => Some(format!("base64:{}", to_base64(b.as_slice()))),
             DynValue::F64(f) => {
                 let f = f.into_inner();
                 f.is_finite().then(|| f.to_string())
@@ -247,6 +262,7 @@ impl DynValue {
             DynValue::Time(_) => "time",
             DynValue::Timestamp(_) => "timestamp",
             DynValue::Interval(_) => "interval",
+            DynValue::Bytes(_) => "bytes",
         }
     }
 }
@@ -450,6 +466,8 @@ pub enum TypeDesc {
     Timestamp,
     /// `interval` — a span of time, in microseconds.
     Interval,
+    /// `bytes` — binary data, any length.
+    Bytes,
 }
 
 impl TypeDesc {
@@ -508,6 +526,7 @@ impl TypeDesc {
                 | TypeDesc::Time
                 | TypeDesc::Timestamp
                 | TypeDesc::Interval
+                | TypeDesc::Bytes
         )
     }
 
@@ -529,6 +548,7 @@ impl TypeDesc {
             TypeDesc::Time => parse_time(s),
             TypeDesc::Timestamp => parse_timestamp(s),
             TypeDesc::Interval => parse_interval(s),
+            TypeDesc::Bytes => s.strip_prefix("base64:").and_then(parse_base64),
             _ => Option::None,
         }
     }
@@ -562,6 +582,7 @@ impl std::fmt::Display for TypeDesc {
             TypeDesc::Time => write!(f, "time"),
             TypeDesc::Timestamp => write!(f, "timestamp"),
             TypeDesc::Interval => write!(f, "interval"),
+            TypeDesc::Bytes => write!(f, "bytes"),
             TypeDesc::Record(fields) => {
                 write!(f, "record(")?;
                 for (i, (name, ty)) in fields.iter().enumerate() {
@@ -746,4 +767,23 @@ fn interval_string(iv: &feldera_sqllib::ShortInterval) -> String {
         }
     }
     out
+}
+
+/// Base64, in the one alphabet — standard, with padding.
+///
+/// `bytes` travels as `{"base64": "…"}` rather than as a bare string, so a
+/// second encoding can be added later without the old form changing meaning.
+/// The tag is the name of this function, and the two are the only place the
+/// choice is written down.
+pub fn to_base64(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+pub fn parse_base64(text: &str) -> Option<DynValue> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(text)
+        .ok()
+        .map(|d| DynValue::Bytes(feldera_sqllib::ByteArray::from_vec(d)))
 }
