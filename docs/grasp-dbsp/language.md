@@ -373,7 +373,7 @@ Duplicate field names within one `record(...)` literal are a parse error.
 
 A dict is built two ways, because they do different jobs: `{k => v, …}` fixes
 its entries in the source, and `dict(a)` takes however many an
-`array(record(key: K, value: V))` carries. `entries` is the inverse of the
+`array(record(key: K, value: V))` carries. `dict_entries` is the inverse of the
 second.
 
 ```
@@ -514,7 +514,7 @@ tagged := flat_map(person, function((r) ->
     map_array(r.tags, function((e) -> record(name: r.name, tag: e)))))
 ```
 
-`entries` already yields `array(record(key: K, value: V))`, so a dict fans out
+`dict_entries` already yields `array(record(key: K, value: V))`, so a dict fans out
 through the same shape, and `map_array` is what puts the row back beside each
 entry.
 
@@ -525,13 +525,17 @@ of the two levels each works at, rather than borrowing a second vocabulary a
 reader would have to hold beside the operators' — the rule that keeps `dict` from
 being called `map`.
 
-With the index, it is also how a slice is written, and with `entries` and `dict`
-around it, how keys are subtracted from a dict:
+With `dict_entries` and `dict` around it, it is how keys are subtracted from a
+dict — including by a set of keys the data supplies, which is what `contains`
+buys:
 
 ```
-tail := filter_array(r.xs, function((e, i) -> i >= 2))
-less := dict(filter_array(entries(r.d), function((e) -> e.key != "b")))
+less := dict(filter_array(dict_entries(r.d), function((e) -> e.key != "b")))
+fewer := dict(filter_array(dict_entries(r.d), function((e) -> not contains(r.ks, e.key))))
 ```
+
+It can also take a run of elements by index, but only forwards: `slice` is what
+covers the rest, being the one that can reverse.
 
 - **The function is not a value.** It is written where it is used, the way
   `cast`'s second argument is a type rather than an expression. There is no
@@ -573,11 +577,14 @@ above and with each other.
 | `get` | `array(T) × i64 → optional(T)` | an element, by 0-based index |
 | `keys` | `json → optional(array(string))` | an object's keys, `NONE` otherwise |
 | `keys` | `dict(K,V) → array(K)` | a dict's keys, sorted |
-| `entries` | `dict(K,V) → array(record(key: K, value: V))` | a dict's entries, sorted by key |
+| `dict_entries` | `dict(K,V) → array(record(key: K, value: V))` | a dict's entries, sorted by key |
+| `contains` | `array(T) × T → bool` | whether the array holds the element |
+| `slice` | `array(T) × optional(i64) × optional(i64) × i64 → array(T)` | Python's slice |
 
-Every builtin but `coalesce` rejects an `optional` argument, for the reason
-under [Absence](#absence). `coalesce` is the one that inspects absence rather
-than being rejected for it.
+Every builtin but `coalesce` and `slice` rejects an `optional` argument, for the
+reason under [Absence](#absence). Those two inspect absence rather than being
+rejected for it, and they differ in what they do with it: `coalesce` replaces it,
+and `slice` reads it as "no bound here".
 
 There is no `+` on strings. `concat` is the one way to join them, and `+` is
 arithmetic only.
@@ -585,7 +592,7 @@ arithmetic only.
 `get` and `keys` each cover a document and a dict, which are the same idea at
 two levels of typing. They differ where the types differ: a dict lookup is exact
 rather than navigation, and `keys` on a dict is definite — a dict is always a
-dict, so there is no "not an object" case to report as absence. `entries` is
+dict, so there is no "not an object" case to report as absence. `dict_entries` is
 what turns a dict into rows, through `flat_map`.
 
 `get` covers a typed **array** on the same terms: exact rather than navigation,
@@ -594,6 +601,24 @@ answer for an index out of range at either end, which is what a document already
 says for a member that is not there. It is the only way to read an element by
 position — `map_array` and `filter_array` walk every element and cannot single
 one out.
+
+`contains` and `slice` are the two array operations that are neither navigation
+nor a walk. `contains` could be written
+`length(filter_array(a, function((e) -> e == x))) > 0`, which allocates an array
+to answer a boolean; `slice` takes a run of elements, and **`filter_array`
+cannot reverse**, so a negative step needs it whether or not the rest does.
+
+`slice` is Python's. Negative indices count from the end, the bounds **clamp**
+rather than fail — `slice(a, 0, 99, 1)` on a three-element array is those three —
+and a negative step reverses. Its bounds are `optional(i64)` because "no bound
+here" is not a number: with a positive step the missing start is `0` and the
+missing stop is the length, and with a negative one they are the last index and
+one before the first. `NONE` is the only faithful spelling, which is why Python's
+own slice carries `None` there.
+
+A step of zero selects nothing. Python raises; every expression here is total, so
+the empty array is the answer, and it is the one place this differs from the
+semantics it copies.
 
 `if` is the only branching construct, and the only builtin that does not
 evaluate all of its arguments — the untaken arm does not run. Because every

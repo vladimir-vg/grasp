@@ -168,7 +168,10 @@ fn the_library_is_stdlib_grasp() {
                  describes"
             );
         };
-        let mut mine: Vec<Shape> = b.signatures().iter().map(|s| s.shape()).collect();
+        // A signature covers every shape its optional parameters allow, so this
+        // is where `array:slice`'s one signature meets the eight variants the
+        // file writes out.
+        let mut mine: Vec<Shape> = b.signatures().iter().flat_map(|s| s.shapes()).collect();
         mine.sort();
         assert_eq!(
             shapes, &mine,

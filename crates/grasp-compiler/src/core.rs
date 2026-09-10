@@ -278,7 +278,6 @@ impl Expr {
 pub const DESIGNED: &[&str] = &[
     "array:append",
     "array:concat",
-    "array:contains",
     "array:distinct",
     "array:flatten",
     "array:index_of",
@@ -286,13 +285,8 @@ pub const DESIGNED: &[&str] = &[
     "array:min",
     "array:prepend",
     "array:reverse",
-    "array:slice",
     "array:sort",
-    "dict:from_entries",
-    "dict:has",
     "dict:merge",
-    "dict:values",
-    "dict:without",
     "float:max",
     "float:min",
     "float:pow",
@@ -361,12 +355,39 @@ pub enum Builtin {
     /// binder is introduced at emission rather than carried through the middle
     /// of the compiler.
     ArrayDrop,
+    /// `array:contains(a, element: x)` — whether the array holds it.
+    ArrayContains,
+    /// `array:slice(a, start:, stop:, step:)` — Python's slice.
+    ///
+    /// The one function in the library with several variants, and the reason
+    /// [`Signature`] carries defaults: three optional keywords are eight ways
+    /// to call it, and every one lowers to the same four-argument target call.
+    ///
+    /// **Total**, unlike the other ways of reading an array: the bounds clamp
+    /// rather than fail, so `arr[0:99]` on a three-element array is those three
+    /// and the row is derived.
+    ArraySlice,
 
     DictLength,
     /// `dict:get(d, key: k)` — what `d[k]` and a dict pattern desugar to.
     DictGet,
     DictKeys,
+    /// `dict:values(d)` — the other column of [`Builtin::DictEntries`].
+    DictValues,
     DictEntries,
+    /// `dict:has(d, key: k)` — whether the key is there.
+    ///
+    /// The way to ask about absence, since [`Builtin::DictGet`] answers by not
+    /// deriving the row. "Absence is asked for, not unwrapped everywhere."
+    DictHas,
+    /// `dict:from_entries(a)` — the inverse of [`Builtin::DictEntries`].
+    DictFromEntries,
+    /// `dict:without(d, keys: ks)` — the entries whose keys are not in `ks`.
+    ///
+    /// [`Builtin::DictWithoutKeys`] is the same idea over the *literal* keys a
+    /// pattern named. This one takes an array the data supplies, which is what
+    /// the target's `contains` made expressible.
+    DictWithout,
     /// `dict:without_keys(d, ["a"])` — the entries a pattern did not name.
     ///
     /// An emission-time binder like [`Builtin::ArrayDrop`], for the same reason.
@@ -397,10 +418,16 @@ impl Builtin {
             "string:trim" => Builtin::StringTrim,
             "array:length" => Builtin::ArrayLength,
             "array:at" => Builtin::ArrayAt,
+            "array:contains" => Builtin::ArrayContains,
+            "array:slice" => Builtin::ArraySlice,
             "dict:length" => Builtin::DictLength,
             "dict:get" => Builtin::DictGet,
+            "dict:has" => Builtin::DictHas,
             "dict:keys" => Builtin::DictKeys,
+            "dict:values" => Builtin::DictValues,
             "dict:entries" => Builtin::DictEntries,
+            "dict:from_entries" => Builtin::DictFromEntries,
+            "dict:without" => Builtin::DictWithout,
             "record:get" => Builtin::RecordGet,
             _ => return None,
         })
@@ -423,10 +450,16 @@ impl Builtin {
         Builtin::ArrayLength,
         Builtin::ArrayAt,
         Builtin::ArrayDrop,
+        Builtin::ArrayContains,
+        Builtin::ArraySlice,
         Builtin::DictLength,
         Builtin::DictGet,
+        Builtin::DictHas,
         Builtin::DictKeys,
+        Builtin::DictValues,
         Builtin::DictEntries,
+        Builtin::DictFromEntries,
+        Builtin::DictWithout,
         Builtin::DictWithoutKeys,
         Builtin::RecordGet,
     ];
@@ -470,7 +503,9 @@ impl Builtin {
             | Builtin::ArrayLength
             | Builtin::DictLength
             | Builtin::DictKeys
-            | Builtin::DictEntries => UNARY,
+            | Builtin::DictValues
+            | Builtin::DictEntries
+            | Builtin::DictFromEntries => UNARY,
             Builtin::StringConcat => BINARY,
             // The two desugaring writes and a program does not. Their arguments
             // are positional because nothing spells them: emission builds the
@@ -478,22 +513,64 @@ impl Builtin {
             Builtin::ArrayDrop | Builtin::DictWithoutKeys => BINARY,
             Builtin::ArrayAt => &[Signature {
                 positional: 1,
-                keyword: &["index"],
+                keyword: &[Param {
+                    name: "index",
+                    default: None,
+                }],
             }],
-            Builtin::DictGet => &[Signature {
+            Builtin::ArrayContains => &[Signature {
                 positional: 1,
-                keyword: &["key"],
+                keyword: &[Param {
+                    name: "element",
+                    default: None,
+                }],
+            }],
+            // Three optional keywords, and so eight ways to call it — the eight
+            // variants `stdlib.grasp` writes out.
+            Builtin::ArraySlice => &[Signature {
+                positional: 1,
+                keyword: &[
+                    Param {
+                        name: "start",
+                        default: Some(Omitted::Absent),
+                    },
+                    Param {
+                        name: "stop",
+                        default: Some(Omitted::Absent),
+                    },
+                    Param {
+                        name: "step",
+                        default: Some(Omitted::Int(1)),
+                    },
+                ],
+            }],
+            Builtin::DictGet | Builtin::DictHas => &[Signature {
+                positional: 1,
+                keyword: &[Param {
+                    name: "key",
+                    default: None,
+                }],
+            }],
+            Builtin::DictWithout => &[Signature {
+                positional: 1,
+                keyword: &[Param {
+                    name: "keys",
+                    default: None,
+                }],
             }],
             Builtin::RecordGet => &[Signature {
                 positional: 1,
-                keyword: &["field"],
+                keyword: &[Param {
+                    name: "field",
+                    default: None,
+                }],
             }],
         }
     }
 
     /// The signature a call of this shape resolves to, if any.
     pub fn resolve(self, shape: &Shape) -> Option<&'static Signature> {
-        self.signatures().iter().find(|s| s.shape() == *shape)
+        self.signatures().iter().find(|s| s.accepts(shape))
     }
 
     /// Whether a program may write this name.
@@ -549,11 +626,17 @@ impl Builtin {
             Builtin::StringTrim => "string:trim",
             Builtin::ArrayLength => "array:length",
             Builtin::ArrayAt => "array:at",
+            Builtin::ArrayContains => "array:contains",
+            Builtin::ArraySlice => "array:slice",
             Builtin::ArrayDrop => "array:drop",
             Builtin::DictLength => "dict:length",
             Builtin::DictGet => "dict:get",
+            Builtin::DictHas => "dict:has",
             Builtin::DictKeys => "dict:keys",
+            Builtin::DictValues => "dict:values",
             Builtin::DictEntries => "dict:entries",
+            Builtin::DictFromEntries => "dict:from_entries",
+            Builtin::DictWithout => "dict:without",
             Builtin::DictWithoutKeys => "dict:without_keys",
             Builtin::RecordGet => "record:get",
         }
@@ -585,11 +668,17 @@ impl Builtin {
             Builtin::StringTrim => Some("trim"),
             Builtin::ArrayLength => Some("length"),
             Builtin::ArrayAt => Some("get"),
+            Builtin::ArrayContains => Some("contains"),
+            Builtin::ArraySlice => Some("slice"),
             Builtin::ArrayDrop => None,
             Builtin::DictLength => Some("length"),
             Builtin::DictGet => Some("get"),
+            Builtin::DictHas => None,
             Builtin::DictKeys => Some("keys"),
-            Builtin::DictEntries => Some("entries"),
+            Builtin::DictValues => None,
+            Builtin::DictEntries => Some("dict_entries"),
+            Builtin::DictFromEntries => Some("dict"),
+            Builtin::DictWithout => None,
             Builtin::DictWithoutKeys => None,
             Builtin::RecordGet => None,
         }
@@ -599,24 +688,92 @@ impl Builtin {
 /// One way of calling a [`Builtin`]: how many arguments come by position, and
 /// which keywords follow, **in the order the core call holds them**.
 ///
-/// The order is the one thing a [`Shape`] does not carry, and the only reason
+/// The order is the one thing a [`Shape`] does not carry, and the first reason
 /// this type exists beside it: a shape says whether a call resolves here, and a
 /// signature says where each argument goes once it has.
+///
+/// The second is that a signature may cover **several** shapes. A parameter
+/// with a default may be left out, so `array:slice`'s three optional keywords
+/// are the eight variants `stdlib.grasp` writes out — written once here, and
+/// enumerated by [`Signature::shapes`] for the test that compares the two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Signature {
     pub positional: usize,
-    pub keyword: &'static [&'static str],
+    pub keyword: &'static [Param],
+}
+
+/// One keyword parameter, and what it means when a call leaves it out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Param {
+    pub name: &'static str,
+    /// `None` where the call must supply it. A parameter's being optional is
+    /// what makes a second shape, so this is where the variants come from.
+    pub default: Option<Omitted>,
+}
+
+/// What a parameter means when a call leaves it out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Omitted {
+    /// `NONE`. A slice's missing bound is this rather than a number, because
+    /// *which* end it means depends on the sign of the step — there is no
+    /// constant to write, which is why Python's own slice carries `None` there.
+    Absent,
+    Int(i64),
+}
+
+impl Omitted {
+    pub fn literal(self) -> Lit {
+        match self {
+            Omitted::Absent => Lit::None,
+            Omitted::Int(n) => Lit::Int(n),
+        }
+    }
 }
 
 impl Signature {
-    pub fn shape(&self) -> Shape {
-        Shape::new(
-            self.positional,
-            self.keyword.iter().map(|k| (*k).to_string()),
-        )
+    /// Whether a call of this shape resolves here: the same count by position,
+    /// no keyword this does not take, and every required one given.
+    pub fn accepts(&self, shape: &Shape) -> bool {
+        shape.positional == self.positional
+            && shape
+                .keyword
+                .iter()
+                .all(|given| self.keyword.iter().any(|p| p.name == given))
+            && self
+                .keyword
+                .iter()
+                .filter(|p| p.default.is_none())
+                .all(|p| shape.keyword.iter().any(|given| given == p.name))
     }
 
-    /// How many arguments the core call this resolves to holds.
+    /// Every shape this accepts — the required parameters always, and any
+    /// subset of the optional ones.
+    pub fn shapes(&self) -> Vec<Shape> {
+        let (optional, required): (Vec<&Param>, Vec<&Param>) =
+            self.keyword.iter().partition(|p| p.default.is_some());
+        (0..1u32 << optional.len())
+            .map(|mask| {
+                let taken = optional
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| mask >> i & 1 == 1)
+                    .map(|(_, p)| *p);
+                Shape::new(
+                    self.positional,
+                    required
+                        .iter()
+                        .copied()
+                        .chain(taken)
+                        .map(|p| p.name.to_string())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect()
+    }
+
+    /// How many arguments the core call this resolves to holds. Every
+    /// parameter, given or defaulted — the core call is the same length for
+    /// every shape of one signature.
     pub fn arity(&self) -> usize {
         self.positional + self.keyword.len()
     }

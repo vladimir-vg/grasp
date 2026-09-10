@@ -336,11 +336,19 @@ fn expr_of(e: &ast::Expr) -> Result<core::Expr, Diagnostic> {
             let mut args: Vec<core::Expr> =
                 positional.iter().map(expr_of).collect::<Result<_, _>>()?;
             for param in sig.keyword {
-                let (_, value) = keyword
-                    .iter()
-                    .find(|(name, _)| name == param)
-                    .expect("the shape matched, so every keyword is there");
-                args.push(expr_of(value)?);
+                match keyword.iter().find(|(name, _)| name == param.name) {
+                    Some((_, value)) => args.push(expr_of(value)?),
+                    // Left out, and the signature says what that means — which
+                    // is what makes `array:slice`'s eight variants eight ways to
+                    // write one four-argument call.
+                    None => args.push(core::Expr::Lit {
+                        value: param
+                            .default
+                            .expect("the shape matched, so an absent keyword has a default")
+                            .literal(),
+                        span: *span,
+                    }),
+                }
             }
             core::Expr::Call {
                 callee,
@@ -392,7 +400,8 @@ fn resolve(
         let taken: Vec<String> = callee
             .signatures()
             .iter()
-            .map(|s| format!("`{}`", s.shape()))
+            .flat_map(|s| s.shapes())
+            .map(|s| format!("`{s}`"))
             .collect();
         Diagnostic::error(
             Pass::Desugar,

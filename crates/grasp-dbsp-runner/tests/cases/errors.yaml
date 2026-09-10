@@ -945,7 +945,7 @@
   source: |
     a := input("a")
     a :: zset(record(k: i64, s: string))
-    out := map(a, function((r) -> record(e: entries(r.s))))
+    out := map(a, function((r) -> record(e: dict_entries(r.s))))
 
   expected_diagnostics:
     - pass: typecheck

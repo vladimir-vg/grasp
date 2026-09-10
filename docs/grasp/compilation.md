@@ -446,7 +446,7 @@ what those, and the forms that do not desugar, compile to.
 | `v := expr` | `map` binding `v` |
 | `v := agg<e>` | `map_index` on the group, `aggregate`, `map` to flatten |
 | `(v) := *arr` | `flat_map` over the array |
-| `(k, v) := **d` | `flat_map` over `entries(d)` |
+| `(k, v) := **d` | `flat_map` over `dict_entries(d)` |
 | `v :: T` | `filter` — the runtime check, where one was inserted |
 | head | `map` projecting the head's columns |
 
@@ -489,7 +489,7 @@ tagged(name: n, tag: k) <-
 
 ```
 n1: map_index(person, key=[], val=[n, d])
-n2: flat_map(entries(d), in=[d], out=[k, _v])
+n2: flat_map(dict_entries(d), in=[d], out=[k, _v])
 n3: map(→ [n, k])
 ```
 

@@ -1214,6 +1214,59 @@ fn infer_builtin(
             ]))))
         }
 
+        // Both arguments are definite and the element must be the array's own
+        // type, so this is exact rather than navigation — the rule a dict lookup
+        // follows, not the one a document does.
+        Builtin::Contains => {
+            definite(&args[0], name, span)?;
+            let a = args[0].settle().expect("definite() rejected the none case");
+            let TypeDesc::Array(et) = a.non_null() else {
+                return err(span, format!("`contains` needs an array, found `{a}`"));
+            };
+            definite(&args[1], name, span)?;
+            let element = args[1].settle().expect("definite() rejected the none case");
+            if element.non_null() != &**et {
+                return err(
+                    span,
+                    format!("this array holds `{et}`, but the element is `{element}`"),
+                );
+            }
+            pin(&mut exprs[1], et);
+            Ty::Known(TypeDesc::Bool)
+        }
+
+        // `start` and `stop` may be `NONE` — "no bound here", whose meaning
+        // depends on the sign of the step and so cannot be a number. That is
+        // why they do not go through `definite`, and it is the whole of the
+        // exception: the *result* is definite, an empty slice being an empty
+        // array rather than an absent one.
+        Builtin::Slice => {
+            definite(&args[0], name, span)?;
+            let a = args[0].settle().expect("definite() rejected the none case");
+            let TypeDesc::Array(et) = a.non_null() else {
+                return err(span, format!("`slice` needs an array, found `{a}`"));
+            };
+            let element = (**et).clone();
+            for i in [1, 2] {
+                if let Some(t) = args[i].settle()
+                    && t.non_null() != &TypeDesc::I64
+                {
+                    return err(
+                        span,
+                        format!("a slice bound is an `i64` or `NONE`, but this is `{t}`"),
+                    );
+                }
+                pin(&mut exprs[i], &TypeDesc::I64);
+            }
+            definite(&args[3], name, span)?;
+            let step = args[3].settle().expect("definite() rejected the none case");
+            if step.non_null() != &TypeDesc::I64 {
+                return err(span, format!("a slice step is an `i64`, found `{step}`"));
+            }
+            pin(&mut exprs[3], &TypeDesc::I64);
+            Ty::Known(TypeDesc::Array(Box::new(element)))
+        }
+
         Builtin::Coalesce => {
             // The result is non-null when the fallback is, so the first
             // argument contributes its type without its optionality.

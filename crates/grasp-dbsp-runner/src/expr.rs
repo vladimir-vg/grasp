@@ -47,11 +47,33 @@ pub enum Builtin {
     /// `keys(doc)` — an object's keys, or `NONE` for anything else. On a dict,
     /// an `array(K)` — definite, because a dict is always a dict.
     Keys,
-    /// `entries(d)` — a dict as an `array(record(key: K, value: V))`.
+    /// `dict_entries(d)` — a dict as an `array(record(key: K, value: V))`.
     ///
     /// The inverse of `dict(a)`, and what turns a dict into rows: `flat_map`
     /// over it emits one row per entry.
     Entries,
+    /// `contains(a, x)` — whether the array holds the element.
+    ///
+    /// `length(filter_array(a, function((e) -> e == x))) > 0` says the same
+    /// thing and allocates an array to answer a boolean, which is why this is a
+    /// builtin rather than a composition.
+    Contains,
+    /// `slice(a, start, stop, step)` — Python's slice, over a typed array.
+    ///
+    /// Negative indices count from the end, the bounds **clamp** rather than
+    /// fail, and a negative step reverses. `start` and `stop` are
+    /// `optional(i64)` because "no bound here" is not a number: which end it
+    /// means depends on the sign of the step, so `NONE` is the only faithful
+    /// spelling — the same reason Python's own slice carries `None` there.
+    ///
+    /// [`Builtin::Get`] and this are the only two that accept absence, and this
+    /// one accepts it in arguments rather than passing it on: the result is
+    /// definite, an out-of-range slice being empty rather than absent.
+    ///
+    /// `filter_array` with the index expresses the positive-step case and
+    /// **cannot reverse**, so a step below zero needs this whether or not the
+    /// rest does.
+    Slice,
 }
 
 impl Builtin {
@@ -70,22 +92,39 @@ impl Builtin {
             "trim" => Builtin::Trim,
             "get" => Builtin::Get,
             "keys" => Builtin::Keys,
-            "entries" => Builtin::Entries,
+            "dict_entries" => Builtin::Entries,
+            "contains" => Builtin::Contains,
+            "slice" => Builtin::Slice,
             _ => return None,
         })
     }
 
     /// Every builtin name, so the reserved-word list cannot drift from it.
     pub const ALL: &'static [&'static str] = &[
-        "coalesce", "if", "abs", "floor", "ceil", "round", "length", "concat", "lower", "upper",
-        "trim", "get", "keys", "entries",
+        "coalesce",
+        "if",
+        "abs",
+        "floor",
+        "ceil",
+        "round",
+        "length",
+        "concat",
+        "lower",
+        "upper",
+        "trim",
+        "get",
+        "keys",
+        "dict_entries",
+        "contains",
+        "slice",
     ];
 
     /// Number of arguments, or `None` if variadic.
     pub fn arity(self) -> Option<usize> {
         Some(match self {
+            Builtin::Slice => 4,
             Builtin::If => 3,
-            Builtin::Coalesce | Builtin::Concat | Builtin::Get => 2,
+            Builtin::Coalesce | Builtin::Concat | Builtin::Get | Builtin::Contains => 2,
             _ => 1,
         })
     }
@@ -705,7 +744,14 @@ fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValu
         };
     }
 
-    if vals.iter().any(|v| v.is_none()) {
+    // `slice` is the other one, and it reads absence rather than propagating it:
+    // a `NONE` bound means "no bound here", so only its array and its step have
+    // to be definite.
+    let absent = match f {
+        Builtin::Slice => vals[0].is_none() || vals[3].is_none(),
+        _ => vals.iter().any(|v| v.is_none()),
+    };
+    if absent {
         return DynValue::None;
     }
 
@@ -742,6 +788,14 @@ fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValu
                     .map(|(k, v)| DynValue::record([k.clone(), v.clone()]))
                     .collect(),
             ),
+            _ => DynValue::None,
+        },
+        Builtin::Contains => match &vals[0] {
+            DynValue::Array(items) => DynValue::Bool(items.contains(&vals[1])),
+            _ => DynValue::None,
+        },
+        Builtin::Slice => match &vals[0] {
+            DynValue::Array(items) => DynValue::Array(slice(items, &vals[1], &vals[2], &vals[3])),
             _ => DynValue::None,
         },
         Builtin::Concat => match (as_str(&vals[0]), as_str(&vals[1])) {
@@ -812,4 +866,55 @@ fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValu
         },
         Builtin::Coalesce | Builtin::If => unreachable!("handled above"),
     }
+}
+
+/// Python's slice, over an array — `CPython`'s `slice.indices` and the loop that
+/// follows it.
+///
+/// `start` and `stop` are `NONE` for "no bound here", which is not a number:
+/// with a positive step the missing start is 0 and the missing stop is the
+/// length, and with a negative one they are the last index and one before the
+/// first. That is why the bounds are `optional(i64)` rather than the plain ones
+/// a caller could have defaulted itself.
+///
+/// A step of zero selects nothing. Python raises there; every expression in this
+/// language is total, so the empty array is the answer, and it is the one place
+/// this differs from the semantics it copies.
+fn slice(items: &[DynValue], start: &DynValue, stop: &DynValue, step: &DynValue) -> Vec<DynValue> {
+    let n = items.len() as i64;
+    let DynValue::I64(step) = *step else {
+        return Vec::new();
+    };
+    if step == 0 {
+        return Vec::new();
+    }
+    // A bound outside the array clamps to its nearer end rather than failing,
+    // and which end that is depends on the direction of travel.
+    let adjust = |i: i64| -> i64 {
+        let i = if i < 0 { i + n } else { i };
+        if i < 0 {
+            if step < 0 { -1 } else { 0 }
+        } else if i >= n {
+            if step < 0 { n - 1 } else { n }
+        } else {
+            i
+        }
+    };
+    let bound = |v: &DynValue, absent: i64| match v {
+        DynValue::I64(i) => adjust(*i),
+        _ => absent,
+    };
+    let (first, last) = if step < 0 {
+        (bound(start, n - 1), bound(stop, -1))
+    } else {
+        (bound(start, 0), bound(stop, n))
+    };
+
+    let mut out = Vec::new();
+    let mut i = first;
+    while if step < 0 { i > last } else { i < last } {
+        out.push(items[i as usize].clone());
+        i += step;
+    }
+    out
 }

@@ -103,7 +103,7 @@
   source: |
     t := input("t")
     t :: zset(record(a: i64))
-    out := flat_map(t, function((r) -> entries({"p" => r.a, "q" => 2})))
+    out := flat_map(t, function((r) -> dict_entries({"p" => r.a, "q" => 2})))
 
   # This is what an unnest over a dict lowers to. Entries come out sorted by
   # key, because that is the order a dict is stored in.
@@ -120,7 +120,7 @@
   source: |
     t := input("t")
     t :: zset(record(a: i64))
-    out := map(t, function((r) -> record(d: dict(entries({"p" => r.a, "q" => 2})))))
+    out := map(t, function((r) -> record(d: dict(dict_entries({"p" => r.a, "q" => 2})))))
 
   input:
     - t:

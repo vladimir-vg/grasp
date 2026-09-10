@@ -231,9 +231,28 @@ half of grasp having [chosen its library](semantics.md#the-standard-library)
 rather than inherited one. `float:floor` and `integer:abs` are grasp's names for
 what the target spells `floor` and `abs`; `string:length`, `array:length` and
 `dict:length` are three functions over the one `length`. The rename is
-`core::Builtin::target`, and where it is `None` — `array:drop`,
-`dict:without_keys`, `record:get` — the call becomes an expression rather than
-another call.
+`core::Builtin::target`, and where it is `None` the call becomes an expression
+rather than another call:
+
+| grasp | grasp-dbsp |
+|---|---|
+| `record:get(r, field: "f")` | `r.f` |
+| `dict:has(d, key: k)` | `(get(d, k) != NONE)` |
+| `dict:values(d)` | `map_array(dict_entries(d), function((e) -> e.value))` |
+| `dict:without(d, keys: ks)` | `dict(filter_array(dict_entries(d), function((e) -> (not contains(ks, e.key)))))` |
+| `dict:without_keys(d, ["a"])` | the same, with the keys unrolled into `e.key != "a"` |
+| `array:drop(a, n)` | `filter_array(a, function((e, i) -> (i >= n)))` |
+
+`dict:has` is the shape the rest of the library is arranged to avoid — grasp
+[derives no row](semantics.md#a-body-must-have-an-answer) where `dict:get` has no
+answer, so absence is asked for rather than unwrapped — and asking is what the
+target's `get` already answers, being the one builtin there that yields absence
+instead of being rejected for it.
+
+`dict:without` and `dict:without_keys` are one operation at two levels of
+knowledge. A dict pattern's `**r` names its keys in the source, so the emitter
+unrolls them into a conjunction; a program's `keys:` is a value, so the target's
+`contains` does the asking.
 
 The traffic runs the other way too. grasp-dbsp has `get`, `cast`, `coalesce` and
 `if`, and grasp offers none of them while emitting the first three: `get` for
@@ -281,12 +300,12 @@ promise is one mechanism rather than two.
 | `keys(d)` | `keys(d)` → `array(K)` |
 | `dict:length(d)` | `length(d)` |
 | `{a:} := d` destructure | `get(d, "a")` per key, guarded by `length(d) = N` |
-| `{a:, **e} := d` remainder | `dict(filter_array(entries(d), function((e) -> e.key != "a")))` |
+| `{a:, **e} := d` remainder | `dict(filter_array(dict_entries(d), function((e) -> e.key != "a")))` |
 | `[x, y] := arr` destructure | `get(arr, 0)` per position, guarded by `length(arr) = N` |
 | `[x, *r] := arr` remainder | `filter_array(arr, function((e, i) -> i >= N))` |
-| `(k, v) := **d` unnest | `flat_map` over `entries(d)` |
+| `(k, v) := **d` unnest | `flat_map` over `dict_entries(d)` |
 
-`entries(d)` yields `array(record(key: K, value: V))`, sorted by key, which is
+`dict_entries(d)` yields `array(record(key: K, value: V))`, sorted by key, which is
 what makes the unnest deterministic. Its inverse is the other form of the dict
 literal, `dict(a)`, for building a dict whose size follows the data.
 
@@ -314,7 +333,7 @@ right is what this pass emits for it.
 | `v := e` | `map` | `map(s, function((row) -> record(…, v: e)))` |
 | `s := sum<r>` | `aggregate` | `map_index`, `aggregate(s, sum, f)`, `map` |
 | `(v) := *arr` | `flat_map` | `flat_map(s, function((row) -> map_array(row.arr, …)))` |
-| `(k, v) := **d` | `flat_map` | `flat_map(s, function((row) -> map_array(entries(row.d), …)))` |
+| `(k, v) := **d` | `flat_map` | `flat_map(s, function((row) -> map_array(dict_entries(row.d), …)))` |
 | `v :: T` | `filter` | `filter` on the runtime check |
 | the head | `map` | `map(s, function((row) -> record(…)))` |
 
@@ -334,7 +353,7 @@ tagged(name: n, tag: k) <-
 
 ```
 tagged := flat_map(rows, function((row) ->
-    map_array(entries(row.d), function((e) -> record(n: row.n, k: e.key)))))
+    map_array(dict_entries(row.d), function((e) -> record(n: row.n, k: e.key)))))
 ```
 
 Both binders are in scope: `n` comes off the row and `k` off the element. A dict

@@ -1,0 +1,212 @@
+# The two array builtins that are not navigation: `contains` and `slice`.
+#
+# `get` reads one element and `map_array` / `filter_array` walk every one. These
+# two are what neither can do — answer a membership question without building an
+# array, and take a run of elements in either direction.
+
+- name: contains answers without building an array
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(i64)))
+
+    out := map(t, function((r) -> record(
+        yes: contains(r.xs, 20),
+        no: contains(r.xs, 99))))
+
+  input:
+    - t:
+        - [1, {xs: [10, 20, 30]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {yes: true, no: false}]
+
+- name: contains over strings
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(string)))
+
+    out := map(t, function((r) -> record(v: contains(r.xs, "b"))))
+
+  input:
+    - t:
+        - [1, {xs: ["a", "b"]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: true}]
+
+- name: contains on an empty array
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(i64)))
+
+    out := map(t, function((r) -> record(v: contains(r.xs, 1))))
+
+  input:
+    - t:
+        - [1, {xs: []}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: false}]
+
+# -- slice --------------------------------------------------------------------
+#
+# Python's, and the bounds are `optional(i64)` because "no bound here" is not a
+# number: which end it means depends on the sign of the step.
+
+- name: a slice with both bounds
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(i64)))
+
+    out := map(t, function((r) -> record(v: slice(r.xs, 1, 3, 1))))
+
+  input:
+    - t:
+        - [1, {xs: [10, 20, 30, 40, 50]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: [20, 30]}]
+
+- name: NONE is no bound, so the whole array
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(i64)))
+
+    out := map(t, function((r) -> record(v: slice(r.xs, NONE, NONE, 1))))
+
+  input:
+    - t:
+        - [1, {xs: [10, 20, 30]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: [10, 20, 30]}]
+
+- name: a negative index counts from the end
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(i64)))
+
+    out := map(t, function((r) -> record(
+        tail: slice(r.xs, -2, NONE, 1),
+        head: slice(r.xs, NONE, -2, 1))))
+
+  input:
+    - t:
+        - [1, {xs: [10, 20, 30, 40, 50]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {tail: [40, 50], head: [10, 20, 30]}]
+
+# The property that makes it total: an index past either end is the nearer end,
+# not an error and not absence.
+- name: the bounds clamp rather than fail
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(i64)))
+
+    out := map(t, function((r) -> record(
+        over: slice(r.xs, 0, 99, 1),
+        under: slice(r.xs, -99, 99, 1),
+        past: slice(r.xs, 99, 200, 1))))
+
+  input:
+    - t:
+        - [1, {xs: [10, 20, 30]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {over: [10, 20, 30], under: [10, 20, 30], past: []}]
+
+- name: a step takes every nth element
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(i64)))
+
+    out := map(t, function((r) -> record(
+        evens: slice(r.xs, NONE, NONE, 2),
+        threes: slice(r.xs, 1, NONE, 3))))
+
+  input:
+    - t:
+        - [1, {xs: [10, 20, 30, 40, 50, 60]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {evens: [10, 30, 50], threes: [20, 50]}]
+
+# The one case `filter_array` cannot express, and the reason this is a builtin
+# rather than a composition.
+- name: a negative step reverses
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(i64)))
+
+    out := map(t, function((r) -> record(
+        back: slice(r.xs, NONE, NONE, -1),
+        every_other: slice(r.xs, NONE, NONE, -2))))
+
+  input:
+    - t:
+        - [1, {xs: [10, 20, 30, 40, 50]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {back: [50, 40, 30, 20, 10], every_other: [50, 30, 10]}]
+
+# With a negative step the missing start is the *last* index and the missing
+# stop is one before the first, so a written bound and an absent one differ in
+# which end they name.
+- name: a negative step reads its bounds the other way round
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(i64)))
+
+    out := map(t, function((r) -> record(
+        from_three: slice(r.xs, 3, NONE, -1),
+        down_to_one: slice(r.xs, NONE, 1, -1))))
+
+  input:
+    - t:
+        - [1, {xs: [10, 20, 30, 40, 50]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {from_three: [40, 30, 20, 10], down_to_one: [50, 40, 30]}]
+
+- name: a slice that selects nothing is an empty array
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(i64)))
+
+    out := map(t, function((r) -> record(
+        backwards: slice(r.xs, 3, 1, 1),
+        zero: slice(r.xs, NONE, NONE, 0))))
+
+  input:
+    - t:
+        - [1, {xs: [10, 20, 30, 40, 50]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {backwards: [], zero: []}]
+
+- name: slice keeps the element type, whatever it is
+  source: |
+    t := input("t")
+    t :: zset(record(xs: array(record(a: i64))))
+
+    out := map(t, function((r) -> record(v: slice(r.xs, 1, NONE, 1))))
+
+  input:
+    - t:
+        - [1, {xs: [{a: 1}, {a: 2}]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: [{a: 2}]}]

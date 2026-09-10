@@ -200,7 +200,7 @@
     person := input("person")
     person :: zset(record(name: string, tags: dict(string, i64)))
     tagged := flat_map(person, function((r) ->
-        map_array(entries(r.tags), function((e) ->
+        map_array(dict_entries(r.tags), function((e) ->
             record(name: r.name, tag: e.key, n: e.value)))))
 
   input:
@@ -411,7 +411,7 @@
     t := input("t")
     t :: zset(record(d: dict(string, i64)))
     out := map(t, function((r) ->
-        record(d: dict(filter_array(entries(r.d), function((e) -> e.key != "b"))))))
+        record(d: dict(filter_array(dict_entries(r.d), function((e) -> e.key != "b"))))))
 
   input:
     - t:

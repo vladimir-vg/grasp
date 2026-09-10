@@ -1393,7 +1393,122 @@ impl Cx {
                     _ => wrong(),
                 }
             }
-            B::DictGet => {
+            // `array:contains(a, element: x)` — the element must be the array's
+            // own type, the way a dict key must be the dict's.
+            B::ArrayContains => {
+                if let Some(d) = arity(2) {
+                    return (Ty::Error, Some(d));
+                }
+                match &args[0] {
+                    Ty::Array(e) => {
+                        if !open(&args[1]) && !assignable(&args[1], e) {
+                            return (
+                                Ty::Error,
+                                Some(Diagnostic::error(
+                                    Pass::Infer,
+                                    span,
+                                    format!(
+                                        "this array holds `{e}`, but the element is `{}`",
+                                        args[1]
+                                    ),
+                                )),
+                            );
+                        }
+                        (Ty::Boolean, None)
+                    }
+                    Ty::Unknown => (Ty::Unknown, None),
+                    _ => wrong(),
+                }
+            }
+            // `array:slice(a, start:, stop:, step:)` — the same array, shorter,
+            // and never absent: the bounds clamp. A bound a call left out is
+            // `NONE`, which is why the two are `optional(i64)` here and `i64`
+            // when written.
+            B::ArraySlice => {
+                if let Some(d) = arity(4) {
+                    return (Ty::Error, Some(d));
+                }
+                let bound = |t: &Ty| {
+                    matches!(t, Ty::I64 | Ty::Int | Ty::Unknown)
+                        || matches!(t, Ty::Optional(inner)
+                            if matches!(**inner, Ty::I64 | Ty::Int | Ty::Unknown))
+                };
+                match &args[0] {
+                    Ty::Array(_)
+                        if bound(&args[1])
+                            && bound(&args[2])
+                            && matches!(args[3], Ty::I64 | Ty::Int) =>
+                    {
+                        (args[0].clone(), None)
+                    }
+                    Ty::Unknown => (Ty::Unknown, None),
+                    _ => wrong(),
+                }
+            }
+            // The other column of `dict:entries`.
+            B::DictValues => {
+                if let Some(d) = arity(1) {
+                    return (Ty::Error, Some(d));
+                }
+                match &args[0] {
+                    Ty::Dict(_, v) => (Ty::Array(v.clone()), None),
+                    Ty::Unknown => (Ty::Unknown, None),
+                    _ => wrong(),
+                }
+            }
+            // `dict:from_entries(a)` — the inverse of `dict:entries`, so it
+            // consumes exactly the record that one yields.
+            B::DictFromEntries => {
+                if let Some(d) = arity(1) {
+                    return (Ty::Error, Some(d));
+                }
+                match &args[0] {
+                    Ty::Array(e) => match &**e {
+                        Ty::Record(fields) => {
+                            let field =
+                                |n: &str| fields.iter().find(|(f, _)| f == n).map(|(_, t)| t);
+                            match (field("key"), field("value"), fields.len()) {
+                                (Some(k), Some(v), 2) if scalar(k) => {
+                                    (Ty::Dict(Box::new(k.clone()), Box::new(v.clone())), None)
+                                }
+                                _ => (
+                                    Ty::Error,
+                                    Some(Diagnostic::error(
+                                        Pass::Infer,
+                                        span,
+                                        format!(
+                                            "`dict:from_entries` takes what `dict:entries` \
+                                             gives — `record(key: K, value: V)` with a scalar \
+                                             `K` — but these are `{e}`"
+                                        ),
+                                    )),
+                                ),
+                            }
+                        }
+                        Ty::Unknown => (Ty::Unknown, None),
+                        _ => wrong(),
+                    },
+                    Ty::Unknown => (Ty::Unknown, None),
+                    _ => wrong(),
+                }
+            }
+            // `dict:without(d, keys: ks)` — the same dict, smaller. The written
+            // twin of `dict:without_keys`, over an array the data supplies.
+            B::DictWithout => {
+                if let Some(d) = arity(2) {
+                    return (Ty::Error, Some(d));
+                }
+                match (&args[0], &args[1]) {
+                    (Ty::Dict(k, _), Ty::Array(e)) if k == e || **e == Ty::Unknown => {
+                        (args[0].clone(), None)
+                    }
+                    (Ty::Unknown, _) => (Ty::Unknown, None),
+                    _ => wrong(),
+                }
+            }
+            // `dict:has` and `dict:get` read a key the same way and differ only
+            // in the answer, so the key check is shared.
+            B::DictGet | B::DictHas => {
                 if let Some(d) = arity(2) {
                     return (Ty::Error, Some(d));
                 }
@@ -1413,7 +1528,10 @@ impl Cx {
                                 )),
                             );
                         }
-                        ((**v).clone(), None)
+                        match callee {
+                            B::DictHas => (Ty::Boolean, None),
+                            _ => ((**v).clone(), None),
+                        }
                     }
                     Ty::Unknown => (Ty::Unknown, None),
                     _ => wrong(),

@@ -611,7 +611,7 @@ fn emit_unnest(
 ) -> String {
     let array = match kind {
         core::UnnestKind::Array => expr_text(over, None),
-        core::UnnestKind::Dict => format!("entries({})", expr_text(over, None)),
+        core::UnnestKind::Dict => format!("dict_entries({})", expr_text(over, None)),
     };
     // What the unnested variables are called on the element, which is the whole
     // of the difference between the three shapes. Only the indexed one needs
@@ -720,7 +720,7 @@ fn emit_narrow(
     if let Narrowed::Elements(el) | Narrowed::Values(el) = into {
         let dict = matches!(into, Narrowed::Values(_));
         let parts = if dict {
-            format!("entries({ROW}.{v})")
+            format!("dict_entries({ROW}.{v})")
         } else {
             format!("{ROW}.{v}")
         };
@@ -914,7 +914,9 @@ const RESERVED: &[&str] = &[
     "trim",
     "get",
     "keys",
-    "entries",
+    "dict_entries",
+    "contains",
+    "slice",
     "cast",
     "bool",
     "i64",
@@ -1248,7 +1250,7 @@ fn call_text(scope: &Scope<'_>, callee: core::Builtin, args: &[core::Expr]) -> S
                 tests.join(" and ")
             };
             format!(
-                "dict(filter_array(entries({}), function(({ELEMENT}) -> ({predicate}))))",
+                "dict(filter_array(dict_entries({}), function(({ELEMENT}) -> ({predicate}))))",
                 expr_text(dict, None)
             )
         }
@@ -1256,6 +1258,30 @@ fn call_text(scope: &Scope<'_>, callee: core::Builtin, args: &[core::Expr]) -> S
             "filter_array({}, function(({ELEMENT}, {INDEX}) -> ({INDEX} >= {})))",
             expr_text(array, None),
             expr_text(from, None)
+        ),
+        // The written twin of `dict:without_keys`, and it cannot share that
+        // arm's shape: the keys are a value rather than a list the emitter can
+        // unroll into a conjunction, so it takes the target's `contains`.
+        (core::Builtin::DictWithout, [dict, keys]) => format!(
+            "dict(filter_array(dict_entries({}), \
+             function(({ELEMENT}) -> (not contains({}, {ELEMENT}.key)))))",
+            expr_text(dict, None),
+            expr_text(keys, None)
+        ),
+        // The other column of `dict_entries`. `keys` has a target builtin and
+        // values do not, which is the target's asymmetry rather than grasp's —
+        // so the library offers both and one of them is spelled out.
+        (core::Builtin::DictValues, [dict]) => format!(
+            "map_array(dict_entries({}), function(({ELEMENT}) -> {ELEMENT}.value))",
+            expr_text(dict, None)
+        ),
+        // "Absence is asked for, not unwrapped everywhere" — and asking is what
+        // `get` already answers, since it is the one target builtin that yields
+        // absence rather than being rejected for it.
+        (core::Builtin::DictHas, [dict, key]) => format!(
+            "(get({}, {}) != NONE)",
+            expr_text(dict, None),
+            expr_text(key, None)
         ),
         _ => {
             let text: Vec<String> = args.iter().map(|a| expr_text(a, None)).collect();
