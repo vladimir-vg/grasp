@@ -351,6 +351,25 @@ payroll(dept: d, total: s) <-
 
 Aggregators are `sum`, `count`, `min`, `max` and `avg`.
 
+**An aggregate stands in two places and no others**: the right-hand side of a
+match, and a head argument. The second is sugar for the first —
+
+```grasp
+payroll(dept: d, total: sum<r>) <-
+    emp(dept: d, sal: r)
+```
+
+means the rule above it, because `total:` already means `total: total` and this
+is that shorthand applied one step further: the column names the variable. So a
+head that already binds `total` in its body is the collision the
+[aggregate scope rule](inference.md#aggregate-scope-checked-here) reports, and a
+column whose name a variable may not have — `sum:` — is refused for the same
+reason the shorthand refuses it.
+
+An aggregate is not an expression. It cannot appear in a filter, in an atom's
+argument (which is one of the things it folds), or in a fact (which has no body
+to fold).
+
 **Grouping is implicit: the group is the head's non-aggregate columns** — the
 *variables* those columns read, rather than the columns themselves. The
 difference shows: `q(tag: length(d), total: s)` groups by `d`, while binding
@@ -482,6 +501,7 @@ before the join graph, so everything downstream sees the smaller core.
 | written | means |
 |---|---|
 | `x:` in an atom, a head or a pattern | `x: x` |
+| `x: agg<e>` in a head | `x: x`, and `x := agg<e>` in the body |
 | `a ++ b` | `concat(a, b)` |
 | `{a: v}` | `{"a" => v}` |
 | `{"a": v}` | `{"a" => v}` |

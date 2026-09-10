@@ -43,15 +43,19 @@ fn decl_of(decl: &ast::Decl) -> Result<core::Decl, Diagnostic> {
             args: closed_args(&f.args)?,
             span: f.span,
         }),
-        ast::Decl::Rule(r) => core::Decl::Rule(core::Rule {
-            head: core::Head {
-                relation: r.head.relation.clone(),
-                args: closed_args(&r.head.args)?,
-                span: r.head.span,
-            },
-            body: r.body.iter().map(stmt_of).collect::<Result<_, _>>()?,
-            span: r.span,
-        }),
+        ast::Decl::Rule(r) => {
+            let mut body: Vec<core::Stmt> = r.body.iter().map(stmt_of).collect::<Result<_, _>>()?;
+            body.extend(head_aggregates(&r.head.args)?);
+            core::Decl::Rule(core::Rule {
+                head: core::Head {
+                    relation: r.head.relation.clone(),
+                    args: closed_args(&r.head.args)?,
+                    span: r.head.span,
+                },
+                body,
+                span: r.span,
+            })
+        }
     })
 }
 
@@ -60,15 +64,64 @@ fn decl_of(decl: &ast::Decl) -> Result<core::Decl, Diagnostic> {
 /// The parser rejects one there, so the arm below is unreachable — but it is
 /// written as a diagnostic rather than a panic, because a reachable internal
 /// error is worse than a redundant check.
+///
+/// An aggregate argument becomes the variable its column names; the match that
+/// binds it is [`head_aggregates`].
 fn closed_args(args: &[ast::KvArg]) -> Result<Vec<(String, core::Expr)>, Diagnostic> {
     args.iter()
         .map(|a| match &a.value {
             ast::Arg::Expr(e) => Ok((a.column.clone(), expr_of(e)?)),
+            ast::Arg::Aggregate { span, .. } => Ok((
+                a.column.clone(),
+                core::Expr::Var {
+                    name: a.column.clone(),
+                    span: *span,
+                },
+            )),
             ast::Arg::Wildcard(span) => Err(Diagnostic::error(
                 Pass::Desugar,
                 *span,
                 "the wildcard `_` produces no value, so it cannot stand here",
             )),
+        })
+        .collect()
+}
+
+/// The matches a head's aggregate arguments stand for.
+///
+/// `q(total: sum<sal>) <- …` is `q(total: total) <- …, total := sum<sal>` — the
+/// `total:` shorthand applied one step further, with the column naming the
+/// variable. No fresh name is invented, so nothing here depends on the order
+/// the columns were written in, and a diagnostic about the variable says
+/// `total` rather than something the program never wrote.
+///
+/// A column whose name a variable may not have is refused by the parser, and a
+/// body that already binds this name is refused by the aggregate scope check —
+/// "bound by the body and again from the aggregate result" is exactly what that
+/// is, so it needs no second rule here.
+fn head_aggregates(args: &[ast::KvArg]) -> Result<Vec<core::Stmt>, Diagnostic> {
+    args.iter()
+        .filter_map(|a| match &a.value {
+            ast::Arg::Aggregate {
+                function,
+                arg,
+                span,
+            } => Some((a, function, arg, span)),
+            _ => None,
+        })
+        .map(|(a, function, arg, span)| {
+            Ok(core::Stmt::Match {
+                lhs: core::Pattern::Var {
+                    name: a.column.clone(),
+                    span: *span,
+                },
+                rhs: core::Rhs::Aggregate {
+                    function: *function,
+                    arg: arg.as_ref().map(expr_of).transpose()?,
+                    span: *span,
+                },
+                span: *span,
+            })
         })
         .collect()
 }
@@ -90,6 +143,15 @@ fn stmt_of(stmt: &ast::Stmt) -> Result<core::Stmt, Diagnostic> {
                         match &a.value {
                             ast::Arg::Expr(e) => core::Arg::Expr(expr_of(e)?),
                             ast::Arg::Wildcard(s) => core::Arg::Wildcard(*s),
+                            // The parser refuses one in an atom, where it would
+                            // be folding the very thing it stands in.
+                            ast::Arg::Aggregate { span, .. } => {
+                                return Err(Diagnostic::error(
+                                    Pass::Desugar,
+                                    *span,
+                                    "an aggregate cannot stand in an atom's argument",
+                                ));
+                            }
                         },
                     ))
                 })

@@ -460,3 +460,107 @@
   expected_exact_output:
     - q:
         - [1, {g: "a", n: 3}]
+
+# "An aggregate is the right-hand side of a match, or a head argument that means
+# one." The head form is sugar: `total:` already means `total: total`, so
+# `total: sum<sal>` means `total := sum<sal>` with the column naming the
+# variable. Both spellings must emit the same program, which is the whole claim.
+- name: an aggregate in a head argument is the match written shorter
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    payroll(dept: d, total: sum<r>) <-
+        emp(dept: d, sal: r)
+  equivalent_to: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    payroll(dept: d, total: total) <-
+        emp(dept: d, sal: r)
+        total := sum<r>
+
+- name: several aggregates in one head
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    span(dept: d, lo: min<r>, hi: max<r>, n: count<>) <-
+        emp(dept: d, sal: r)
+
+  input:
+    - emp:
+        - [1, {dept: "eng", sal: 100}]
+        - [1, {dept: "eng", sal: 300}]
+        - [1, {dept: "ops", sal: 50}]
+
+  expected_exact_output:
+    - span:
+        - [1, {dept: "eng", lo: 100, hi: 300, n: 2}]
+        - [1, {dept: "ops", lo: 50, hi: 50, n: 1}]
+
+# The column names the variable, so it is the variable's type that is reported.
+- name: a head aggregate names its variable after the column
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    payroll(dept: d, total: sum<r>) <-
+        emp(dept: d, sal: r)
+  expected_types:
+    payroll:   {dept: string, total: i64}
+    payroll:0: {d: string, r: i64, total: i64}
+
+# An atom's argument is one of the things an aggregate folds, so it cannot be
+# one. The scope rule says the same thing about reading a *result*; this is the
+# form that never gets that far.
+- name: an aggregate may not stand in an atom argument
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    q(v: x) <-
+        emp(dept: x, sal: sum<r>)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "an atom's argument is one of the things it folds"
+
+# A fact has no body, and an aggregate folds one.
+- name: a fact may not hold an aggregate
+  source: |
+    q :: relation(total: i64)
+    q(total: sum<r>)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "this one has no body to fold"
+
+# The column names the variable, so it has to be a name a variable can have.
+- name: a head aggregate needs a column a variable could be called
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    q(dept: d, sum: sum<r>) <-
+        emp(dept: d, sal: r)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "reserved word"
+
+# And a body that already binds that name is the collision the scope rule
+# reports — "bound by the body and again from the aggregate result" — rather
+# than a second rule written here.
+- name: a head aggregate may not collide with a body variable
+  source: |
+    emp :: relation(dept: string, sal: i64)
+    emp(dept:, sal:) <- input
+
+    q(dept: d, total: sum<r>) <-
+        emp(dept: d, sal: r)
+        total := d
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "bound by the body and again from an aggregate result"

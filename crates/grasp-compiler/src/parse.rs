@@ -217,7 +217,7 @@ impl<'a> Parser<'a> {
 
         self.expect(&Tok::LParen, "`(` or `::`")?;
         // A head or a fact — neither may hold a wildcard.
-        let args = self.kv_args(&Tok::RParen, Wildcard::Rejected)?;
+        let args = self.kv_args(&Tok::RParen, Position::Head)?;
         let close = self.expect(&Tok::RParen, "`)` or `,`")?;
         check_duplicate_columns(&args)?;
 
@@ -233,8 +233,21 @@ impl<'a> Parser<'a> {
             return Ok(Decl::Rule(Rule { head, body, span }));
         }
 
-        // A fact. The next declaration must start its own line, which is what
-        // makes a missing `<-` a diagnostic rather than a silent second fact.
+        // A fact. Only now is it known which of the two this is, which is why
+        // the argument list admitted an aggregate: one folds a rule's body, and
+        // a fact has none.
+        if let Some(a) = args
+            .iter()
+            .find(|a| matches!(a.value, Arg::Aggregate { .. }))
+        {
+            return Err(self.error(
+                a.span,
+                "a fact asserts a value, and an aggregate folds a rule's body — \
+                 this one has no body to fold",
+            ));
+        }
+        // The next declaration must start its own line, which is what makes a
+        // missing `<-` a diagnostic rather than a silent second fact.
         self.expect_line_start("a declaration")?;
         Ok(Decl::Fact(Fact {
             relation: name,
@@ -583,14 +596,14 @@ impl<'a> Parser<'a> {
 
     fn atom_args(&mut self) -> Result<(Vec<KvArg>, Span), Diagnostic> {
         self.expect(&Tok::LParen, "`(`")?;
-        let args = self.kv_args(&Tok::RParen, Wildcard::Allowed)?;
+        let args = self.kv_args(&Tok::RParen, Position::Atom)?;
         let close = self.expect(&Tok::RParen, "`)` or `,`")?;
         check_duplicate_columns(&args)?;
         Ok((args, close.span))
     }
 
     /// `kv_arg ::= name ":" expr | name ":" | name ":" "_"`
-    fn kv_args(&mut self, terminator: &Tok, wildcard: Wildcard) -> Result<Vec<KvArg>, Diagnostic> {
+    fn kv_args(&mut self, terminator: &Tok, position: Position) -> Result<Vec<KvArg>, Diagnostic> {
         let mut args = Vec::new();
         while !self.at(terminator) {
             let start = self.here();
@@ -604,7 +617,7 @@ impl<'a> Parser<'a> {
                 //  meaning." A head has to produce a value for every column and
                 //  a fact has to assert one, so neither has that meaning
                 //  available — which is why this list has to know which it is.
-                if wildcard == Wildcard::Rejected {
+                if position == Position::Head {
                     return Err(self.error(self.here(), WILDCARD_MISUSE));
                 }
                 Arg::Wildcard(self.bump().span)
@@ -617,6 +630,24 @@ impl<'a> Parser<'a> {
                     name: column.clone(),
                     span: col_span,
                 })
+            } else if self.at_aggregate() {
+                // `total: sum<sal>` — sugar for `total := sum<sal>`, so the
+                // column names the variable and has to be a name one can have.
+                if position == Position::Atom {
+                    return Err(self.error(
+                        self.here(),
+                        "an aggregate folds a rule's body, so it belongs in a head \
+                         argument or on the right of `:=`; an atom's argument is one \
+                         of the things it folds",
+                    ));
+                }
+                self.check_variable_name(&column, col_span)?;
+                let (function, arg, span) = self.aggregate()?;
+                Arg::Aggregate {
+                    function,
+                    arg,
+                    span,
+                }
             } else {
                 Arg::Expr(self.expr()?.expr)
             };
@@ -869,31 +900,47 @@ impl<'a> Parser<'a> {
     /// The right of `:=`, once the unnest markers have been dealt with: an
     /// aggregate, or an ordinary expression.
     fn rhs(&mut self) -> Result<Rhs, Diagnostic> {
-        // aggregate ::= aggregator "<" [expr] ">"
-        if let Some(Tok::Ident(name)) = self.kind()
-            && let Some(agg) = Aggregator::from_name(name)
-            && self.kind_at(1) == Some(&Tok::Lt)
-        {
-            let start = self.bump().span; // the aggregator
-            self.bump(); // `<`
-            // Below the comparison level, or the closing `>` is taken as a
-            // greater-than: `sum<r>` would read as `sum<(r > …)`. A comparison
-            // inside an aggregate must be parenthesised, which is the same
-            // answer grasp gives everywhere else it declines to guess.
-            let arg = if self.at(&Tok::Gt) {
-                None
-            } else {
-                Some(self.cat_expr()?.expr)
-            };
-            let close = self.expect(&Tok::Gt, "`>`")?;
+        if self.at_aggregate() {
+            let (function, arg, span) = self.aggregate()?;
             return Ok(Rhs::Aggregate {
-                function: agg,
+                function,
                 arg,
-                span: start.to(close.span),
+                span,
             });
         }
 
         Ok(Rhs::Expr(self.expr()?.expr))
+    }
+
+    /// Whether an `aggregate ::= aggregator "<" [expr] ">"` begins here.
+    ///
+    /// Peeks only, so a caller can refuse the form on the grounds of *where* it
+    /// is before committing to reading it.
+    fn at_aggregate(&self) -> bool {
+        matches!(self.kind(), Some(Tok::Ident(name)) if Aggregator::from_name(name).is_some())
+            && self.kind_at(1) == Some(&Tok::Lt)
+    }
+
+    /// `aggregate ::= aggregator "<" [expr] ">"`, which two places read: the
+    /// right of a `:=`, and a head argument.
+    fn aggregate(&mut self) -> Result<(Aggregator, Option<Expr>, Span), Diagnostic> {
+        let Some(Tok::Ident(name)) = self.kind() else {
+            unreachable!("`at_aggregate` said there was one")
+        };
+        let agg = Aggregator::from_name(name).expect("`at_aggregate` said there was one");
+        let start = self.bump().span; // the aggregator
+        self.bump(); // `<`
+        // Below the comparison level, or the closing `>` is taken as a
+        // greater-than: `sum<r>` would read as `sum<(r > …)`. A comparison
+        // inside an aggregate must be parenthesised, which is the same answer
+        // grasp gives everywhere else it declines to guess.
+        let arg = if self.at(&Tok::Gt) {
+            None
+        } else {
+            Some(self.cat_expr()?.expr)
+        };
+        let close = self.expect(&Tok::Gt, "`>`")?;
+        Ok((agg, arg, start.to(close.span)))
     }
 
     // -- expressions ---------------------------------------------------------
@@ -1366,12 +1413,19 @@ fn permits(outer: Group, inner: Group) -> bool {
         )
 }
 
-/// Whether `_` may appear in an argument list — an atom's may, a head's and a
-/// fact's may not.
-#[derive(PartialEq, Eq)]
-enum Wildcard {
-    Allowed,
-    Rejected,
+/// Which argument list is being read, which decides two things at once.
+///
+/// An atom's may hold `_` and may not hold an aggregate; a head's or a fact's
+/// is the other way round. Two flags would have to be kept in step with each
+/// other for no reason — there is one question here, and it is which position
+/// this is.
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum Position {
+    /// A rule head or a fact. Which of the two is not known until the parser
+    /// looks for `<-`, so an aggregate is admitted here and refused for a fact
+    /// in [`Parser::decl`].
+    Head,
+    Atom,
 }
 
 const WILDCARD_MISUSE: &str = "the wildcard `_` binds nothing and cannot be used here; it is legal only \

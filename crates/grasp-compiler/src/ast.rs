@@ -75,6 +75,21 @@ pub enum Arg {
     /// `_` — matches any value and binds nothing. Two in one atom are
     /// unrelated, so this carries no identity.
     Wildcard(Span),
+    /// `total: sum<sal>` — an aggregate written where its result goes.
+    ///
+    /// Legal in a rule head and nowhere else, and gone by the end of
+    /// desugaring: it means `total := sum<sal>` with the column naming the
+    /// variable, which is the `total:` shorthand applied one step further.
+    ///
+    /// Held here rather than in [`Expr`] because an aggregate is still not an
+    /// expression — nothing may write one in a filter, and this variant cannot
+    /// reach one.
+    Aggregate {
+        function: Aggregator,
+        /// `None` for `count<>`, which takes no argument.
+        arg: Option<Expr>,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
