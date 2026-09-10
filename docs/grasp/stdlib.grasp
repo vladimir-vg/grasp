@@ -214,3 +214,68 @@ dict:without :: function
 
 dict:merge :: function
     (dict(K, V), dict(K, V)) -> dict(K, V)
+
+# -- temporal -----------------------------------------------------------------
+#
+# `date`, `time` and `timestamp`. A timestamp is always UTC; there is no
+# zone-carrying form yet, and no `interval` — so a difference is a named
+# function that says its unit rather than an operator whose answer has no type.
+#
+# Parsing is **partial**, like every other reading that can fail to have an
+# answer: `temporal:date("the fifteenth")` derives no row. So is construction
+# from components, because not every triple of integers is a date.
+#
+# The three constructors are the one place a name means several functions and
+# the **argument's type** picks between them: `temporal:date(s)` parses and
+# `temporal:date(ts)` extracts. Everywhere else a name is one function.
+
+temporal:date :: function
+    (string) -> date
+    (timestamp) -> date
+    (year: i64, month: i64, day: i64) -> date
+
+temporal:time :: function
+    (string) -> time
+    (timestamp) -> time
+    (hour: i64, minute: i64) -> time
+    (hour: i64, minute: i64, second: i64) -> time
+    (hour: i64, minute: i64, microsecond: i64) -> time
+    (hour: i64, minute: i64, second: i64, microsecond: i64) -> time
+
+temporal:timestamp :: function
+    (string) -> timestamp
+    (date: date, time: time) -> timestamp
+    (epoch_microseconds: i64) -> timestamp
+
+# The components, each over the one type that holds it. A component of an
+# instant is `temporal:year(temporal:date(ts))` — one way to do each thing.
+
+temporal:year :: function
+    (date) -> i64
+
+temporal:month :: function
+    (date) -> i64
+
+temporal:day :: function
+    (date) -> i64
+
+temporal:hour :: function
+    (time) -> i64
+
+temporal:minute :: function
+    (time) -> i64
+
+temporal:second :: function
+    (time) -> i64
+
+temporal:microsecond :: function
+    (time) -> i64
+
+temporal:epoch_micros :: function
+    (timestamp) -> i64
+
+temporal:days_between :: function
+    (date, date) -> i64
+
+temporal:micros_between :: function
+    (timestamp, timestamp) -> i64

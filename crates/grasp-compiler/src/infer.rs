@@ -1173,7 +1173,31 @@ impl Cx {
                 if err.is_some() {
                     return (Ty::Error, err);
                 }
-                self.apply(*callee, &tys, args, *span)
+                // A family whose shape left two in the running is typed as the
+                // member the arguments choose, so the message names what that
+                // member takes rather than what the family does.
+                let callee = match family_member(*callee, &tys) {
+                    Some(picked) => picked,
+                    None if !callee.family().is_empty() && tys.iter().all(settled) => {
+                        return (
+                            Ty::Error,
+                            Some(Diagnostic::error(
+                                Pass::Infer,
+                                *span,
+                                format!(
+                                    "no version of `{}` takes {}",
+                                    callee.as_str(),
+                                    tys.iter()
+                                        .map(|t| format!("`{t}`"))
+                                        .collect::<Vec<_>>()
+                                        .join(" and ")
+                                ),
+                            )),
+                        );
+                    }
+                    None => *callee,
+                };
+                self.apply(callee, &tys, args, *span)
             }
 
             core::Expr::ArrayLit { elems, span } => {
@@ -1566,6 +1590,87 @@ impl Cx {
                     _ => wrong(),
                 }
             }
+            // A family head is typed by what its candidates agree on. Both
+            // agree here, so this never has to say "unsettled" — but a later
+            // family whose candidates disagree would be a surprise if the rule
+            // were not written down.
+            B::TemporalDate | B::TemporalTime | B::TemporalTimestamp => {
+                let out = match callee {
+                    B::TemporalDate => Ty::Date,
+                    B::TemporalTime => Ty::Time,
+                    _ => Ty::Timestamp,
+                };
+                (out, None)
+            }
+
+            B::TemporalParseDate | B::TemporalParseTime | B::TemporalParseTimestamp => {
+                let out = match callee {
+                    B::TemporalParseDate => Ty::Date,
+                    B::TemporalParseTime => Ty::Time,
+                    _ => Ty::Timestamp,
+                };
+                one(args, &arity, Ty::String, out, &wrong)
+            }
+            B::TemporalDateOf => one(args, &arity, Ty::Timestamp, Ty::Date, &wrong),
+            B::TemporalTimeOf => one(args, &arity, Ty::Timestamp, Ty::Time, &wrong),
+
+            // Components in, a value out. Partial: not every triple is a date.
+            B::TemporalMakeDate | B::TemporalMakeTime => {
+                let n = if callee == B::TemporalMakeDate { 3 } else { 4 };
+                if let Some(d) = arity(n) {
+                    return (Ty::Error, Some(d));
+                }
+                if args
+                    .iter()
+                    .all(|t| matches!(t, Ty::I64 | Ty::Int | Ty::Unknown))
+                {
+                    let out = if callee == B::TemporalMakeDate {
+                        Ty::Date
+                    } else {
+                        Ty::Time
+                    };
+                    (out, None)
+                } else {
+                    wrong()
+                }
+            }
+            B::TemporalMakeTimestamp => {
+                if let Some(d) = arity(2) {
+                    return (Ty::Error, Some(d));
+                }
+                match (&args[0], &args[1]) {
+                    (Ty::Date | Ty::Unknown, Ty::Time | Ty::Unknown) => (Ty::Timestamp, None),
+                    _ => wrong(),
+                }
+            }
+            B::TemporalFromMicros => one(args, &arity, Ty::I64, Ty::Timestamp, &wrong),
+
+            // Each reads the one type that holds the component, so a component
+            // of an instant is `temporal:year(temporal:date(ts))`.
+            B::TemporalYear | B::TemporalMonth | B::TemporalDay => {
+                one(args, &arity, Ty::Date, Ty::I64, &wrong)
+            }
+            B::TemporalHour | B::TemporalMinute | B::TemporalSecond | B::TemporalMicrosecond => {
+                one(args, &arity, Ty::Time, Ty::I64, &wrong)
+            }
+            B::TemporalEpochMicros => one(args, &arity, Ty::Timestamp, Ty::I64, &wrong),
+
+            B::TemporalDaysBetween | B::TemporalMicrosBetween => {
+                if let Some(d) = arity(2) {
+                    return (Ty::Error, Some(d));
+                }
+                let want = if callee == B::TemporalDaysBetween {
+                    Ty::Date
+                } else {
+                    Ty::Timestamp
+                };
+                if args.iter().all(|t| *t == want || matches!(t, Ty::Unknown)) {
+                    (Ty::I64, None)
+                } else {
+                    wrong()
+                }
+            }
+
             // Not a signature list: its result depends on *which* field, so it
             // reads the key literal rather than a type.
             B::RecordGet => {
@@ -1621,10 +1726,26 @@ fn numeric(t: &Ty) -> bool {
     matches!(t, Ty::I64 | Ty::F64 | Ty::Int | Ty::Unknown)
 }
 
+/// Whether a type has stopped moving, so a family may be judged on it.
+fn settled(t: &Ty) -> bool {
+    !matches!(t, Ty::Unknown | Ty::Int | Ty::Error)
+}
+
 fn scalar(t: &Ty) -> bool {
     matches!(
         t,
-        Ty::Boolean | Ty::I64 | Ty::F64 | Ty::String | Ty::Int | Ty::Unknown
+        Ty::Boolean
+            | Ty::I64
+            | Ty::F64
+            | Ty::String
+            | Ty::Int
+            | Ty::Unknown
+            // Each orders as the instant it names, so all four things this word
+            // gates are wanted: `<`, `min`/`max`, a dict key, and the key of a
+            // `dict:from_entries`.
+            | Ty::Date
+            | Ty::Time
+            | Ty::Timestamp
     )
 }
 
@@ -1941,7 +2062,24 @@ impl Cx {
                 self.resolve_subscripts_in(lhs, vars);
                 self.resolve_subscripts_in(rhs, vars);
             }
-            core::Expr::Call { args, .. } | core::Expr::ArrayLit { elems: args, .. } => {
+            core::Expr::Call { callee, args, .. } => {
+                for a in args.iter_mut() {
+                    self.resolve_subscripts_in(a, vars);
+                }
+                // A family head is a name whose shape left two functions in the
+                // running. The types decide, and they exist here.
+                //
+                // `check` has already reported a call no member accepts, so a
+                // head that survives this is unreachable — and would panic at
+                // emission rather than mislead.
+                if !callee.family().is_empty() {
+                    let tys: Vec<Ty> = args.iter().map(|a| self.expr_ty(a, vars).0).collect();
+                    if let Some(picked) = family_member(*callee, &tys) {
+                        *callee = picked;
+                    }
+                }
+            }
+            core::Expr::ArrayLit { elems: args, .. } => {
                 for a in args {
                     self.resolve_subscripts_in(a, vars);
                 }
@@ -2440,6 +2578,23 @@ fn expressions(rule: &core::Rule) -> Vec<&core::Expr> {
 /// choose. `json` is not here: a document is narrowed to what it holds and read
 /// with `dict:`, which is [one way in rather than
 /// two](../../../docs/grasp/semantics.md).
+/// Which member of a family a call means, given its argument types.
+///
+/// **The whole of type-based overloading**, and it is deliberately a match
+/// rather than a table: every other signature check in this pass is written
+/// this way, and two families is not a table's worth. The shapes have already
+/// chosen; this only breaks the ties they leave.
+fn family_member(head: core::Builtin, args: &[Ty]) -> Option<core::Builtin> {
+    use core::Builtin as B;
+    match (head, args) {
+        (B::TemporalDate, [Ty::String]) => Some(B::TemporalParseDate),
+        (B::TemporalDate, [Ty::Timestamp]) => Some(B::TemporalDateOf),
+        (B::TemporalTime, [Ty::String]) => Some(B::TemporalParseTime),
+        (B::TemporalTime, [Ty::Timestamp]) => Some(B::TemporalTimeOf),
+        _ => None,
+    }
+}
+
 fn subscript_callee(subject: &Ty) -> Option<core::Builtin> {
     match subject {
         Ty::Dict(..) => Some(core::Builtin::DictGet),

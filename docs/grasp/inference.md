@@ -109,6 +109,13 @@ it matters for the same reason: grasp-dbsp spells both functions `get`, so a
 subscript lowered straight to the target would agree with the library by
 coincidence, and nothing downstream could tell the difference.
 
+**A family is settled here too, and for the same reason.** Where two variants of
+one name share a shape — `temporal:date` over a `string` and over a `timestamp`
+— the [shape cannot choose](syntax.md#resolving-a-call), so the argument's type
+does, in this pass, by the same rewrite. That the two are separate functions
+below here is what lets one of them be partial and the other not: parsing has no
+answer for text that is not a date, and extraction always has one.
+
 A slice needs none of this. A dict has no order to take a run of, so `arr[1:5]`
 is `array:slice` whatever `arr` turns out to hold, and desugaring rewrites it
 like any other sugar.

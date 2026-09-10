@@ -97,17 +97,27 @@
 # -- conflicting typespecs --------------------------------------------------
 
 # "There shouldn't be conflicting typespecs for the same function or relation."
-# Resolution picks by shape, so two variants of one shape are two answers to one
-# call rather than an ambiguity to break by preferring the first.
-- name: two variants of one shape conflict
+# Two variants of one shape *and* one set of types are two answers to one call,
+# rather than an ambiguity to break by preferring the first.
+- name: two variants of one shape and one set of types conflict
   source: |
     array:slice :: function
         (array(T), start: i64) -> array(T)
-        (array(T), start: f64) -> array(T)
+        (array(T), start: i64) -> array(i64)
   expected_diagnostics:
     - severity: error
       pass: parse
-      message: "`array:slice` already has a variant called `(_, start:)`"
+      message: "`array:slice` already has a variant called `(_, start:)` with these types"
+
+# Of one shape and *different* types they are an overload, and the argument's
+# type is what picks — which is how `temporal:date` parses a string and extracts
+# from a timestamp under one name.
+- name: one shape over two types is an overload
+  source: |
+    temporal:date :: function
+        (string) -> date
+        (timestamp) -> date
+  expected_ok: true
 
 # Keywords are a set, so the order a variant writes them in is not part of its
 # identity — these two would answer the same call.
@@ -119,7 +129,16 @@
   expected_diagnostics:
     - severity: error
       pass: parse
-      message: "`array:slice` already has a variant called `(_, start:, stop:)`"
+      message: "`array:slice` already has a variant called `(_, start:, stop:)` with these types"
+
+# A label names no relation, no variable and no column, so the reserved words
+# are free there — which is what lets `temporal:timestamp` take the labels a
+# reader wants.
+- name: a parameter may be named after a type
+  source: |
+    temporal:timestamp :: function
+        (date: date, time: time) -> timestamp
+  expected_ok: true
 
 - name: two typespecs for one function conflict
   source: |

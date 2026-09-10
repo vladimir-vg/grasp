@@ -406,6 +406,51 @@ pub enum Builtin {
     /// An emission-time binder like [`Builtin::ArrayDrop`], for the same reason.
     DictWithoutKeys,
 
+    /// `temporal:date`, `temporal:time`, `temporal:timestamp` — the names a
+    /// program writes, and **families**: several functions share each, so what
+    /// a call means is settled by its shape and, where two shapes coincide, by
+    /// its argument type.
+    ///
+    /// None survives `infer`, which rewrites each into the variant below that
+    /// it selects.
+    TemporalDate,
+    TemporalTime,
+    TemporalTimestamp,
+
+    /// Parse. **Partial**: `2024-13-45` is not a date, so the row is not
+    /// derived — the rule `dict:get` follows.
+    TemporalParseDate,
+    TemporalParseTime,
+    TemporalParseTimestamp,
+    /// The two halves of an instant. Total: a timestamp always has both.
+    TemporalDateOf,
+    TemporalTimeOf,
+    /// From components. **Partial**: not every triple of integers is a date.
+    TemporalMakeDate,
+    TemporalMakeTime,
+    /// A date and a time-of-day as one instant, and an instant from the epoch.
+    /// Both total.
+    TemporalMakeTimestamp,
+    TemporalFromMicros,
+
+    /// The components, each over the one type that holds it. A component of a
+    /// timestamp is `temporal:year(temporal:date(ts))` — one way to do each
+    /// thing.
+    TemporalYear,
+    TemporalMonth,
+    TemporalDay,
+    TemporalHour,
+    TemporalMinute,
+    TemporalSecond,
+    TemporalMicrosecond,
+
+    /// `temporal:epoch_micros(ts)` — the instant as an integer.
+    TemporalEpochMicros,
+    /// Difference. Named rather than `-`, because the answer to "how far apart"
+    /// is an `interval`, which grasp does not have yet — so each says its unit.
+    TemporalDaysBetween,
+    TemporalMicrosBetween,
+
     /// `record:get(r, field: "f")` — what `r.f` desugars to.
     ///
     /// Not a name a program may write, and the reason is its type: the result is
@@ -447,6 +492,19 @@ impl Builtin {
             "dict:entries" => Builtin::DictEntries,
             "dict:from_entries" => Builtin::DictFromEntries,
             "dict:without" => Builtin::DictWithout,
+            "temporal:date" => Builtin::TemporalDate,
+            "temporal:time" => Builtin::TemporalTime,
+            "temporal:timestamp" => Builtin::TemporalTimestamp,
+            "temporal:year" => Builtin::TemporalYear,
+            "temporal:month" => Builtin::TemporalMonth,
+            "temporal:day" => Builtin::TemporalDay,
+            "temporal:hour" => Builtin::TemporalHour,
+            "temporal:minute" => Builtin::TemporalMinute,
+            "temporal:second" => Builtin::TemporalSecond,
+            "temporal:microsecond" => Builtin::TemporalMicrosecond,
+            "temporal:epoch_micros" => Builtin::TemporalEpochMicros,
+            "temporal:days_between" => Builtin::TemporalDaysBetween,
+            "temporal:micros_between" => Builtin::TemporalMicrosBetween,
             _ => return None,
         })
     }
@@ -479,6 +537,28 @@ impl Builtin {
         Builtin::DictFromEntries,
         Builtin::DictWithout,
         Builtin::DictWithoutKeys,
+        Builtin::TemporalDate,
+        Builtin::TemporalTime,
+        Builtin::TemporalTimestamp,
+        Builtin::TemporalParseDate,
+        Builtin::TemporalParseTime,
+        Builtin::TemporalParseTimestamp,
+        Builtin::TemporalDateOf,
+        Builtin::TemporalTimeOf,
+        Builtin::TemporalMakeDate,
+        Builtin::TemporalMakeTime,
+        Builtin::TemporalMakeTimestamp,
+        Builtin::TemporalFromMicros,
+        Builtin::TemporalYear,
+        Builtin::TemporalMonth,
+        Builtin::TemporalDay,
+        Builtin::TemporalHour,
+        Builtin::TemporalMinute,
+        Builtin::TemporalSecond,
+        Builtin::TemporalMicrosecond,
+        Builtin::TemporalEpochMicros,
+        Builtin::TemporalDaysBetween,
+        Builtin::TemporalMicrosBetween,
         Builtin::RecordGet,
     ];
 
@@ -591,6 +671,137 @@ impl Builtin {
                 }],
                 selects: None,
             }],
+
+            // The three families. Each shape names the function it means, and
+            // the two that coincide — `(_)` over a string and over a timestamp
+            // — are what the argument types settle.
+            Builtin::TemporalDate => &[
+                Signature {
+                    positional: 1,
+                    keyword: &[],
+                    selects: Some(Builtin::TemporalParseDate),
+                },
+                Signature {
+                    positional: 1,
+                    keyword: &[],
+                    selects: Some(Builtin::TemporalDateOf),
+                },
+                Signature {
+                    positional: 0,
+                    keyword: &[
+                        Param {
+                            name: "year",
+                            default: None,
+                        },
+                        Param {
+                            name: "month",
+                            default: None,
+                        },
+                        Param {
+                            name: "day",
+                            default: None,
+                        },
+                    ],
+                    selects: Some(Builtin::TemporalMakeDate),
+                },
+            ],
+            Builtin::TemporalTime => &[
+                Signature {
+                    positional: 1,
+                    keyword: &[],
+                    selects: Some(Builtin::TemporalParseTime),
+                },
+                Signature {
+                    positional: 1,
+                    keyword: &[],
+                    selects: Some(Builtin::TemporalTimeOf),
+                },
+                Signature {
+                    positional: 0,
+                    keyword: &[
+                        Param {
+                            name: "hour",
+                            default: None,
+                        },
+                        Param {
+                            name: "minute",
+                            default: None,
+                        },
+                        Param {
+                            name: "second",
+                            default: Some(Omitted::Int(0)),
+                        },
+                        Param {
+                            name: "microsecond",
+                            default: Some(Omitted::Int(0)),
+                        },
+                    ],
+                    selects: Some(Builtin::TemporalMakeTime),
+                },
+            ],
+            // No two shapes coincide here, so this family is settled by shape
+            // alone and never reaches the type dispatch.
+            Builtin::TemporalTimestamp => &[
+                Signature {
+                    positional: 1,
+                    keyword: &[],
+                    selects: Some(Builtin::TemporalParseTimestamp),
+                },
+                Signature {
+                    positional: 0,
+                    keyword: &[
+                        Param {
+                            name: "date",
+                            default: None,
+                        },
+                        Param {
+                            name: "time",
+                            default: None,
+                        },
+                    ],
+                    selects: Some(Builtin::TemporalMakeTimestamp),
+                },
+                Signature {
+                    positional: 0,
+                    keyword: &[Param {
+                        name: "epoch_microseconds",
+                        default: None,
+                    }],
+                    selects: Some(Builtin::TemporalFromMicros),
+                },
+            ],
+
+            Builtin::TemporalYear
+            | Builtin::TemporalMonth
+            | Builtin::TemporalDay
+            | Builtin::TemporalHour
+            | Builtin::TemporalMinute
+            | Builtin::TemporalSecond
+            | Builtin::TemporalMicrosecond
+            | Builtin::TemporalEpochMicros => UNARY,
+            Builtin::TemporalDaysBetween | Builtin::TemporalMicrosBetween => BINARY,
+
+            // What a family resolves to. A program reaches these through the
+            // head, so their own shape is the one the head's row already
+            // matched — written out because `signatures` must answer for every
+            // variant, and because emission reads the arity.
+            Builtin::TemporalParseDate
+            | Builtin::TemporalParseTime
+            | Builtin::TemporalParseTimestamp
+            | Builtin::TemporalDateOf
+            | Builtin::TemporalTimeOf
+            | Builtin::TemporalFromMicros => UNARY,
+            Builtin::TemporalMakeDate => &[Signature {
+                positional: 3,
+                keyword: &[],
+                selects: None,
+            }],
+            Builtin::TemporalMakeTime => &[Signature {
+                positional: 4,
+                keyword: &[],
+                selects: None,
+            }],
+            Builtin::TemporalMakeTimestamp => BINARY,
         }
     }
 
@@ -629,7 +840,20 @@ impl Builtin {
     pub fn callable(self) -> bool {
         !matches!(
             self,
-            Builtin::ArrayDrop | Builtin::DictWithoutKeys | Builtin::RecordGet
+            Builtin::ArrayDrop
+                | Builtin::DictWithoutKeys
+                | Builtin::RecordGet
+                // What a family head resolves to. The *name* is writable; these
+                // are which function it turned out to mean.
+                | Builtin::TemporalParseDate
+                | Builtin::TemporalParseTime
+                | Builtin::TemporalParseTimestamp
+                | Builtin::TemporalDateOf
+                | Builtin::TemporalTimeOf
+                | Builtin::TemporalMakeDate
+                | Builtin::TemporalMakeTime
+                | Builtin::TemporalMakeTimestamp
+                | Builtin::TemporalFromMicros
         )
     }
 
@@ -642,7 +866,20 @@ impl Builtin {
     ///
     /// [semantics]: ../../../docs/grasp/semantics.md
     pub fn partial(self) -> bool {
-        matches!(self, Builtin::DictGet | Builtin::ArrayAt)
+        matches!(
+            self,
+            Builtin::DictGet
+                | Builtin::ArrayAt
+                // Text that is not a date has no answer, and neither does a
+                // February 31st. Extraction from an instant always has one,
+                // which is why parsing and extracting are two variants rather
+                // than one name that is sometimes partial.
+                | Builtin::TemporalParseDate
+                | Builtin::TemporalParseTime
+                | Builtin::TemporalParseTimestamp
+                | Builtin::TemporalMakeDate
+                | Builtin::TemporalMakeTime
+        )
     }
 
     /// What grasp calls it.
@@ -673,6 +910,30 @@ impl Builtin {
             Builtin::DictFromEntries => "dict:from_entries",
             Builtin::DictWithout => "dict:without",
             Builtin::DictWithoutKeys => "dict:without_keys",
+            // An implementation answers to the name it was reached through: a
+            // diagnostic says `temporal:date`, which is what the program wrote.
+            Builtin::TemporalDate
+            | Builtin::TemporalParseDate
+            | Builtin::TemporalDateOf
+            | Builtin::TemporalMakeDate => "temporal:date",
+            Builtin::TemporalTime
+            | Builtin::TemporalParseTime
+            | Builtin::TemporalTimeOf
+            | Builtin::TemporalMakeTime => "temporal:time",
+            Builtin::TemporalTimestamp
+            | Builtin::TemporalParseTimestamp
+            | Builtin::TemporalMakeTimestamp
+            | Builtin::TemporalFromMicros => "temporal:timestamp",
+            Builtin::TemporalYear => "temporal:year",
+            Builtin::TemporalMonth => "temporal:month",
+            Builtin::TemporalDay => "temporal:day",
+            Builtin::TemporalHour => "temporal:hour",
+            Builtin::TemporalMinute => "temporal:minute",
+            Builtin::TemporalSecond => "temporal:second",
+            Builtin::TemporalMicrosecond => "temporal:microsecond",
+            Builtin::TemporalEpochMicros => "temporal:epoch_micros",
+            Builtin::TemporalDaysBetween => "temporal:days_between",
+            Builtin::TemporalMicrosBetween => "temporal:micros_between",
             Builtin::RecordGet => "record:get",
         }
     }
@@ -715,6 +976,30 @@ impl Builtin {
             Builtin::DictFromEntries => Some("dict"),
             Builtin::DictWithout => None,
             Builtin::DictWithoutKeys => None,
+            // The three heads never reach emission: `infer` settles them.
+            Builtin::TemporalDate | Builtin::TemporalTime | Builtin::TemporalTimestamp => None,
+            // Parsing and the two halves of an instant are `cast` in the
+            // target, which is not a call — so each has its own emitter arm.
+            Builtin::TemporalParseDate
+            | Builtin::TemporalParseTime
+            | Builtin::TemporalParseTimestamp
+            | Builtin::TemporalDateOf
+            | Builtin::TemporalTimeOf => None,
+            Builtin::TemporalMakeDate => Some("make_date"),
+            Builtin::TemporalMakeTime => Some("make_time"),
+            Builtin::TemporalMakeTimestamp => Some("make_timestamp"),
+            Builtin::TemporalFromMicros => Some("timestamp_from_micros"),
+            Builtin::TemporalYear => Some("year"),
+            Builtin::TemporalMonth => Some("month"),
+            Builtin::TemporalDay => Some("day"),
+            Builtin::TemporalHour => Some("hour"),
+            Builtin::TemporalMinute => Some("minute"),
+            Builtin::TemporalSecond => Some("second"),
+            Builtin::TemporalMicrosecond => Some("microsecond"),
+            Builtin::TemporalEpochMicros => Some("epoch_micros"),
+            // A difference is a subtraction of two epochs, so it becomes an
+            // expression rather than another call.
+            Builtin::TemporalDaysBetween | Builtin::TemporalMicrosBetween => None,
             Builtin::RecordGet => None,
         }
     }

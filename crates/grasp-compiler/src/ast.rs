@@ -72,6 +72,19 @@ pub struct Variant {
 }
 
 impl Variant {
+    /// What a call must match for this variant to be the one: its
+    /// [`Shape`], and the types under it.
+    ///
+    /// Two variants of one shape are only a conflict when this agrees too —
+    /// which is what lets `temporal:date` take a `string` and a `timestamp`
+    /// under one name. Keywords are sorted, so the pair compares as the set a
+    /// shape already is.
+    pub fn signature(&self) -> (Shape, Vec<Type>, Vec<(String, Type)>) {
+        let mut keyword = self.keyword.clone();
+        keyword.sort_by(|a, b| a.0.cmp(&b.0));
+        (self.shape(), self.positional.clone(), keyword)
+    }
+
     pub fn shape(&self) -> Shape {
         Shape::new(
             self.positional.len(),
@@ -523,6 +536,9 @@ impl fmt::Display for Type {
             Type::F64 => f.write_str("f64"),
             Type::String => f.write_str("string"),
             Type::Json => f.write_str("json"),
+            Type::Date => f.write_str("date"),
+            Type::Time => f.write_str("time"),
+            Type::Timestamp => f.write_str("timestamp"),
             Type::Var(name) => f.write_str(name),
             Type::Optional(t) => write!(f, "optional({t})"),
             Type::Array(t) => write!(f, "array({t})"),
@@ -556,6 +572,13 @@ pub enum Type {
     Record(Vec<(String, Type)>),
     Array(Box<Type>),
     Dict(Box<Type>, Box<Type>),
+    /// A calendar date — no time, no zone.
+    Date,
+    /// A time of day — no date, no zone.
+    Time,
+    /// An instant, always UTC. There is no zone-carrying form; see
+    /// `overview.md`.
+    Timestamp,
     /// `T` — a type variable, and the one thing here that is not a type.
     ///
     /// Legal in a [function typespec][`FnSpec`] and nowhere else: it says that

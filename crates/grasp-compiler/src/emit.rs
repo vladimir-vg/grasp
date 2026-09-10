@@ -824,6 +824,12 @@ fn definite_value(ty: &Type) -> String {
         Type::F64 => "0.0".to_string(),
         Type::String => "\"\"".to_string(),
         Type::Json => "cast(0, json)".to_string(),
+        // The epoch, which every one of the three has and which is definite:
+        // `make_date` is fallible and `cast` from a string is too, so the
+        // instant is the way in that cannot fail.
+        Type::Timestamp => "timestamp_from_micros(0)".to_string(),
+        Type::Date => "cast(timestamp_from_micros(0), date)".to_string(),
+        Type::Time => "cast(timestamp_from_micros(0), time)".to_string(),
         Type::Optional(_) => "NONE".to_string(),
         // A type variable is a function typespec's, and a typespec does not
         // reach the core: desugaring drops it, having nothing to lower.
@@ -1061,6 +1067,9 @@ fn ty_text(ty: &Type) -> String {
         Type::F64 => "f64".to_string(),
         Type::String => "string".to_string(),
         Type::Json => "json".to_string(),
+        Type::Date => "date".to_string(),
+        Type::Time => "time".to_string(),
+        Type::Timestamp => "timestamp".to_string(),
         Type::Optional(t) => format!("optional({})", ty_text(t)),
         Type::Array(t) => format!("array({})", ty_text(t)),
         Type::Dict(k, v) => format!("dict({}, {})", ty_text(k), ty_text(v)),
@@ -1299,6 +1308,50 @@ fn call_text(scope: &Scope<'_>, callee: core::Builtin, args: &[core::Expr]) -> S
         // "Absence is asked for, not unwrapped everywhere" — and asking is what
         // `get` already answers, since it is the one target builtin that yields
         // absence rather than being rejected for it.
+        // Parsing and the two halves of an instant are `cast` in the target,
+        // which is a construct rather than a call.
+        (
+            core::Builtin::TemporalParseDate
+            | core::Builtin::TemporalParseTime
+            | core::Builtin::TemporalParseTimestamp
+            | core::Builtin::TemporalDateOf
+            | core::Builtin::TemporalTimeOf,
+            [subject],
+        ) => {
+            let (to, optional) = match callee {
+                core::Builtin::TemporalParseDate => ("date", true),
+                core::Builtin::TemporalParseTime => ("time", true),
+                core::Builtin::TemporalParseTimestamp => ("timestamp", true),
+                core::Builtin::TemporalDateOf => ("date", false),
+                _ => ("time", false),
+            };
+            // A parse may fail, and grasp-dbsp says so rather than dropping the
+            // row — so the target type is `optional` and the narrowing this
+            // call was lifted into is what drops it.
+            let text = expr_text(subject, None);
+            if optional {
+                format!("cast({text}, optional({to}))")
+            } else {
+                format!("cast({text}, {to})")
+            }
+        }
+        // A difference is a subtraction of two epochs. Named rather than `-`
+        // because the answer to "how far apart" is an `interval`, which grasp
+        // does not have — so the name says the unit instead.
+        (
+            core::Builtin::TemporalDaysBetween | core::Builtin::TemporalMicrosBetween,
+            [later, earlier],
+        ) => {
+            let of = match callee {
+                core::Builtin::TemporalDaysBetween => "epoch_days",
+                _ => "epoch_micros",
+            };
+            format!(
+                "({of}({}) - {of}({}))",
+                expr_text(later, None),
+                expr_text(earlier, None)
+            )
+        }
         (core::Builtin::DictHas, [dict, key]) => format!(
             "(get({}, {}) != NONE)",
             expr_text(dict, None),

@@ -588,8 +588,8 @@ so a row whose array is the wrong length is simply not derived.
 
 **Every function is namespaced, and the namespace is the type family it belongs
 to.** `string:length` and `array:length` are two functions, not one asked to
-guess from its argument — so every name is monomorphic, and type-based
-overloading is not something the language has to have.
+guess from its argument. Namespacing is what makes that the *default*, so a name
+is one function unless the library says otherwise — and almost every one is.
 
 `integer:` and `float:` do not merge into a `number:`. Float semantics are not
 integer semantics, and `numeric` — arbitrary-precision decimal, when it arrives —
@@ -618,14 +618,25 @@ division and every destructure obey. Absence is something to ask about,
 `array:slice(a, start: 0, stop: 3)`, `dict:without(d, keys: ks)`. A binary
 operation over one type stays positional: `string:concat(a, b)`.
 
-**Overloads are by shape, not by type.** A name may have several variants, and
-the one a call means is settled by [its shape](syntax.md#resolving-a-call) — the
-arguments given by position and the set of keyword names given — before any type
-is looked at. That is what lets `array:slice` be eight variants over `start:`
-`stop:` `step:` rather than one signature with a defaulting rule, and it is the
-other half of why namespacing keeps every name monomorphic: two functions over
-different types are two names, and two ways of calling one function are two
-shapes.
+**Overloads are by shape first.** A name may have several variants, and the one
+a call means is settled by [its shape](syntax.md#resolving-a-call) — the
+arguments given by position and the set of keyword names given. That is what
+lets `array:slice` be eight variants over `start:` `stop:` `step:` rather than
+one signature with a defaulting rule, and it settles every call in the library
+but two.
+
+**Where two variants share a shape, the argument's type decides.**
+`temporal:date(s)` parses a string and `temporal:date(ts)` extracts from an
+instant: both are one argument by position, so the shape cannot choose. Nothing
+else in the library needs this, and the reason is the namespacing above — two
+functions over *different families* are two names, and only a constructor, which
+belongs to the type it builds rather than to the type it reads, has cause to
+take more than one.
+
+grasp already dispatched on type before the library asked for it: `d[k]` is
+`dict:get` and `arr[i]` is `array:at`, chosen by the subject's type. Both are
+settled in [inference](inference.md#a-subscripts-function-is-chosen-here), for
+the same reason and by the same pass.
 
 **Operators are sugar for functions.** `a ++ b` is `string:concat(a, b)`, `not e`
 is `boolean:not(e)`, `arr[1:5]` is `array:slice(arr, start: 1, stop: 5)`. A

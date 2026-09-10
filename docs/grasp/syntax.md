@@ -145,6 +145,7 @@ variable       ::= [a-zA-Z_][a-zA-Z0-9_]*   -- single segment: no namespace
 literal        ::= INTEGER | FLOAT | STRING | "true" | "false" | "NONE"
 
 type           ::= "boolean" | "i64" | "f64" | "string" | "json"
+                 | "date" | "time" | "timestamp"
                  | "optional" "(" type ")"
                  | "record" "(" [type_fields] ")"
                  | "array" "(" type ")"
@@ -152,6 +153,7 @@ type           ::= "boolean" | "i64" | "f64" | "string" | "json"
                  | type_var                    -- only in a variant
 type_fields    ::= name ":" type ("," name ":" type)* [","]
 key_type       ::= "boolean" | "i64" | "f64" | "string"
+                 | "date" | "time" | "timestamp"
 type_var       ::= [A-Z][a-zA-Z0-9]*
 ```
 
@@ -360,7 +362,7 @@ array:slice :: function
 Written in bulk — one block per name, however many ways there are to call it —
 so that a function's typespec is in one place. **There is one typespec per
 name**, and a second is a conflict rather than an addition; so are two variants
-of one [shape](#resolving-a-call). A function typespec declares a name in the
+of one [shape](#resolving-a-call) whose parameter types also agree. A function typespec declares a name in the
 [standard library](semantics.md#the-standard-library) and must therefore be
 namespaced: grasp has no user-defined functions.
 
@@ -379,9 +381,9 @@ and unaffected.
 
 ### Resolving a call
 
-A callable may have several variants, and the one a call means is decided by its
-**shape**: how many arguments it gives by position, and the *set* of keyword
-names it gives. Erlang's dispatch rather than C++'s — **by shape, not by type**.
+A callable may have several variants, and the one a call means is decided first
+by its **shape**: how many arguments it gives by position, and the *set* of
+keyword names it gives. Erlang's dispatch rather than C++'s.
 
 ```
 array:at(a, index: i)     shape (_, index:)
@@ -392,10 +394,23 @@ Keywords are a set, so `f(a, start: 1, stop: 9)` and `f(a, stop: 9, start: 1)`
 are one call, and two variants that differ only in the order they write their
 keywords are two answers to the same one.
 
-Resolution runs before any type is looked at. That is what lets `array:slice`
-carry eight variants over `start:` `stop:` `step:` without a defaulting
-mechanism, and it is why a call whose shape no variant has is reported in the
-words of the call rather than as a type error about an argument.
+Shape resolution runs before any type is looked at. That is what lets
+`array:slice` carry eight variants over `start:` `stop:` `step:` without a
+defaulting mechanism, and it is why a call whose shape no variant has is
+reported in the words of the call rather than as a type error about an argument.
+
+**Where two variants share a shape, the argument's type decides**, and that tie
+is broken in [inference](inference.md#a-subscripts-function-is-chosen-here)
+rather than here, because it is the first pass that has types.
+
+```
+temporal:date("2024-01-15")   shape (_), a string     — parses
+temporal:date(ts)             shape (_), a timestamp  — extracts
+```
+
+Two variants of one shape are a [conflicting typespec](#typespecs) only when
+their parameter *types* also agree. Different types are an overload; the same
+types twice are two answers to one call.
 
 ### Reserved words
 
@@ -403,7 +418,7 @@ These may not name a relation, a variable or a column:
 
 - **keywords** — `not`, `and`, `or`, `input`, `true`, `false`, `NONE`
 - **type names** — `boolean`, `i64`, `f64`, `string`, `json`, `optional`,
-  `record`, `array`, `dict`
+  `record`, `array`, `dict`, `date`, `time`, `timestamp`
 - **declaration kinds** — `relation`, `function`; the word a typespec uses to
   say what it declares
 - **aggregators** — `sum`, `count`, `min`, `max`, `avg`

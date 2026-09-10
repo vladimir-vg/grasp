@@ -10,7 +10,7 @@
 //! `docs/grasp-dbsp/language.md`.
 
 use grasp_compiler::parse::{AGGREGATORS, DECL_KINDS, KEYWORDS, RESERVED_NAMESPACES, TYPE_NAMES};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 fn doc(name: &str) -> String {
@@ -142,11 +142,20 @@ fn the_library_is_stdlib_grasp() {
         declared.insert(spec.name.clone(), shapes);
     }
 
+    // The names a program may write. A family's implementations answer to the
+    // head's name and are not callable themselves, so this is a set of *names*
+    // rather than of variants.
+    let writable: BTreeSet<&str> = Builtin::ALL
+        .iter()
+        .filter(|b| b.callable())
+        .map(|b| b.as_str())
+        .collect();
+
     for b in Builtin::ALL {
         let name = b.as_str();
         if !b.callable() {
             assert!(
-                !declared.contains_key(name),
+                writable.contains(name) || !declared.contains_key(name),
                 "`{name}` is written by desugaring and is not a name a program \
                  may take, so declaring it in the library offers something \
                  nothing can call"

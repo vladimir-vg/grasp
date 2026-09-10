@@ -242,11 +242,21 @@ rather than another call:
 | grasp | grasp-dbsp |
 |---|---|
 | `record:get(r, field: "f")` | `r.f` |
+| `temporal:date(s)` | `cast(s, optional(date))`, then the narrowing |
+| `temporal:date(ts)` | `cast(ts, date)` |
+| `temporal:days_between(a, b)` | `(epoch_days(a) - epoch_days(b))` |
 | `dict:has(d, key: k)` | `(get(d, k) != NONE)` |
 | `dict:values(d)` | `map_array(dict_entries(d), function((e) -> e.value))` |
 | `dict:without(d, keys: ks)` | `dict(filter_array(dict_entries(d), function((e) -> (not contains(ks, e.key)))))` |
 | `dict:without_keys(d, ["a"])` | the same, with the keys unrolled into `e.key != "a"` |
 | `array:drop(a, n)` | `filter_array(a, function((e, i) -> (i >= n)))` |
+
+The two `temporal:date` rows are **one grasp name over two target forms**, which
+is what type-based overloading buys: parsing may fail and so is `optional` and
+narrowed, while extraction always has an answer and is not. Splitting them is
+the reason the difference costs nothing —
+[`inference.md`](inference.md#a-subscripts-function-is-chosen-here) picks which,
+and below that they are two ordinary calls.
 
 `dict:has` is the shape the rest of the library is arranged to avoid — grasp
 [derives no row](semantics.md#a-body-must-have-an-answer) where `dict:get` has no

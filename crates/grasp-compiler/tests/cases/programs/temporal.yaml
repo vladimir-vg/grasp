@@ -1,0 +1,298 @@
+# `date`, `time` and `timestamp`, and the `temporal:` library.
+#
+# The three are **scalars**, which in grasp gates four things at once: ordering,
+# `min`/`max`, keying a dict, and `dict:from_entries`. All four are wanted, and
+# none of them needed a rule of its own.
+#
+# They are not numeric, so `+` on them is the error it already was. A difference
+# is a named function that says its unit, because the answer to "how far apart"
+# is an `interval` and grasp does not have one yet.
+
+- name: a date orders, and a rule may filter on it
+  source: |
+    sale :: relation(d: date, amount: i64)
+    sale(d:, amount:) <- input
+
+    recent(amount: a) <-
+        sale(d: d, amount: a)
+        cutoff := temporal:date(year: 2024, month: 1, day: 1)
+        d > cutoff
+
+  input:
+    - sale:
+        - [1, {d: "2023-06-01", amount: 10}]
+        - [1, {d: "2024-06-01", amount: 20}]
+
+  expected_exact_output:
+    - recent:
+        - [1, {amount: 20}]
+
+- name: a date groups, which is what makes it a scalar
+  source: |
+    sale :: relation(d: date, amount: i64)
+    sale(d:, amount:) <- input
+
+    daily(d: d, total: sum<a>) <-
+        sale(d: d, amount: a)
+
+  input:
+    - sale:
+        - [1, {d: "2024-01-01", amount: 10}]
+        - [1, {d: "2024-01-01", amount: 20}]
+        - [1, {d: "2024-01-02", amount: 5}]
+
+  expected_exact_output:
+    - daily:
+        - [1, {d: "2024-01-01", total: 30}]
+        - [1, {d: "2024-01-02", total: 5}]
+
+# -- one name, two types ------------------------------------------------------
+#
+# `temporal:date` parses a `string` and extracts from a `timestamp`. Both are
+# shape `(_)`, so the shape cannot choose and the **argument's type** does.
+
+- name: temporal:date parses a string
+  source: |
+    src :: relation(s: string)
+    src(s:) <- input
+
+    out(d: d) <-
+        src(s: s)
+        d := temporal:date(s)
+
+  input:
+    - src:
+        - [1, {s: "2024-01-15"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {d: "2024-01-15"}]
+
+# Parsing is partial, so a string that is not a date derives no row — the rule
+# `dict:get` follows.
+- name: and derives no row for text that is not one
+  source: |
+    src :: relation(s: string)
+    src(s:) <- input
+
+    out(d: d) <-
+        src(s: s)
+        d := temporal:date(s)
+
+  input:
+    - src:
+        - [1, {s: "the fifteenth"}]
+
+  expected_exact_output:
+    - {}
+
+- name: temporal:date extracts from a timestamp
+  source: |
+    src :: relation(ts: timestamp)
+    src(ts:) <- input
+
+    out(d: d, t: t) <-
+        src(ts: ts)
+        d := temporal:date(ts)
+        t := temporal:time(ts)
+
+  input:
+    - src:
+        - [1, {ts: "2024-01-15 14:30:05"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {d: "2024-01-15", t: "14:30:05"}]
+
+# Extraction always has an answer, so unlike parsing it drops nothing — which is
+# why the two are separate functions under one name rather than one that is
+# sometimes partial.
+- name: extraction drops no row
+  source: |
+    src :: relation(ts: timestamp)
+    src(ts:) <- input
+
+    out(y: y) <-
+        src(ts: ts)
+        y := temporal:year(temporal:date(ts))
+
+  input:
+    - src:
+        - [1, {ts: "2024-01-15 14:30:05"}]
+        - [1, {ts: "1999-12-31 23:59:59"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {y: 2024}]
+        - [1, {y: 1999}]
+
+- name: a shape no version takes is reported against the call
+  source: |
+    src :: relation(n: i64)
+    src(n:) <- input
+
+    out(d: d) <-
+        src(n: n)
+        d := temporal:date(n)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "no version of `temporal:date` takes `i64`"
+
+# -- construction -------------------------------------------------------------
+
+- name: components make a date, and a bad one derives no row
+  source: |
+    src :: relation(y: i64, m: i64, d: i64)
+    src(y:, m:, d:) <- input
+
+    out(v: v) <-
+        src(y: y, m: m, d: d)
+        v := temporal:date(year: y, month: m, day: d)
+
+  input:
+    - src:
+        - [1, {y: 2024, m: 2, d: 29}]
+        - [1, {y: 2023, m: 2, d: 29}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: "2024-02-29"}]
+
+# `second:` and `microsecond:` default to zero, so four shapes call one
+# function — the mechanism `array:slice` already uses.
+- name: a time takes its trailing components or leaves them
+  source: |
+    src :: relation(h: i64, m: i64)
+    src(h:, m:) <- input
+
+    out(a: a, b: b, c: c) <-
+        src(h: h, m: m)
+        a := temporal:time(hour: h, minute: m)
+        b := temporal:time(hour: h, minute: m, second: 5)
+        c := temporal:time(hour: h, minute: m, second: 5, microsecond: 123456)
+
+  input:
+    - src:
+        - [1, {h: 14, m: 30}]
+
+  expected_exact_output:
+    - out:
+        - [1, {a: "14:30:00", b: "14:30:05", c: "14:30:05.123456"}]
+
+- name: a date and a time make an instant
+  source: |
+    src :: relation(d: date, t: time)
+    src(d:, t:) <- input
+
+    out(ts: ts, back: n) <-
+        src(d: d, t: t)
+        ts := temporal:timestamp(date: d, time: t)
+        n := temporal:epoch_micros(ts)
+
+  input:
+    - src:
+        - [1, {d: "1970-01-01", t: "00:00:01"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {ts: "1970-01-01 00:00:01", back: 1000000}]
+
+- name: an instant from the epoch
+  source: |
+    src :: relation(n: i64)
+    src(n:) <- input
+
+    out(ts: ts) <-
+        src(n: n)
+        ts := temporal:timestamp(epoch_microseconds: n)
+
+  input:
+    - src:
+        - [1, {n: 0}]
+
+  expected_exact_output:
+    - out:
+        - [1, {ts: "1970-01-01 00:00:00"}]
+
+# -- components and differences -----------------------------------------------
+
+- name: every component of a date and a time
+  source: |
+    src :: relation(d: date, t: time)
+    src(d:, t:) <- input
+
+    out(y: y, mo: mo, dy: dy, h: h, mi: mi, s: s, us: us) <-
+        src(d: d, t: t)
+        y := temporal:year(d)
+        mo := temporal:month(d)
+        dy := temporal:day(d)
+        h := temporal:hour(t)
+        mi := temporal:minute(t)
+        s := temporal:second(t)
+        us := temporal:microsecond(t)
+
+  input:
+    - src:
+        - [1, {d: "2024-02-29", t: "14:30:05.123456"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {y: 2024, mo: 2, dy: 29, h: 14, mi: 30, s: 5, us: 123456}]
+
+- name: a difference says its unit
+  source: |
+    src :: relation(a: date, b: date, x: timestamp, y: timestamp)
+    src(a:, b:, x:, y:) <- input
+
+    out(days: d, micros: m) <-
+        src(a: a, b: b, x: x, y: y)
+        d := temporal:days_between(a, b)
+        m := temporal:micros_between(x, y)
+
+  input:
+    - src:
+        - [1, {a: "2024-03-01", b: "2024-02-01", x: "2024-01-01 00:00:01", y: "2024-01-01 00:00:00"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {days: 29, micros: 1000000}]
+
+# -- narrowing ----------------------------------------------------------------
+#
+# A document holds a temporal value as a string, so `d :: date` is the `json ::
+# T` row applied to a new `T` — the same codec, reached from the other side.
+
+- name: a document narrows to a date
+  source: |
+    src :: relation(doc: json)
+    src(doc:) <- input
+
+    out(d: d) <-
+        src(doc: doc)
+        d := doc
+        d :: date
+
+  input:
+    - src:
+        - [1, {doc: "2024-01-15"}]
+        - [1, {doc: "not a date"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {d: "2024-01-15"}]
+
+# Temporal types are not numeric, so this is the error it already was for a
+# string — no new rule, which is the point of them not being numbers.
+- name: there is no arithmetic on them
+  source: |
+    src :: relation(d: date)
+    src(d:) <- input
+
+    out(v: v) <-
+        src(d: d)
+        v := d + 1
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "no version of `+` takes `date` and `an integer literal`"

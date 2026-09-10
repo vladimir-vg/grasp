@@ -97,9 +97,20 @@ design comes from. What is missing is missing on purpose.
 - **The rest of the type vocabulary.** `dynamic` — the top type, and the one
   most likely to be wanted first, since it is what an untyped subset of the
   language would be built on. Then the narrower integers and `f32`, the
-  arbitrary-precision `integer` and `numeric`, `bytes` and `bits`, the temporal
-  types, string encodings, and general `enum(...)` beyond the `boolean` case.
-  Each needs a grasp-dbsp value type underneath before grasp can offer it.
+  arbitrary-precision `integer` and `numeric`, `bytes` and `bits`, string
+  encodings, and general `enum(...)` beyond the `boolean` case. Each needs a
+  grasp-dbsp value type underneath before grasp can offer it.
+
+  The temporal family has begun — `date`, `time` and `timestamp` — and what is
+  left of it is **`interval`** and **`timestamp_with_timezone`**. Neither is
+  merely more of the same. An `interval` is three independent components in the
+  design this is ported from and two separate types in Feldera's, so it needs a
+  value type of grasp-dbsp's own, a folding rule for the components a target
+  cannot consume, and an ordering over values that do not convert. A
+  zone-carrying instant needs IANA tzdata and DST-overlap semantics. With
+  `interval` come `+` and `-` on temporal values, which is why there is no
+  arithmetic on them today. The PostgreSQL special values `infinity`,
+  `-infinity` and `epoch` are left out with them.
 
   The **bitwise and shift operators** arrive with `bits` and are part of that
   entry rather than a separate one: they have no meaning without the type, and
@@ -151,17 +162,6 @@ design comes from. What is missing is missing on purpose.
   rest on: [`semantics.md`](semantics.md#time) says what a transaction is and
   how weights accumulate, which is time as *ordering*, and says nothing about a
   clock.
-
-- **Keyword arguments.** [`syntax.md`](syntax.md#expressions)'s `args` production
-  admits `f(a, b: 1)`, and **no builtin takes one** — so the form is grammatical
-  and cannot be satisfied, which is why the compiler reports it as unimplemented
-  rather than as a mistake. It waits on the library that wants it: that dialect's
-  stdlib is full of them, `dict:without(d, keys: ks)` and its neighbours.
-
-  Worth saying what they are *not* for here. There, `IDENTIFIER ":"` after `(`
-  is what tells an atom from a call. grasp needs no such lookahead — `name(` is
-  an atom at body-statement level and a call inside an expression — so nothing
-  in the grammar depends on the production staying.
 
 - **The rest of the standard library.** [`stdlib.grasp`](stdlib.grasp) declares
   the whole of it, and this compiler has some of it; calling one of the others is

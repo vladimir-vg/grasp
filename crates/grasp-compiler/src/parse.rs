@@ -30,7 +30,18 @@ use std::collections::BTreeSet;
 pub const KEYWORDS: &[&str] = &["not", "and", "or", "input", "true", "false", "NONE"];
 
 pub const TYPE_NAMES: &[&str] = &[
-    "boolean", "i64", "f64", "string", "json", "optional", "record", "array", "dict",
+    "boolean",
+    "i64",
+    "f64",
+    "string",
+    "json",
+    "optional",
+    "record",
+    "array",
+    "dict",
+    "date",
+    "time",
+    "timestamp",
 ];
 
 /// The word after `::` that says what kind of thing is being declared. Neither
@@ -470,6 +481,22 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// A keyword argument's label is **not** a name: it names no relation, no
+    /// variable and no column, so the reserved words are free here.
+    ///
+    /// `temporal:timestamp(date: d, time: t)` is the reason — the label a
+    /// reader wants is the type's own word. A call site never checked this at
+    /// all, so it is the typespec that was the odd one out.
+    fn check_parameter_name(&self, name: &str, span: Span) -> Result<(), Diagnostic> {
+        if name.contains(':') {
+            return Err(self.error(
+                span,
+                format!("`{name}` is namespace-qualified; a parameter name is a single segment"),
+            ));
+        }
+        Ok(())
+    }
+
     fn check_variable_name(&self, name: &str, span: Span) -> Result<(), Diagnostic> {
         if is_reserved(name) {
             return Err(self.error(
@@ -563,14 +590,18 @@ impl<'a> Parser<'a> {
             }
             let variant = self.variant()?;
             // "There shouldn't be conflicting typespecs for the same function."
-            // Resolution picks by shape, so two variants of one shape are two
-            // answers to one call rather than an ambiguity to break by
-            // preferring the first.
-            let shape = variant.shape();
-            if variants.iter().any(|v| v.shape() == shape) {
+            // Two variants of one shape *and* one set of types are two answers
+            // to one call rather than an ambiguity to break by preferring the
+            // first. Of one shape and different types they are an overload, and
+            // the argument's type is what picks.
+            let signature = variant.signature();
+            if variants.iter().any(|v| v.signature() == signature) {
                 return Err(self.error(
                     variant.span,
-                    format!("`{name}` already has a variant called `{shape}`"),
+                    format!(
+                        "`{name}` already has a variant called `{}` with these types",
+                        signature.0
+                    ),
                 ));
             }
             variants.push(variant);
@@ -598,7 +629,7 @@ impl<'a> Parser<'a> {
                 matches!(self.kind(), Some(Tok::Ident(_))) && self.kind_at(1) == Some(&Tok::Colon);
             if named {
                 let (param, param_span) = self.expect_ident("a parameter name")?;
-                self.check_column_name(&param, param_span)?;
+                self.check_parameter_name(&param, param_span)?;
                 self.bump(); // `:`
                 if keyword.iter().any(|(k, _)| *k == param) {
                     return Err(self.error(param_span, format!("duplicate parameter `{param}`")));
@@ -648,6 +679,9 @@ impl<'a> Parser<'a> {
             "f64" => Ok(Type::F64),
             "string" => Ok(Type::String),
             "json" => Ok(Type::Json),
+            "date" => Ok(Type::Date),
+            "time" => Ok(Type::Time),
+            "timestamp" => Ok(Type::Timestamp),
             "optional" => {
                 self.expect(&Tok::LParen, "`(`")?;
                 let inner = self.ty_of(vars)?;

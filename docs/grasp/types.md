@@ -19,6 +19,9 @@ is in [`syntax.md`](syntax.md#grammar).
 | `array(T)` | a sequence of one element type |
 | `dict(K,V)` | a key-value map, `K` a scalar |
 | `json` | a document of any shape |
+| `date` | a calendar date — no time, no zone |
+| `time` | a time of day — no date, no zone |
+| `timestamp` | an instant, always UTC |
 
 A **type variable** — `T`, `K`, `V` — is not in this table, being not a type but
 a stand-in for one. It is legal in a
@@ -33,8 +36,22 @@ arbitrary-precision `integer` and `numeric`, `bytes`, `bits`, the temporal
 types, general `enum` — is listed under
 [future work](overview.md#future-work), each blocked on a grasp-dbsp value type.
 
-**Scalars** are `boolean`, `i64`, `f64` and `string`. The word matters in two
-rules below: what may key a dict, and what may be compared.
+**Scalars** are `boolean`, `i64`, `f64`, `string`, `date`, `time` and
+`timestamp`. The word matters in two rules below: what may key a dict, and what
+may be compared.
+
+The **temporal** three are scalars because each orders as the instant it names,
+and that one fact is what makes all four uses of the word work at once —
+ordering, `min`/`max`, keying a dict, and `dict:from_entries`. They are **not
+numbers**: `d + 1` is the error `"x" + 1` already is, and there is no arithmetic
+rule to state. What "how far apart" means is an `interval`, which grasp does not
+have; until it does, a difference is a named function that says its unit —
+`temporal:days_between`, `temporal:micros_between`.
+
+A `timestamp` is always UTC. There is no `timestamp_with_timezone`, and no
+`interval`; both are [future work](overview.md#future-work). Values are built
+with `temporal:`, never with a literal — grasp has no temporal literal syntax,
+and the library is where a value comes from.
 
 ## Relation types
 
@@ -208,6 +225,7 @@ same program.
 | `optional(T)` | `T` | the value is absent |
 | `optional(A)` | `optional(B)` | present and not a `B` |
 | `json` | `T` | the document does not hold a `T` |
+| `json` | `date` / `time` / `timestamp` | the document does not hold one, written |
 | `array(A)` | `array(B)` | any element is not a `B` |
 | `dict(K,A)` | `dict(K,B)` | any value is not a `B` |
 

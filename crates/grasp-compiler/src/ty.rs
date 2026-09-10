@@ -58,6 +58,9 @@ pub enum Ty {
     Record(Vec<(String, Ty)>),
     Array(Box<Ty>),
     Dict(Box<Ty>, Box<Ty>),
+    Date,
+    Time,
+    Timestamp,
 }
 
 impl Ty {
@@ -69,6 +72,9 @@ impl Ty {
             Type::F64 => Ty::F64,
             Type::String => Ty::String,
             Type::Json => Ty::Json,
+            Type::Date => Ty::Date,
+            Type::Time => Ty::Time,
+            Type::Timestamp => Ty::Timestamp,
             Type::Optional(inner) => Ty::Optional(Box::new(Ty::known(inner))),
             Type::Array(inner) => Ty::Array(Box::new(Ty::known(inner))),
             Type::Dict(k, v) => Ty::Dict(Box::new(Ty::known(k)), Box::new(Ty::known(v))),
@@ -134,6 +140,9 @@ impl fmt::Display for Ty {
             Ty::F64 => f.write_str("f64"),
             Ty::String => f.write_str("string"),
             Ty::Json => f.write_str("json"),
+            Ty::Date => f.write_str("date"),
+            Ty::Time => f.write_str("time"),
+            Ty::Timestamp => f.write_str("timestamp"),
             Ty::Optional(t) => write!(f, "optional({t})"),
             Ty::Array(t) => write!(f, "array({t})"),
             Ty::Dict(k, v) => write!(f, "dict({k}, {v})"),
@@ -433,7 +442,18 @@ fn under(inner: Narrowing, cast: bool, shape: Shape) -> Narrowing {
 fn holdable(t: &Ty) -> bool {
     matches!(
         t,
-        Ty::Boolean | Ty::I64 | Ty::F64 | Ty::String | Ty::Record(_) | Ty::Array(_)
+        Ty::Boolean
+            | Ty::I64
+            | Ty::F64
+            | Ty::String
+            | Ty::Record(_)
+            | Ty::Array(_)
+            // A temporal value is a string in a document, read in the one
+            // spelling its own type writes — so extracting one is the check the
+            // codec already performs, and `d :: date` is the row that says so.
+            | Ty::Date
+            | Ty::Time
+            | Ty::Timestamp
     )
 }
 
@@ -469,6 +489,9 @@ pub fn settle(ty: &Ty) -> Result<Type, Open> {
         Ty::F64 => Type::F64,
         Ty::String => Type::String,
         Ty::Json => Type::Json,
+        Ty::Date => Type::Date,
+        Ty::Time => Type::Time,
+        Ty::Timestamp => Type::Timestamp,
         Ty::Optional(t) => Type::Optional(Box::new(settle(t)?)),
         Ty::Array(t) => Type::Array(Box::new(settle(t)?)),
         Ty::Dict(k, v) => Type::Dict(Box::new(settle(k)?), Box::new(settle(v)?)),
