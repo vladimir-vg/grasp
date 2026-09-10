@@ -1,0 +1,168 @@
+# `date`, `time` and `timestamp`.
+#
+# Deliberately not `temporal.yaml`, which is about `integrate` and its
+# neighbours — time as *ordering* rather than time as a value.
+#
+# Each is a scalar: it orders, it keys a dict, and it travels as a string in the
+# one spelling its own parser reads back. There is no `timestamp_with_timezone`;
+# a `timestamp` is always UTC.
+
+- name: the three types carry values
+  source: |
+    t := input("t")
+    t :: zset(record(d: date, tm: time, ts: timestamp))
+
+    out := map(t, function((r) -> record(d: r.d, tm: r.tm, ts: r.ts)))
+
+  input:
+    - t:
+        - [1, {d: "2024-01-15", tm: "14:30:00", ts: "2024-01-15 14:30:00"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {d: "2024-01-15", tm: "14:30:00", ts: "2024-01-15 14:30:00"}]
+
+- name: microseconds survive the round trip
+  source: |
+    t := input("t")
+    t :: zset(record(tm: time, ts: timestamp))
+
+    out := map(t, function((r) -> record(tm: r.tm, ts: r.ts)))
+
+  input:
+    - t:
+        - [1, {tm: "14:30:00.123456", ts: "2024-01-15 14:30:00.123456"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {tm: "14:30:00.123456", ts: "2024-01-15 14:30:00.123456"}]
+
+# Ordering is the instant, which is what makes them scalars: `min` and `max`
+# fold them, and the comparison operators work.
+- name: dates order as dates
+  source: |
+    t := input("t")
+    t :: zset(record(k: i64, d: date))
+
+    by_k := map_index(t, function((r) -> record(key: r.k, value: r)))
+    earliest := aggregate(by_k, min, function((v) -> v.d))
+
+  input:
+    - t:
+        - [1, {k: 1, d: "2024-03-01"}]
+        - [1, {k: 1, d: "2023-12-31"}]
+        - [1, {k: 1, d: "2024-01-15"}]
+
+  expected_exact_output:
+    - earliest:
+        - [1, 1, "2023-12-31"]
+
+- name: a comparison filters on the instant
+  source: |
+    t := input("t")
+    t :: zset(record(ts: timestamp, cutoff: timestamp))
+
+    recent := filter(t, function((r) -> r.ts > r.cutoff))
+
+  input:
+    - t:
+        - [1, {ts: "2023-06-01 12:00:00", cutoff: "2024-01-01 00:00:00"}]
+        - [1, {ts: "2024-06-01 12:00:00", cutoff: "2024-01-01 00:00:00"}]
+
+  expected_exact_output:
+    - recent:
+        - [1, {ts: "2024-06-01 12:00:00", cutoff: "2024-01-01 00:00:00"}]
+
+# Text is how a temporal value arrives from outside, and parsing may fail — so
+# the conversion is fallible and the target must say so, the rule every other
+# parse in this language follows.
+- name: text converts to a date, and may fail
+  source: |
+    t := input("t")
+    t :: zset(record(s: string))
+
+    out := map(t, function((r) -> record(d: cast(r.s, optional(date)))))
+
+  input:
+    - t:
+        - [1, {s: "2024-01-15"}]
+        - [1, {s: "the fifteenth"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {d: "2024-01-15"}]
+        - [1, {d: null}]
+
+- name: and a date converts back to text
+  source: |
+    t := input("t")
+    t :: zset(record(d: date, tm: time))
+
+    out := map(t, function((r) -> record(d: cast(r.d, string), tm: cast(r.tm, string))))
+
+  input:
+    - t:
+        - [1, {d: "2024-01-15", tm: "14:30:00.123456"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {d: "2024-01-15", tm: "14:30:00.123456"}]
+
+# A key type owes one string spelling its own type reads back, and each of the
+# three has one — so each may key a dict.
+- name: a date keys a dict
+  source: |
+    t := input("t")
+    t :: zset(record(n: i64, d: date))
+
+    out := map(t, function((r) -> record(by_day: {r.d => r.n})))
+
+  input:
+    - t:
+        - [1, {n: 7, d: "2024-01-15"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {by_day: {"2024-01-15": 7}}]
+
+- name: a date joins
+  source: |
+    sale := input("sale")
+    sale :: zset(record(d: date, amount: i64))
+    holiday := input("holiday")
+    holiday :: zset(record(d: date, name: string))
+
+    by_sale := map_index(sale, function((r) -> record(key: r.d, value: r.amount)))
+    by_holiday := map_index(holiday, function((r) -> record(key: r.d, value: r.name)))
+    on_holiday := join(by_sale, by_holiday,
+        function((k, a, b) -> record(d: k, amount: a, name: b)))
+
+  input:
+    - sale:
+        - [1, {d: "2024-01-01", amount: 10}]
+        - [1, {d: "2024-01-02", amount: 20}]
+      holiday:
+        - [1, {d: "2024-01-01", name: "new year"}]
+
+  expected_exact_output:
+    - on_holiday:
+        - [1, {d: "2024-01-01", amount: 10, name: "new year"}]
+
+# Extraction from a document, which is the same round trip read from the other
+# side.
+- name: a date extracts from a document
+  source: |
+    t := input("t")
+    t :: zset(record(doc: json))
+
+    out := map(t, function((r) -> record(d: cast(get(r.doc, "when"), optional(date)))))
+
+  input:
+    - t:
+        - [1, {doc: {when: "2024-01-15"}}]
+        - [1, {doc: {when: "not a date"}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {d: "2024-01-15"}]
+        - [1, {d: null}]

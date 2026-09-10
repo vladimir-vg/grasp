@@ -157,6 +157,15 @@ pub enum Conv {
     /// Fallible: parsing, and a parsed infinity or NaN has no JSON form.
     StringToFloat,
 
+    /// Fallible: parsing. The carried type says which of the three.
+    ///
+    /// Written text is how a temporal value arrives from outside — the JSON
+    /// codec and a dict key already read the same spelling, and this is that
+    /// round trip put where a program can reach it.
+    StringToTemporal(TypeDesc),
+    /// Total. The written form, which is what the codec emits.
+    TemporalToString,
+
     /// Extract a document into the target type, which the variant carries
     /// because extraction is driven by what is wanted rather than by what the
     /// document happens to be. Always fallible: a document need not hold the
@@ -178,6 +187,7 @@ impl Conv {
                 | Conv::StringToBool
                 | Conv::StringToInt
                 | Conv::StringToFloat
+                | Conv::StringToTemporal(_)
                 | Conv::FromJson(_)
         )
     }
@@ -456,6 +466,12 @@ fn compare(l: &DynValue, r: &DynValue) -> Option<std::cmp::Ordering> {
         // `!=` reach here: the type checker rejects ordering over documents,
         // because the encoding sorts by type tag.
         (Json(a), Json(b)) => Some(a.cmp(b)),
+        // Each orders as the instant it names, which is the ordering its own
+        // newtype derives — so unlike a document there is nothing arbitrary
+        // about it, and `<` means what a reader expects.
+        (Date(a), Date(b)) => Some(a.cmp(b)),
+        (Time(a), Time(b)) => Some(a.cmp(b)),
+        (Timestamp(a), Timestamp(b)) => Some(a.cmp(b)),
         _ => Option::None,
     }
 }
@@ -532,6 +548,11 @@ fn convert(conv: &Conv, v: DynValue) -> DynValue {
             Ok(f) if f.is_finite() => F64(Flt::new(f)),
             _ => None,
         },
+        (Conv::StringToTemporal(t), String(s)) => t.parse_dict_key(s.as_str()).unwrap_or(None),
+        (Conv::TemporalToString, v @ (Date(_) | Time(_) | Timestamp(_))) => String(
+            v.dict_key_string()
+                .expect("a temporal value has a written form"),
+        ),
         // The checker chose the conversion from the operand's type, so a
         // mismatch means the two passes disagree.
         _ => None,
@@ -588,6 +609,11 @@ fn from_json(fv: &FlatVariant, ty: &TypeDesc) -> Option<DynValue> {
         (_, TypeDesc::Json) => DynValue::Json(fv.clone()),
         (Variant::Boolean(b), TypeDesc::Bool) => DynValue::Bool(*b),
         (Variant::String(s), TypeDesc::String) => DynValue::String(s.str().to_string()),
+        // A temporal value is a string in a document, read in the one spelling
+        // its own type writes — the same pairing a dict key uses just below.
+        (Variant::String(s), TypeDesc::Date | TypeDesc::Time | TypeDesc::Timestamp) => {
+            target.parse_dict_key(s.str())?
+        }
         (v, TypeDesc::I64) => DynValue::I64(json_i64(v)?),
         (v, TypeDesc::F64) => DynValue::F64(Flt::new(json_f64(v)?)),
         (Variant::Array(items), TypeDesc::Array(elem)) => DynValue::Array(

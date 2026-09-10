@@ -502,10 +502,12 @@ impl Builtin {
         const UNARY: &[Signature] = &[Signature {
             positional: 1,
             keyword: &[],
+            selects: None,
         }];
         const BINARY: &[Signature] = &[Signature {
             positional: 2,
             keyword: &[],
+            selects: None,
         }];
         match self {
             Builtin::BooleanNot
@@ -535,6 +537,7 @@ impl Builtin {
                     name: "index",
                     default: None,
                 }],
+                selects: None,
             }],
             Builtin::ArrayContains => &[Signature {
                 positional: 1,
@@ -542,6 +545,7 @@ impl Builtin {
                     name: "element",
                     default: None,
                 }],
+                selects: None,
             }],
             // Three optional keywords, and so eight ways to call it — the eight
             // variants `stdlib.grasp` writes out.
@@ -561,6 +565,7 @@ impl Builtin {
                         default: Some(Omitted::Int(1)),
                     },
                 ],
+                selects: None,
             }],
             Builtin::DictGet | Builtin::DictHas => &[Signature {
                 positional: 1,
@@ -568,6 +573,7 @@ impl Builtin {
                     name: "key",
                     default: None,
                 }],
+                selects: None,
             }],
             Builtin::DictWithout => &[Signature {
                 positional: 1,
@@ -575,6 +581,7 @@ impl Builtin {
                     name: "keys",
                     default: None,
                 }],
+                selects: None,
             }],
             Builtin::RecordGet => &[Signature {
                 positional: 1,
@@ -582,13 +589,29 @@ impl Builtin {
                     name: "field",
                     default: None,
                 }],
+                selects: None,
             }],
         }
     }
 
-    /// The signature a call of this shape resolves to, if any.
-    pub fn resolve(self, shape: &Shape) -> Option<&'static Signature> {
-        self.signatures().iter().find(|s| s.accepts(shape))
+    /// Every signature a call of this shape could mean.
+    ///
+    /// One for all but a family, and for a family one per candidate — which is
+    /// where the argument types have to decide, in `infer`. Same-shape
+    /// signatures agree on the order of their keywords, so the *arguments* are
+    /// ordered by shape whether or not the callee is settled.
+    pub fn resolve(self, shape: &Shape) -> Vec<&'static Signature> {
+        self.signatures()
+            .iter()
+            .filter(|s| s.accepts(shape))
+            .collect()
+    }
+
+    /// The candidates a family stands for, in the order `infer` should try them.
+    ///
+    /// Empty for a name that is its own implementation.
+    pub fn family(self) -> Vec<Builtin> {
+        self.signatures().iter().filter_map(|s| s.selects).collect()
     }
 
     /// Whether a program may write this name.
@@ -712,6 +735,14 @@ impl Builtin {
 pub struct Signature {
     pub positional: usize,
     pub keyword: &'static [Param],
+    /// The [`Builtin`] a call matching this shape means, where that is not the
+    /// name itself.
+    ///
+    /// `None` for every function that is its own implementation, which is all
+    /// but a **family** — a name several functions share. `temporal:date` is
+    /// one: parsing a string and extracting from a timestamp are two operations
+    /// under one name, and a row here says which is which.
+    pub selects: Option<Builtin>,
 }
 
 /// One keyword parameter, and what it means when a call leaves it out.
@@ -781,6 +812,11 @@ impl Signature {
                 )
             })
             .collect()
+    }
+
+    /// The builtin this row means, given the name it was found under.
+    pub fn selected(&self, head: Builtin) -> Builtin {
+        self.selects.unwrap_or(head)
     }
 
     /// How many arguments the core call this resolves to holds. Every

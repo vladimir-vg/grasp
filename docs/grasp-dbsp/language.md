@@ -83,14 +83,16 @@ language's. [`mapping.md`](mapping.md) records which Rust types these become.
 ```
 value_type := scalar | record_type | array_type | dict_type | "json"
 
-scalar      := bool | i64 | f64 | string | optional "(" value_type ")"
+scalar      := bool | i64 | f64 | string | temporal
+                 | optional "(" value_type ")"
+temporal    := date | time | timestamp
 
 record_type := "record" "(" [field ("," field)*] ")"
 field       := FIELD_NAME ":" value_type
 
 array_type  := "array" "(" value_type ")"
 dict_type   := "dict" "(" key_type "," value_type ")"
-key_type    := "bool" | "i64" | "f64" | "string"
+key_type    := "bool" | "i64" | "f64" | "string" | "date" | "time" | "timestamp"
 ```
 
 That is the whole vocabulary. It is deliberately narrow: the other integer
@@ -106,6 +108,23 @@ that would be genuinely distinct.
 
 **Absence is `optional(T)`.** There is no separate nullable flag, and an
 `optional` never wraps another.
+
+**The temporal types are `date`, `time` and `timestamp`**, and they are scalars:
+each orders as the instant it names, so `<` means what a reader expects, `min`
+and `max` fold them, and each may key a dict. A `timestamp` is **always UTC** —
+there is no `timestamp_with_timezone`, which needs IANA tzdata and DST
+semantics and is under future work in [`overview.md`](overview.md).
+
+Each travels as a **string**, in the one spelling its own parser reads back —
+`2024-01-15`, `14:30:00`, `2024-01-15 14:30:00`, with `.ffffff` where there is a
+fraction. That single round trip is what the JSON codec, a dict key and
+`cast(s, optional(date))` all use, so none of them can spell a value a different
+way from the others. All three are **microsecond precision**: `time` counts
+nanoseconds underneath, and a finer fraction is truncated where text enters
+rather than kept and then lost on the way out.
+
+There is no arithmetic on them. Difference and offset need an `interval`, which
+is future work — comparison and the builtins are what there is.
 
 `record(f: T, …)` is a named-field record. Field names are bare identifiers;
 quote a name that is not a valid identifier (`record("total count": i64)`).
@@ -653,6 +672,12 @@ That keeps a declared type a promise, and follows the rule division already set.
 | `string` | fallible | fallible | fallible | — | total |
 | `record(…)` / `array(T)` | — | — | — | — | total |
 | `json`   | fallible | fallible | fallible | fallible | — |
+| `date` / `time` / `timestamp` | — | — | — | total | total |
+
+Text converts **to** a temporal type as well, and fallibly — parsing is how one
+arrives from outside, and `2024-13-45` is not a date. So `cast(s, date)` is an
+error and `cast(s, optional(date))` is the way to write it, which is the rule
+every other parse here follows.
 
 A document also converts to a `record(…)` or an `array(T)`, and both are
 fallible. Those two rows are not a matrix: a document is converted by what is

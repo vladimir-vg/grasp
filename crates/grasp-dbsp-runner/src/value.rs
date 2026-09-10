@@ -135,6 +135,32 @@ pub enum DynValue {
         #[size_of(skip, skip_bounds)]
         BTreeMap<DynValue, DynValue>,
     ),
+    /// `date` — a calendar date, as days since the Unix epoch.
+    ///
+    /// **Appended, and new variants must be too**: the variant order is the
+    /// archived discriminant, which is a storage format.
+    ///
+    /// The three temporal types are `feldera_sqllib`'s rather than ours. Each
+    /// is a single integer behind a newtype, with the derive set this enum
+    /// needs already on it, and each orders as the instant it names — so unlike
+    /// the containers above, `Ord` here is borrowed and correct by
+    /// construction.
+    Date(feldera_sqllib::Date),
+    /// `time` — a time of day, with no date and no zone.
+    ///
+    /// **Appended, and new variants must be too**: the variant order is the
+    /// archived discriminant, which is a storage format.
+    Time(feldera_sqllib::Time),
+    /// `timestamp` — an instant, as microseconds since the Unix epoch, always
+    /// UTC.
+    ///
+    /// **Appended, and new variants must be too**: the variant order is the
+    /// archived discriminant, which is a storage format.
+    ///
+    /// There is no zone-carrying form: `timestamp_with_timezone` needs IANA
+    /// tzdata and DST semantics, and is future work in
+    /// `docs/grasp-dbsp/overview.md`.
+    Timestamp(feldera_sqllib::Timestamp),
 }
 
 impl DynValue {
@@ -178,6 +204,12 @@ impl DynValue {
             DynValue::String(s) => Some(s.clone()),
             DynValue::I64(n) => Some(n.to_string()),
             DynValue::Bool(b) => Some(b.to_string()),
+            // The spelling `feldera_sqllib` prints and its own parser reads
+            // back, so the round trip a key type owes is the library's rather
+            // than one this file invents beside it.
+            DynValue::Date(d) => Some(d.to_string()),
+            DynValue::Time(t) => Some(time_string(t)),
+            DynValue::Timestamp(t) => Some(t.to_string()),
             DynValue::F64(f) => {
                 let f = f.into_inner();
                 f.is_finite().then(|| f.to_string())
@@ -198,6 +230,9 @@ impl DynValue {
             DynValue::Array(_) => "array",
             DynValue::Dict(_) => "dict",
             DynValue::Json(_) => "json",
+            DynValue::Date(_) => "date",
+            DynValue::Time(_) => "time",
+            DynValue::Timestamp(_) => "timestamp",
         }
     }
 }
@@ -393,6 +428,12 @@ pub enum TypeDesc {
     /// `json`. A document of any shape — never `optional`, because a document
     /// carries its own null.
     Json,
+    /// `date` — a calendar date, no time and no zone.
+    Date,
+    /// `time` — a time of day, no date and no zone.
+    Time,
+    /// `timestamp` — an instant, always UTC.
+    Timestamp,
 }
 
 impl TypeDesc {
@@ -441,7 +482,15 @@ impl TypeDesc {
     pub fn is_dict_key(&self) -> bool {
         matches!(
             self,
-            TypeDesc::Bool | TypeDesc::I64 | TypeDesc::F64 | TypeDesc::String
+            TypeDesc::Bool
+                | TypeDesc::I64
+                | TypeDesc::F64
+                | TypeDesc::String
+                // Each has one written form its own parser reads back, which
+                // is the whole of what a key type owes.
+                | TypeDesc::Date
+                | TypeDesc::Time
+                | TypeDesc::Timestamp
         )
     }
 
@@ -457,6 +506,11 @@ impl TypeDesc {
                 .ok()
                 .filter(|f| f.is_finite())
                 .map(|f| DynValue::F64(dbsp::algebra::F64::new(f))),
+            // The other half of the round trip [`DynValue::dict_key_string`]
+            // writes.
+            TypeDesc::Date => parse_date(s),
+            TypeDesc::Time => parse_time(s),
+            TypeDesc::Timestamp => parse_timestamp(s),
             _ => Option::None,
         }
     }
@@ -486,6 +540,9 @@ impl std::fmt::Display for TypeDesc {
             TypeDesc::Array(elem) => write!(f, "array({elem})"),
             TypeDesc::Dict(k, v) => write!(f, "dict({k}, {v})"),
             TypeDesc::Json => write!(f, "json"),
+            TypeDesc::Date => write!(f, "date"),
+            TypeDesc::Time => write!(f, "time"),
+            TypeDesc::Timestamp => write!(f, "timestamp"),
             TypeDesc::Record(fields) => {
                 write!(f, "record(")?;
                 for (i, (name, ty)) in fields.iter().enumerate() {
@@ -514,4 +571,60 @@ impl std::fmt::Display for BatchType {
             BatchType::IndexedZSet(k, v) => write!(f, "indexed_zset({k}, {v})"),
         }
     }
+}
+
+/// `date`, `time` and `timestamp` from their written form.
+///
+/// One place, because three things need it and must agree: the JSON codec, a
+/// dict key, and the `parse_*` builtins a program calls. The spelling is
+/// `feldera_sqllib`'s — `2024-01-15`, `14:30:00[.ffffff]`,
+/// `2024-01-15 14:30:00[.ffffff]` — which is what its `Display` writes, so the
+/// round trip is the library's own.
+///
+/// `None` where the text is not one, which is how a bad value becomes a dropped
+/// row rather than an error: see `docs/grasp/semantics.md`, "A body must have
+/// an answer".
+pub fn parse_date(s: &str) -> Option<DynValue> {
+    feldera_sqllib::cast_to_Date_s(feldera_sqllib::SqlString::from_ref(s))
+        .ok()
+        .map(DynValue::Date)
+}
+
+pub fn parse_time(s: &str) -> Option<DynValue> {
+    // **A `time` is microsecond-precision**, like a `timestamp` — the
+    // underlying type counts nanoseconds, and this is the one boundary a finer
+    // value can enter through, so a longer fraction is truncated here rather
+    // than kept and then lost by the written form.
+    let text = match s.split_once('.') {
+        Some((head, frac)) if frac.len() > 6 => format!("{head}.{}", &frac[..6]),
+        _ => s.to_string(),
+    };
+    feldera_sqllib::cast_to_Time_s(feldera_sqllib::SqlString::from_ref(&text))
+        .ok()
+        .map(DynValue::Time)
+}
+
+/// A `time` written the way a `timestamp` writes its own fraction.
+///
+/// `feldera_sqllib` prints nine digits, because it counts nanoseconds. Every
+/// value that reaches here has whole microseconds — [`parse_time`] is the only
+/// door — so the last three are always zero, and trimming them makes one
+/// spelling for a fraction across all three types rather than two.
+fn time_string(t: &feldera_sqllib::Time) -> String {
+    let text = t.to_string();
+    let Some((head, frac)) = text.split_once('.') else {
+        return text;
+    };
+    let micros = frac[..6.min(frac.len())].trim_end_matches('0');
+    if micros.is_empty() {
+        head.to_string()
+    } else {
+        format!("{head}.{micros}")
+    }
+}
+
+pub fn parse_timestamp(s: &str) -> Option<DynValue> {
+    feldera_sqllib::cast_to_Timestamp_s(feldera_sqllib::SqlString::from_ref(s))
+        .ok()
+        .map(DynValue::Timestamp)
 }

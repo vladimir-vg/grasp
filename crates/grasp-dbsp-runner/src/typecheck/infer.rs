@@ -772,6 +772,10 @@ fn infer(
 fn extractable(t: &TypeDesc) -> bool {
     match t {
         TypeDesc::Bool | TypeDesc::I64 | TypeDesc::F64 | TypeDesc::String | TypeDesc::Json => true,
+        // A temporal value is a string in a document, and the codec reads the
+        // one spelling its own `Display` writes — so extracting one is the same
+        // operation a dict key already is.
+        TypeDesc::Date | TypeDesc::Time | TypeDesc::Timestamp => true,
         TypeDesc::Record(fields) => fields.iter().all(|(_, f)| extractable(f.non_null())),
         TypeDesc::Array(elem) => extractable(elem.non_null()),
         // A document's object keys are strings, and a dict key parses from one,
@@ -878,6 +882,10 @@ fn conversion(from: &Ty, to: &TypeDesc, span: Span) -> TResult<Conv> {
         (String, Bool) => Conv::StringToBool,
         (String, I64) => Conv::StringToInt,
         (String, F64) => Conv::StringToFloat,
+        // Written text is how a temporal value arrives from outside, and the
+        // spelling is the one the codec and a dict key already round-trip.
+        (String, Date | Time | Timestamp) => Conv::StringToTemporal(target.clone()),
+        (Date | Time | Timestamp, String) => Conv::TemporalToString,
         _ => {
             return err(
                 span,
@@ -889,6 +897,11 @@ fn conversion(from: &Ty, to: &TypeDesc, span: Span) -> TResult<Conv> {
     if conv.is_fallible() && !optional_target {
         let why = match conv {
             Conv::FloatToInt => "NaN, infinity, or a value outside `i64`",
+            Conv::StringToTemporal(t) => match t {
+                Date => "the text may not be a date",
+                Time => "the text may not be a time",
+                _ => "the text may not be a timestamp",
+            },
             _ => "the text may not parse",
         };
         return err(

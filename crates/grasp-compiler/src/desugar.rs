@@ -361,7 +361,7 @@ fn expr_of(e: &ast::Expr) -> Result<core::Expr, Diagnostic> {
                     )
                 });
             };
-            let sig = resolve(callee, positional, keyword, *span)?;
+            let (callee, sig) = resolve(callee, positional, keyword, *span)?;
             // Resolution is what puts the arguments in order: below here a call
             // is positional, and every pass after indexes it.
             let mut args: Vec<core::Expr> =
@@ -411,22 +411,29 @@ fn expr_of(e: &ast::Expr) -> Result<core::Expr, Diagnostic> {
 
 /// Which variant of a callable a call means — `syntax.md`, "Name resolution".
 ///
-/// **By shape, not by type**: the number of arguments given by position and the
-/// *set* of keyword names given, which is Erlang's dispatch rather than C++'s.
-/// Types are checked afterwards, in `infer`, against the variant this picked —
-/// so a call that matches no shape is reported here, in the words of the call,
-/// rather than as a type error about an argument the program did not write.
+/// **Shape first**: the number of arguments given by position and the *set* of
+/// keyword names given, which is Erlang's dispatch rather than C++'s. That
+/// settles every call but one kind, and a call matching no shape is reported
+/// here, in the words of the call, rather than as a type error about an
+/// argument the program did not write.
+///
+/// What it does not settle is a **family** — a name several functions share,
+/// whose shapes coincide and whose argument *types* differ. There this returns
+/// the head, and [`crate::infer`] picks by type once there are types. Every
+/// signature of one shape orders its keywords the same way, so the arguments
+/// are put in order here either way.
 fn resolve(
     callee: core::Builtin,
     positional: &[ast::Expr],
     keyword: &[(String, ast::Expr)],
     span: Span,
-) -> Result<&'static core::Signature, Diagnostic> {
+) -> Result<(core::Builtin, &'static core::Signature), Diagnostic> {
     let shape = Shape::new(
         positional.len(),
         keyword.iter().map(|(name, _)| name.clone()),
     );
-    callee.resolve(&shape).ok_or_else(|| {
+    let matched = callee.resolve(&shape);
+    let Some(first) = matched.first() else {
         let name = callee.as_str();
         let taken: Vec<String> = callee
             .signatures()
@@ -434,13 +441,18 @@ fn resolve(
             .flat_map(|s| s.shapes())
             .map(|s| format!("`{s}`"))
             .collect();
-        Diagnostic::error(
+        return Err(Diagnostic::error(
             Pass::Desugar,
             span,
             format!(
                 "`{name}` is called {}, and this call is `{shape}`",
                 taken.join(" or ")
             ),
-        )
-    })
+        ));
+    };
+    let settled = match matched.len() {
+        1 => first.selected(callee),
+        _ => callee,
+    };
+    Ok((settled, first))
 }

@@ -68,6 +68,14 @@ pub fn encode_value(v: &DynValue, ty: &TypeDesc) -> JResult<J> {
             .map(J::Number)
             .unwrap_or(J::Null),
         (DynValue::String(s), TypeDesc::String) => J::String(s.clone()),
+        // The written form, which is what `decode_value` reads back and what a
+        // dict key already uses.
+        (DynValue::Date(_), TypeDesc::Date)
+        | (DynValue::Time(_), TypeDesc::Time)
+        | (DynValue::Timestamp(_), TypeDesc::Timestamp) => J::String(
+            v.dict_key_string()
+                .expect("a temporal value has a written form"),
+        ),
         (DynValue::Record(fields), TypeDesc::Record(schema)) => {
             if fields.len() != schema.len() {
                 return bad(format!(
@@ -140,6 +148,18 @@ pub fn decode_value(j: &J, ty: &TypeDesc) -> JResult<DynValue> {
             Some(s) => DynValue::String(s.to_string()),
             None => return bad(format!("expected a string, found `{j}`")),
         },
+        // A temporal value travels as a string, in the one spelling its type
+        // reads back — the same round trip a dict key rests on, and the same
+        // function on both sides of it.
+        TypeDesc::Date | TypeDesc::Time | TypeDesc::Timestamp => {
+            let Some(s) = j.as_str() else {
+                return bad(format!("expected a `{ty}` as a string, found `{j}`"));
+            };
+            match ty.parse_dict_key(s) {
+                Some(v) => v,
+                None => return bad(format!("`{s}` is not a `{ty}`")),
+            }
+        }
         TypeDesc::Record(schema) => {
             let Some(obj) = j.as_object() else {
                 return bad(format!("expected an object, found `{j}`"));
@@ -242,6 +262,9 @@ fn type_key_name(ty: &TypeDesc) -> &'static str {
         TypeDesc::I64 => "i64",
         TypeDesc::Bool => "bool",
         TypeDesc::F64 => "f64",
+        TypeDesc::Date => "date",
+        TypeDesc::Time => "time",
+        TypeDesc::Timestamp => "timestamp",
         _ => "",
     }
 }

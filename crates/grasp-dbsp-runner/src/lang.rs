@@ -270,6 +270,9 @@ const TYPE_NAMES: &[&str] = &[
     "f64",
     "string",
     "json",
+    "date",
+    "time",
+    "timestamp",
     "optional",
     "record",
     "array",
@@ -1044,6 +1047,9 @@ impl Parser {
             "f64" => Ok(TypeDesc::F64),
             "string" => Ok(TypeDesc::String),
             "json" => Ok(TypeDesc::Json),
+            "date" => Ok(TypeDesc::Date),
+            "time" => Ok(TypeDesc::Time),
+            "timestamp" => Ok(TypeDesc::Timestamp),
             "array" => {
                 self.expect(&Tok::LParen, "`(` after array")?;
                 let elem = self.value_type()?;

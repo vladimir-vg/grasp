@@ -221,6 +221,9 @@ fn any_type() -> impl Strategy<Value = TypeDesc> {
         }),
         Just(TypeDesc::Json),
         Just(TypeDesc::Optional(Box::new(TypeDesc::Json))),
+        Just(TypeDesc::Date),
+        Just(TypeDesc::Time),
+        Just(TypeDesc::Timestamp),
     ]
 }
 
@@ -261,6 +264,29 @@ fn value_of(ty: TypeDesc) -> BoxedStrategy<DynValue> {
             .prop_map(DynValue::Array)
             .boxed(),
         TypeDesc::Json => any_json().prop_map(json_value).boxed(),
+        // Generated inside the range each written form can spell, because that
+        // is what the round trip is over: `make_date___` refuses a year outside
+        // 1..=9999, and a `time` is a point in one day.
+        TypeDesc::Date => (1i32..=9999, 1i32..=12, 1i32..=28)
+            .prop_map(|(y, m, d)| {
+                DynValue::Date(feldera_sqllib::make_date___(y, m, d).expect("a valid date"))
+            })
+            .boxed(),
+        TypeDesc::Time => (0i64..86_400_000_000)
+            .prop_map(|micros| {
+                let (h, m) = (micros / 3_600_000_000, micros / 60_000_000 % 60);
+                let (s, us) = (micros / 1_000_000 % 60, micros % 1_000_000);
+                grasp_dbsp_runner::value::parse_time(&format!("{h:02}:{m:02}:{s:02}.{us:06}"))
+                    .expect("a valid time")
+            })
+            .boxed(),
+        // Bounded by what `Display` can write: `Timestamp` prints a calendar
+        // date, and the parser reads years 1..=9999 back.
+        TypeDesc::Timestamp => (-62_135_596_800_000_000i64..=253_402_300_799_000_000)
+            .prop_map(|micros| {
+                DynValue::Timestamp(feldera_sqllib::Timestamp::from_microseconds(micros))
+            })
+            .boxed(),
     }
 }
 

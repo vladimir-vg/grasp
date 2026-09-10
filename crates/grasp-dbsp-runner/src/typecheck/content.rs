@@ -201,6 +201,14 @@ fn hash_conv(h: &mut Xxh3Default, conv: &crate::expr::Conv) {
             ty.hash(h);
             return;
         }
+        // Parsing into a `date` is not the computation parsing into a `time`
+        // is, so the target type is part of what this conversion *is*.
+        StringToTemporal(ty) => {
+            11u8.hash(h);
+            ty.hash(h);
+            return;
+        }
+        TemporalToString => 12,
     };
     tag.hash(h);
 }
