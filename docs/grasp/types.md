@@ -60,9 +60,20 @@ neither this type nor any other here. `1 month = 30 days` is not a rule grasp
 invents to have one. **There is no month arithmetic**, and a program that wants
 "the same day next month" does not have it.
 
-A `timestamp` is always UTC; there is no `timestamp_with_timezone`. Values are
-built with `temporal:`, never with a literal — grasp has no temporal literal
-syntax, and the library is where a value comes from.
+**A `timestamp` is always UTC, and there are no timezones in grasp.** That is a
+decision and not a gap, and two things rest on it. A day is exactly 86400
+seconds, which is why an `interval` can be one integer rather than a day
+component beside a time one. And an instant is one number, so it orders, keys a
+dict and compares structurally like every other value here — a zone-carrying
+instant would be the first type in the language where two equal values were not
+identical, or two identical ones did not sort together.
+
+A program that needs a local reading carries the zone as data, in a column, and
+converts where it displays. That is the Datalog answer: a zone is something a
+row *has*, not something a type hides.
+
+Values are built with `temporal:`, never with a literal — grasp has no temporal
+literal syntax, and the library is where a value comes from.
 
 ## Relation types
 

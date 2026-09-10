@@ -614,8 +614,7 @@ pub enum Type {
     Date,
     /// A time of day — no date, no zone.
     Time,
-    /// An instant, always UTC. There is no zone-carrying form; see
-    /// `overview.md`.
+    /// An instant, always UTC. There are no timezones in grasp; see `types.md`.
     Timestamp,
     /// A span of time, in microseconds. Months are not in it — see
     /// `overview.md`.

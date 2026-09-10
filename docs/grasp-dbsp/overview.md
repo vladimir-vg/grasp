@@ -124,12 +124,17 @@ become an output — by declared name, or by content id for a node that has none
   `row_number`, `lag`, `asof_join`, `star_join`. All exist in `dbsp`; none are
   implemented.
 - **The rest of the value vocabulary.** The other integer widths and `f32`; and
-  the Feldera `sql.*` types — `ByteArray`, `SqlDecimal`, `Date`, `Time`,
-  `Timestamp`, `TimestampTz`, `LongInterval`, `ShortInterval`, `Uuid`. Shallow
-  but wide: each needs a `DynValue` variant, a `TypeDesc` variant, a parser
-  name, JSON coding and an ordering that upholds the invariants in
-  [`mapping.md`](mapping.md), and the temporal and decimal types additionally
-  need `SqlSerdeConfig` for their JSON formats.
+  the Feldera `sql.*` types still absent — `ByteArray`, `SqlDecimal`, `Uuid`.
+  Shallow but wide: each needs a `DynValue` variant, a `TypeDesc` variant, a
+  parser name, JSON coding and an ordering that upholds the invariants in
+  [`mapping.md`](mapping.md), and the decimal type additionally needs
+  `SqlSerdeConfig` for its JSON format.
+
+  The temporal types have landed — `date`, `time`, `timestamp` and `interval`,
+  on `Date`, `Time`, `Timestamp` and `ShortInterval`. Feldera's `TimestampTz`
+  and `LongInterval` are **not** wanted: the first stores exactly what
+  `Timestamp` does and differs only in printing, and the second is months, which
+  [`language.md`](language.md) declines to measure.
 
   Adding a variant shifts `DynValue`'s archived discriminant, which is a
   persisted storage format. Nothing is persisted yet, so the variant order is

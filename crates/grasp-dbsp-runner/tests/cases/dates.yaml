@@ -4,8 +4,8 @@
 # neighbours — time as *ordering* rather than time as a value.
 #
 # Each is a scalar: it orders, it keys a dict, and it travels as a string in the
-# one spelling its own parser reads back. There is no `timestamp_with_timezone`;
-# a `timestamp` is always UTC.
+# one spelling its own parser reads back. A `timestamp` is always UTC — there are
+# no timezones here — which is what lets an instant be one number.
 
 - name: the three types carry values
   source: |

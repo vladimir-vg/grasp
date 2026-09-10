@@ -211,9 +211,9 @@ dict:merge :: function
 
 # -- temporal -----------------------------------------------------------------
 #
-# `date`, `time` and `timestamp`. A timestamp is always UTC; there is no
-# zone-carrying form yet, and no `interval` — so a difference is a named
-# function that says its unit rather than an operator whose answer has no type.
+# `date`, `time`, `timestamp` and `interval`. A timestamp is always UTC — there
+# are no timezones in grasp — which is what lets a day be exactly 86400 seconds
+# and a span be one number.
 #
 # Parsing is **partial**, like every other reading that can fail to have an
 # answer: `temporal:date("the fifteenth")` derives no row. So is construction

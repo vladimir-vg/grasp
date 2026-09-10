@@ -157,9 +157,10 @@ pub enum DynValue {
     /// **Appended, and new variants must be too**: the variant order is the
     /// archived discriminant, which is a storage format.
     ///
-    /// There is no zone-carrying form: `timestamp_with_timezone` needs IANA
-    /// tzdata and DST semantics, and is future work in
-    /// `docs/grasp-dbsp/overview.md`.
+    /// There are no timezones in this language, which is a decision rather than
+    /// a gap: an instant is one number, so it orders and compares like every
+    /// other value, and a day is exactly 86400 seconds — which is what lets
+    /// [`DynValue::Interval`] be one integer.
     Timestamp(feldera_sqllib::Timestamp),
     /// `interval` — a span of time, in microseconds.
     ///

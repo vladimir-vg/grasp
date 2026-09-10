@@ -113,8 +113,10 @@ that would be genuinely distinct.
 **The temporal types are `date`, `time` and `timestamp`**, and they are scalars:
 each orders as the instant it names, so `<` means what a reader expects, `min`
 and `max` fold them, and each may key a dict. A `timestamp` is **always UTC** —
-there is no `timestamp_with_timezone`, which needs IANA tzdata and DST
-semantics and is under future work in [`overview.md`](overview.md).
+there are no timezones in this language at all. That is a
+decision rather than a gap: an instant is one number, so it orders and compares
+like every other value here, and a day is exactly 86400 seconds — which is what
+lets an `interval` be one integer.
 
 Each travels as a **string**, in the one spelling its own parser reads back —
 `2024-01-15`, `14:30:00`, `2024-01-15 14:30:00`, with `.ffffff` where there is a

@@ -101,18 +101,12 @@ design comes from. What is missing is missing on purpose.
   encodings, and general `enum(...)` beyond the `boolean` case. Each needs a
   grasp-dbsp value type underneath before grasp can offer it.
 
-  The temporal family is `date`, `time`, `timestamp` and `interval`, and what is
-  left of it is **`timestamp_with_timezone`**. It needs IANA tzdata and
-  DST-overlap semantics, and it would also cost something already relied on:
-  `interval` is one integer *because* a day is exactly 86400 seconds here, which
-  stops being true once zones exist. Adding one means revisiting whether days
-  belong with microseconds at all.
-
-  Months are **not** on this list. A month has no length until it lands on a
-  calendar, so grasp does not measure one — see
-  [`types.md`](types.md#value-types). Also left out: the PostgreSQL special
-  values `infinity`, `-infinity` and `epoch`; scaling a span, `iv * 3`; and
-  unary `-iv`, which a negative component in the constructor covers.
+  The temporal family is **complete**: `date`, `time`, `timestamp` and
+  `interval`. Neither timezones nor months are on this list, and both are
+  decisions rather than gaps — see [`types.md`](types.md#value-types). What is
+  left is small: the PostgreSQL special values `infinity`, `-infinity` and
+  `epoch`; scaling a span, `iv * 3`; and unary `-iv`, which a negative component
+  in the constructor covers.
 
   The **bitwise and shift operators** arrive with `bits` and are part of that
   entry rather than a separate one: they have no meaning without the type, and
