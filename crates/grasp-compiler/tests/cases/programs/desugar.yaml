@@ -105,35 +105,44 @@
         s(x: x, y: y)
         d := {"a" => x, "b" => y}
 
-# `s.f`  ->  `record:get(s, field: "f")`
-- name: field access is record:get
+# `s.f`  ->  `record:get(s, field: "f")`, which has no *written* form: the
+# expansion takes a literal field name and nothing else, so `.` is the only
+# spelling and there is no second program to compare this one to. What the
+# expansion produces is asserted at the far end instead.
+- name: field access reads the field
   source: |
     s :: relation(rec: record(f: i64))
+    s(rec:) <- input
 
     r(v: n) <-
         s(rec: rec)
         n := rec.f
-  equivalent_to: |
-    s :: relation(rec: record(f: i64))
 
-    r(v: n) <-
-        s(rec: rec)
-        n := record:get(rec, field: "f")
+  input:
+    - s:
+        - [1, {rec: {f: 7}}]
+
+  expected_exact_output:
+    - r:
+        - [1, {v: 7}]
 
 # `s.a.b`  ->  `record:get(record:get(s, field: "a"), field: "b")`
 - name: chained field access nests
   source: |
     s :: relation(rec: record(a: record(b: i64)))
+    s(rec:) <- input
 
     r(v: n) <-
         s(rec: rec)
         n := rec.a.b
-  equivalent_to: |
-    s :: relation(rec: record(a: record(b: i64)))
 
-    r(v: n) <-
-        s(rec: rec)
-        n := record:get(record:get(rec, field: "a"), field: "b")
+  input:
+    - s:
+        - [1, {rec: {a: {b: 9}}}]
+
+  expected_exact_output:
+    - r:
+        - [1, {v: 9}]
 
 # `not e` in an expression  ->  `boolean:not(e)`
 - name: not in an expression is boolean:not
@@ -164,7 +173,7 @@
 
     r(x: x, v: n) <-
         s(x: x, rec: rec, a: a, b: b)
-        n := {"tag" => record:get(rec, field: "f"), "joined" => string:concat(a, b)}
+        n := {"tag" => rec.f, "joined" => string:concat(a, b)}
 
 # `equivalent_to` says nothing about whether either side is right, so pin the
 # sources here too.
@@ -185,5 +194,5 @@
     r(x: x, v: n, w: d) <-
         s(x: x, rec: rec, a: a, b: b)
         n := boolean:not(string:concat(a, b) = "x")
-        d := {"tag" => record:get(rec, field: "f")}
+        d := {"tag" => rec.f}
   expected_ok: true

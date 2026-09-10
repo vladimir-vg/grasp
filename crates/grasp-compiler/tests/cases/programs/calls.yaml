@@ -25,19 +25,19 @@
     - out:
         - [1, {v: 30}]
 
-- name: a keyword argument is where the order stops mattering
+- name: a keyword argument names what it is for
   source: |
-    src :: relation(d: dict(string, i64), r: record(a: i64))
-    src(d:, r:) <- input
+    src :: relation(d: dict(string, i64), a: array(i64))
+    src(d:, a:) <- input
 
     out(v: v, w: w) <-
-        src(d: d, r: r)
+        src(d: d, a: a)
         v := dict:get(d, key: "a")
-        w := record:get(r, field: "a")
+        w := array:at(a, index: 1)
 
   input:
     - src:
-        - [1, {d: {"a": 7}, r: {a: 9}}]
+        - [1, {d: {"a": 7}, a: [8, 9]}]
 
   expected_exact_output:
     - out:

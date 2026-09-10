@@ -407,6 +407,12 @@ pub enum Builtin {
     DictWithoutKeys,
 
     /// `record:get(r, field: "f")` — what `r.f` desugars to.
+    ///
+    /// Not a name a program may write, and the reason is its type: the result is
+    /// the *named field's*, which depends on the value of an argument rather
+    /// than on its type. No signature says that, so [`crate::infer`] reads the
+    /// field literal — and a call given anything but a literal has no answer.
+    /// `r.f` is the spelling, and the only one.
     RecordGet,
 }
 
@@ -441,7 +447,6 @@ impl Builtin {
             "dict:entries" => Builtin::DictEntries,
             "dict:from_entries" => Builtin::DictFromEntries,
             "dict:without" => Builtin::DictWithout,
-            "record:get" => Builtin::RecordGet,
             _ => return None,
         })
     }
@@ -588,27 +593,21 @@ impl Builtin {
 
     /// Whether a program may write this name.
     ///
-    /// Two are written by desugaring and never by a person: [`Builtin::ArrayDrop`]
-    /// is what an array pattern's `*r` binds and [`Builtin::DictWithoutKeys`]
-    /// what a dict pattern's `**r` does. Neither is in the library, and
-    /// [`Builtin::from_name`] does not resolve them — which is not tidiness:
-    /// `dict:without_keys` needs a *literal* array of the keys the pattern
-    /// named, and a program that handed it a variable reached an emitter arm
-    /// that could only panic.
-    pub fn callable(self) -> bool {
-        !matches!(self, Builtin::ArrayDrop | Builtin::DictWithoutKeys)
-    }
-
-    /// Whether the type language can write this one's typespec.
+    /// Three are written by desugaring and never by a person: [`Builtin::ArrayDrop`]
+    /// is what an array pattern's `*r` binds, [`Builtin::DictWithoutKeys`] what
+    /// a dict pattern's `**r` does, and [`Builtin::RecordGet`] what `r.f` does.
+    /// None is in the library, and [`Builtin::from_name`] does not resolve them.
     ///
-    /// `record:get`'s result is the *named field's* type — it depends on the
-    /// value of its second argument rather than on its type — so no signature
-    /// says what it gives back, and [`crate::infer`] reads the key literal
-    /// instead of consulting one. It is a real callable a program may write, and
-    /// `docs/grasp/stdlib.grasp` declares what it can rather than declaring a
-    /// lie: this is the one entry that file does not carry.
-    pub fn has_typespec(self) -> bool {
-        !matches!(self, Builtin::RecordGet)
+    /// What they share is an argument **no source syntax can supply**: each
+    /// takes a literal — an array of the keys a pattern named, a string naming
+    /// a field — and is useless given anything else. A callable that accepts
+    /// only a literal is syntax wearing a function's clothes, and grasp already
+    /// has the syntax.
+    pub fn callable(self) -> bool {
+        !matches!(
+            self,
+            Builtin::ArrayDrop | Builtin::DictWithoutKeys | Builtin::RecordGet
+        )
     }
 
     /// Whether it can fail to have an answer.

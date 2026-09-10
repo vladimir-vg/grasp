@@ -117,19 +117,34 @@
         v := dict:get(d, key: k)
         v :: i64
 
-# The written halves of `.` and `not` keep their names, which is what lets
-# `programs/desugar.yaml` write an expansion out and compare it.
-- name: record:get and boolean:not still are
+# `not` keeps its written half, which is what lets `programs/desugar.yaml` write
+# an expansion out and compare it.
+- name: boolean:not still is
   source: |
-    src :: relation(r: record(a: i64), b: boolean)
-    src(r:, b:) <- input
+    src :: relation(b: boolean)
+    src(b:) <- input
 
-    out(v: v, n: n) <-
-        src(r: r, b: b)
+    out(n: n) <-
+        src(b: b)
         n := boolean:not(b)
-        v := record:get(r, field: "a")
 
   expected_ok: true
+
+# `.` does not. `record:get` takes a literal field name and nothing else — its
+# result is *that field's* type — so it is what desugaring writes rather than a
+# name a program may take, and `r.a` is the only spelling.
+- name: record:get is not a name a program may take
+  source: |
+    src :: relation(r: record(a: i64))
+    src(r:) <- input
+
+    out(v: v) <-
+        src(r: r)
+        v := record:get(r, field: "a")
+  expected_diagnostics:
+    - severity: error
+      pass: desugar
+      message: "there is no callable `record:get`"
 
 # A `[` opening a line is an array destructure, not a subscript reaching back
 # across the line above. Written as `expected_ok` on purpose: with the rule the

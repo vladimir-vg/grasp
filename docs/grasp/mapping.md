@@ -215,10 +215,15 @@ itself, and only `=` needs rewriting.
 The three middle rows are **desugaring run backwards**. grasp-dbsp has no
 `record:get`, no `dict:get` and no `boolean:not` — those names exist only in
 grasp's reserved namespaces, as the expansions
-[`semantics.md`](semantics.md#desugaring) gives `s.f`, a dict pattern and `not`.
-So the emitter puts back what desugaring took apart. A program that spells one
-by hand is writing the expansion itself and reaches the same text, which is what
-lets a sugar and its expansion be asserted equivalent.
+[`semantics.md`](semantics.md#desugaring) gives `s.f`, a subscript and `not`. So
+the emitter puts back what desugaring took apart.
+
+Two of the three can also be written by hand, and a program that does is writing
+the expansion itself and reaches the same text — which is what lets a sugar and
+its expansion be asserted equivalent. `record:get` cannot: it takes a literal
+field name and nothing else, so it is
+[not in the library](semantics.md#the-standard-library) and `s.f` is the only
+spelling. What that sugar produces is asserted against the output instead.
 
 grasp's second dict spelling, `{a: v}`, does not appear here because it is gone
 by this point: [desugaring](semantics.md#desugaring) rewrites it to

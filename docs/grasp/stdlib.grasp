@@ -20,11 +20,6 @@
 # every step of its body has one. `array:index_of` and `array:min` are partial
 # for the same reason; `slice` is not, clamping the way Python's does.
 #
-# One callable is missing, and cannot be here: `record:get(r, field: "f")`, what
-# `r.f` desugars to. Its result is the *named field's* type — it depends on the
-# value of an argument rather than on its type — so no signature says what it
-# gives back, and this file declares what it can rather than declaring a lie.
-#
 # What each function *means* is `semantics.md`; this is what it takes and what
 # it gives back.
 

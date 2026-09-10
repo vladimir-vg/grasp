@@ -153,14 +153,6 @@ fn the_library_is_stdlib_grasp() {
             );
             continue;
         }
-        if !b.has_typespec() {
-            assert!(
-                !declared.contains_key(name),
-                "`{name}` has no typespec the type language can write — see \
-                 `Builtin::has_typespec` — so an entry for it would be a lie"
-            );
-            continue;
-        }
         let Some(shapes) = declared.get(name) else {
             panic!(
                 "`{name}` is a callable this compiler has, but the library does \

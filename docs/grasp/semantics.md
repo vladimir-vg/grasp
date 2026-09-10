@@ -603,12 +603,6 @@ than "there is no callable": the language has the function, and what is left of
 it is a row of the test suite's burn-down rather than a promise in a document
 nobody counts.
 
-One callable is not in it and cannot be. `record:get(r, field: "f")`, what `r.f`
-desugars to, gives back the *named field's* type — which depends on the value of
-an argument rather than on its type, so no signature says what it returns.
-Inference reads the field literal instead. The file declares what it can rather
-than declaring a lie.
-
 What follows is the shape the library takes.
 
 **Access by position is `at`; access by key is `get`.** `array:at(a, index: 2)`,
@@ -634,16 +628,23 @@ different types are two names, and two ways of calling one function are two
 shapes.
 
 **Operators are sugar for functions.** `a ++ b` is `string:concat(a, b)`, `not e`
-is `boolean:not(e)`, `r.f` is `record:get(r, field: "f")`, `arr[1:5]` is
-`array:slice(arr, start: 1, stop: 5)`. A reader who knows the library knows the
-operators.
+is `boolean:not(e)`, `arr[1:5]` is `array:slice(arr, start: 1, stop: 5)`. A
+reader who knows the library knows the operators.
+
+Three of the functions they expand to are **not in the library**, because each
+takes an argument no source syntax can supply: `record:get` a literal field name,
+`dict:without_keys` a literal array of a pattern's keys, `array:drop` the
+position after one. A callable that accepts only a literal is syntax wearing a
+function's clothes, so it stays what desugaring writes and `r.f` is the only
+spelling of a field read.
 
 A **subscript lookup** is the one whose function depends on more than its
 spelling: `d[k]` is `dict:get(d, key: k)` and `arr[i]` is
 `array:at(arr, index: i)`, and which of the two a program means is decided by
 the subject's type. That is why it is settled in inference rather than in
 desugaring — the same reason a dict destructure is — and it is why there is no
-row for it in the table above.
+row for it in the table above. Both of *those* are ordinary library functions: a
+key and an index are values.
 
 **There is no `if`.** A conditional does not belong in a Datalog: a rule that
 holds for some rows and not others is what a rule *is*, so the answer is two
