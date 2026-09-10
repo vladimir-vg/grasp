@@ -617,6 +617,11 @@ fn components(vars: &[BTreeSet<String>]) -> Vec<Vec<usize>> {
 
 fn collect_vars<'a>(e: &'a core::Expr, out: &mut BTreeSet<&'a str>) {
     match e {
+        // `infer` rewrites every subscript into the call it means, so nothing
+        // from here down can meet one.
+        core::Expr::Index { .. } => {
+            unreachable!("a subscript is resolved into a call in `infer`")
+        }
         core::Expr::Var { name, .. } => {
             out.insert(name);
         }

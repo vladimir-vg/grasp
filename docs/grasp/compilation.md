@@ -22,9 +22,11 @@ Two passes run first, and neither is described here.
   callable, which is what puts its arguments in order: below here a call is
   positional. See [`semantics.md`](semantics.md#desugaring). Everything below
   sees the smaller core.
-- **Type inference** gives every variable and every relation column a type, and
-  performs the safety check. See [`inference.md`](inference.md). Types are
-  erased afterwards, so nothing below carries one.
+- **Type inference** gives every variable and every relation column a type,
+  performs the safety check, and settles the one thing desugaring could not —
+  [which library function a subscript means](inference.md#a-subscripts-function-is-chosen-here),
+  which the subject's type decides. See [`inference.md`](inference.md). Types
+  are erased afterwards, so nothing below carries one.
 
 ## Join graph
 

@@ -147,3 +147,317 @@
         [x, y] := arr
 
   expected_ok: true
+
+# ---------------------------------------------------------------------------
+# `arr[i]` — the same bracket over an array.
+#
+# Which library function a subscript means is decided by the **subject's type**:
+# `dict:get` on a dict, `array:at` on an array. Both are partial and grasp-dbsp
+# spells both `get`, so the difference is entirely in what grasp will let you
+# write.
+# ---------------------------------------------------------------------------
+
+- name: a subscript on an array reads by position
+  source: |
+    src :: relation(a: array(i64), i: i64)
+    src(a:, i:) <- input
+
+    out(v: v) <-
+        src(a: a, i: i)
+        v := a[i]
+
+  input:
+    - src:
+        - [1, {a: [10, 20, 30], i: 1}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: 20}]
+
+- name: and it is array:at written shorter
+  source: |
+    src :: relation(a: array(i64), i: i64)
+    src(a:, i:) <- input
+
+    out(v: v) <-
+        src(a: a, i: i)
+        v := a[i]
+  equivalent_to: |
+    src :: relation(a: array(i64), i: i64)
+    src(a:, i:) <- input
+
+    out(v: v) <-
+        src(a: a, i: i)
+        v := array:at(a, index: i)
+
+# Past the end has no answer, so the row is not derived — the same rule a
+# missing key obeys.
+- name: an index past the end derives no row
+  source: |
+    src :: relation(a: array(i64))
+    src(a:) <- input
+
+    out(v: v) <-
+        src(a: a)
+        v := a[7]
+
+  input:
+    - src:
+        - [1, {a: [10, 20]}]
+
+  expected_exact_output:
+    - {}
+
+- name: an array is indexed by an integer and nothing else
+  source: |
+    src :: relation(a: array(i64))
+    src(a:) <- input
+
+    out(v: v) <-
+        src(a: a)
+        v := a["x"]
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "no version of `array:at` takes `array(i64)` and `string`"
+
+- name: a subject that is neither has no brackets
+  source: |
+    src :: relation(s: string)
+    src(s:) <- input
+
+    out(v: v) <-
+        src(s: s)
+        v := s[0]
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "`string` is not a dict or an array, so it has no `[]`"
+
+# ---------------------------------------------------------------------------
+# Slices. A dict cannot be sliced, so unlike a lookup this needs no type: it is
+# sugar for `array:slice`, and the parts are that function's keywords.
+# ---------------------------------------------------------------------------
+
+- name: a slice with both bounds
+  source: |
+    src :: relation(a: array(i64))
+    src(a:) <- input
+
+    out(v: v) <-
+        src(a: a)
+        v := a[1:3]
+
+  input:
+    - src:
+        - [1, {a: [10, 20, 30, 40, 50]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: [20, 30]}]
+
+- name: a slice is array:slice written shorter
+  source: |
+    src :: relation(a: array(i64))
+    src(a:) <- input
+
+    out(v: v) <-
+        src(a: a)
+        v := a[1:3]
+  equivalent_to: |
+    src :: relation(a: array(i64))
+    src(a:) <- input
+
+    out(v: v) <-
+        src(a: a)
+        v := array:slice(a, start: 1, stop: 3)
+
+- name: every part may be left out
+  source: |
+    src :: relation(a: array(i64))
+    src(a:) <- input
+
+    out(head: h, tail: t, all: w, every_other: e) <-
+        src(a: a)
+        h := a[:2]
+        t := a[3:]
+        w := a[:]
+        e := a[::2]
+
+  input:
+    - src:
+        - [1, {a: [10, 20, 30, 40, 50]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {head: [10, 20], tail: [40, 50], all: [10, 20, 30, 40, 50], every_other: [10, 30, 50]}]
+
+- name: a slice takes a start, a stop and a step at once
+  source: |
+    src :: relation(a: array(i64))
+    src(a:) <- input
+
+    out(v: v) <-
+        src(a: a)
+        v := a[1:5:2]
+
+  input:
+    - src:
+        - [1, {a: [10, 20, 30, 40, 50, 60]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: [20, 40]}]
+
+- name: a negative step reverses
+  source: |
+    src :: relation(a: array(i64))
+    src(a:) <- input
+
+    out(v: v) <-
+        src(a: a)
+        v := a[::-1]
+
+  input:
+    - src:
+        - [1, {a: [10, 20, 30]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: [30, 20, 10]}]
+
+# A slice is total where a lookup is partial: it clamps, so the row is derived
+# whatever the bounds were.
+- name: a slice out of range is empty rather than absent
+  source: |
+    src :: relation(a: array(i64))
+    src(a:) <- input
+
+    out(v: v) <-
+        src(a: a)
+        v := a[9:20]
+
+  input:
+    - src:
+        - [1, {a: [10, 20]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: []}]
+
+# ---------------------------------------------------------------------------
+# The lexer joins namespace segments, so `a[x:y]` arrives as `a[Ident("x:y")]`
+# and would read as one qualified name. Inside a subscript, an identifier not
+# followed by `(` is split back — a qualified name is only ever a callable, and
+# a callable is only ever followed by `(`.
+# ---------------------------------------------------------------------------
+
+- name: a slice whose bounds are variables
+  source: |
+    src :: relation(a: array(i64), lo: i64, hi: i64)
+    src(a:, lo:, hi:) <- input
+
+    out(v: v) <-
+        src(a: a, lo: lo, hi: hi)
+        v := a[lo:hi]
+
+  input:
+    - src:
+        - [1, {a: [10, 20, 30, 40], lo: 1, hi: 3}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: [20, 30]}]
+
+# The joining reaches across an operator: `a+b:c` lexes as `a`, `+`, `b:c`, so
+# the split has to happen before the expression is parsed. No surgery on the
+# tree could put it back — the tree is `a + (b:c)` and the slice wants `a+b`.
+- name: the split reaches inside an expression
+  source: |
+    src :: relation(a: array(i64), lo: i64, hi: i64)
+    src(a:, lo:, hi:) <- input
+
+    out(v: v) <-
+        src(a: a, lo: lo, hi: hi)
+        v := a[lo+1:hi]
+
+  input:
+    - src:
+        - [1, {a: [10, 20, 30, 40], lo: 0, hi: 3}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: [20, 30]}]
+
+- name: all three parts may be variables
+  source: |
+    src :: relation(a: array(i64), lo: i64, hi: i64, by: i64)
+    src(a:, lo:, hi:, by:) <- input
+
+    out(v: v) <-
+        src(a: a, lo: lo, hi: hi, by: by)
+        v := a[lo:hi:by]
+
+  input:
+    - src:
+        - [1, {a: [10, 20, 30, 40, 50], lo: 0, hi: 5, by: 2}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: [10, 30, 50]}]
+
+# A call inside a subscript keeps its qualified name, being followed by `(` —
+# which is the whole of the rule that makes the split safe.
+- name: a callable inside a subscript is not split
+  source: |
+    src :: relation(a: array(i64), s: string)
+    src(a:, s:) <- input
+
+    out(v: v) <-
+        src(a: a, s: s)
+        v := a[string:length(s)]
+
+  input:
+    - src:
+        - [1, {a: [10, 20, 30], s: "ab"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: 30}]
+
+- name: and one on either side of a slice colon
+  source: |
+    src :: relation(a: array(i64), s: string)
+    src(a:, s:) <- input
+
+    out(v: v) <-
+        src(a: a, s: s)
+        v := a[string:length(s):string:length(s)+1]
+
+  input:
+    - src:
+        - [1, {a: [10, 20, 30], s: "ab"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: [30]}]
+
+# An array literal is not a subscript, so nothing in one is split — the `[`
+# there does not follow a value.
+- name: an array literal is untouched
+  source: |
+    src :: relation(x: i64)
+    src(x:) <- input
+
+    out(v: v) <-
+        src(x: x)
+        arr := [x, x]
+        v := arr[0]
+
+  input:
+    - src:
+        - [1, {x: 7}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: 7}]

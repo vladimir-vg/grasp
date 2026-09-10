@@ -94,12 +94,6 @@ which are referenced below only as history.
 This is the first cut, and it is narrower than the Erlang implementation the
 design comes from. What is missing is missing on purpose.
 
-- **Element access and slicing.** `arr[0]` and `arr[2:]` have no spelling in
-  grasp. grasp-dbsp can do both, and an array pattern already uses both — `[x,
-  y] := arr` reads by position and `[x, *r]` slices — so what is missing is a
-  syntax for writing one directly, not the capability. A slice also wants a
-  range, and a range is not a value here.
-
 - **The rest of the type vocabulary.** `dynamic` — the top type, and the one
   most likely to be wanted first, since it is what an untyped subset of the
   language would be built on. Then the narrower integers and `f32`, the

@@ -96,6 +96,23 @@ are typed here rather than expanded before this pass — the narrowing has to na
 record's fields are its type, so the field is definite already, and what the
 pattern claims about the fields it did *not* name is checked here too.
 
+### A subscript's function is chosen here
+
+`d[k]` and `arr[i]` are the same syntax over two library functions, and the
+**subject's type** says which: a dict makes it `dict:get`, an array `array:at`.
+Neither desugaring nor the parser can know, so the subscript survives into the
+core and this pass rewrites it into the call it means. A subject that is neither
+is reported here.
+
+It is the same reason the destructures are typed rather than expanded early, and
+it matters for the same reason: grasp-dbsp spells both functions `get`, so a
+subscript lowered straight to the target would agree with the library by
+coincidence, and nothing downstream could tell the difference.
+
+A slice needs none of this. A dict has no order to take a run of, so `arr[1:5]`
+is `array:slice` whatever `arr` turns out to hold, and desugaring rewrites it
+like any other sugar.
+
 ### Composing constraints
 
 Given several constraints on one variable:

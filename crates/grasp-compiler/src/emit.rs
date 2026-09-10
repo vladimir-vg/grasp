@@ -1124,6 +1124,11 @@ pub fn expr_text(e: &core::Expr, want: Option<&Type>) -> String {
 fn expr_in(scope: &Scope<'_>, e: &core::Expr, want: Option<&Type>) -> String {
     let expr_text = |e: &core::Expr, want: Option<&Type>| expr_in(scope, e, want);
     match e {
+        // `infer` rewrites every subscript into the call it means, so nothing
+        // from here down can meet one.
+        core::Expr::Index { .. } => {
+            unreachable!("a subscript is resolved into a call in `infer`")
+        }
         core::Expr::Lit {
             value: Lit::None, ..
         } => match want {

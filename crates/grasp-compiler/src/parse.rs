@@ -98,12 +98,113 @@ fn namespace_of(name: &str) -> Option<&str> {
 // ---------------------------------------------------------------------------
 
 pub fn parse(source: &str) -> Result<Program, Diagnostic> {
-    let tokens = lex(source)?;
+    let mut tokens = lex(source)?;
+    split_in_subscripts(&mut tokens);
     let mut p = Parser {
         toks: &tokens,
         pos: 0,
     };
     p.program()
+}
+
+/// Undo the lexer's joining of namespace segments, inside a subscript only.
+///
+/// `identifier ::= name (":" name)*`, so `arr[x:y]` lexes as
+/// `arr [ Ident("x:y") ]` and reads as one qualified name where a slice was
+/// meant. **A qualified name is only ever a callable, and a callable is only
+/// ever followed by `(`** — so inside a subscript an identifier that is not
+/// followed by `(` is split back into its segments and the colons between them,
+/// and nothing is lost. `arr[1:5]` and `arr[x:5]` were never at risk, a segment
+/// having to begin with a letter.
+///
+/// It is done over the token stream because it has to happen before the
+/// expression is parsed. `arr[a+b:c]` joins `b` to `c`, and no surgery on the
+/// parsed tree could put that back: the tree is `(a + (b:c))`, and the slice
+/// wanted is `a+b` and `c`.
+///
+/// The same goes for `::`, which the lexer builds out of two colons for an
+/// annotation: `a[::2]` wants them back. An assertion is a statement and never
+/// an expression, so inside a subscript there is nothing else it could be.
+///
+/// This is the one place either is undone.
+fn split_in_subscripts(toks: &mut Vec<Token>) {
+    // Which enclosing brackets are subscripts. A `[` opens one when it follows
+    // something a postfix expression can end with and does not start a line —
+    // the same test `Parser::opens_here` makes.
+    let mut brackets: Vec<bool> = Vec::new();
+    let mut out: Vec<Token> = Vec::with_capacity(toks.len());
+    for (i, tok) in toks.iter().enumerate() {
+        match tok.kind {
+            Tok::LBracket => brackets.push(!tok.first_on_line && ends_a_primary(toks, i)),
+            Tok::RBracket => {
+                brackets.pop();
+            }
+            _ => {}
+        }
+        let subscript = brackets.iter().any(|&b| b);
+        // `a[::2]` — the other token the lexer builds out of colons. A `::`
+        // inside a subscript can only be two of a slice's, an assertion being a
+        // statement and never an expression.
+        if subscript && tok.kind == Tok::Annot {
+            for n in 0..2 {
+                out.push(Token {
+                    kind: Tok::Colon,
+                    span: Span::new(tok.span.line, tok.span.column + n, 1),
+                    first_on_line: tok.first_on_line && n == 0,
+                });
+            }
+            continue;
+        }
+        let split = subscript
+            && matches!(&tok.kind, Tok::Ident(n) if n.contains(':'))
+            && !matches!(toks.get(i + 1).map(|t| &t.kind), Some(Tok::LParen));
+        let Tok::Ident(name) = &tok.kind else {
+            out.push(tok.clone());
+            continue;
+        };
+        if !split {
+            out.push(tok.clone());
+            continue;
+        }
+        let mut column = tok.span.column;
+        for (n, segment) in name.split(':').enumerate() {
+            if n > 0 {
+                out.push(Token {
+                    kind: Tok::Colon,
+                    span: Span::new(tok.span.line, column, 1),
+                    first_on_line: false,
+                });
+                column += 1;
+            }
+            out.push(Token {
+                kind: Tok::Ident(segment.to_string()),
+                span: Span::new(tok.span.line, column, segment.len()),
+                // Only the piece that was there keeps it.
+                first_on_line: tok.first_on_line && n == 0,
+            });
+            column += segment.len();
+        }
+    }
+    *toks = out;
+}
+
+/// Whether the token before position `i` can end a postfix expression, which is
+/// what makes a `[` a subscript rather than an array literal or pattern.
+fn ends_a_primary(toks: &[Token], i: usize) -> bool {
+    i > 0
+        && matches!(
+            toks[i - 1].kind,
+            Tok::Ident(_)
+                | Tok::Int(_)
+                | Tok::Float(_)
+                | Tok::Str(_)
+                | Tok::True
+                | Tok::False
+                | Tok::None
+                | Tok::RParen
+                | Tok::RBracket
+                | Tok::RBrace
+        )
 }
 
 struct Parser<'a> {
@@ -1292,19 +1393,53 @@ impl<'a> Parser<'a> {
             }
             if self.opens_here(0, &Tok::LBracket) {
                 self.bump();
-                let key = self.expr()?.expr;
-                let close = self.expect(&Tok::RBracket, "`]`")?;
-                let span = base.expr.span().to(close.span);
-                base = Parsed::primary(Expr::Index {
-                    base: Box::new(base.expr),
-                    key: Box::new(key),
-                    span,
-                });
+                base = Parsed::primary(self.subscript(base.expr)?);
                 continue;
             }
             break;
         }
         Ok(base)
+    }
+
+    /// `subscript ::= expr | [expr] ":" [expr] [":" [expr]]`, the `[` consumed.
+    ///
+    /// One colon makes it a slice, and every part may be left out — `arr[:]` is
+    /// a whole copy. The lookup form is the one that needs a type to be
+    /// understood; a slice is over an array whatever it holds.
+    fn subscript(&mut self, base: Expr) -> Result<Expr, Diagnostic> {
+        let part = |p: &mut Self| -> Result<Option<Box<Expr>>, Diagnostic> {
+            if p.at(&Tok::Colon) || p.at(&Tok::RBracket) {
+                return Ok(None);
+            }
+            Ok(Some(Box::new(p.expr()?.expr)))
+        };
+
+        let start = part(self)?;
+        if !self.eat(&Tok::Colon) {
+            let Some(key) = start else {
+                return Err(self.unexpected("an expression"));
+            };
+            let close = self.expect(&Tok::RBracket, "`]`")?;
+            return Ok(Expr::Index {
+                base: Box::new(base.clone()),
+                key,
+                span: base.span().to(close.span),
+            });
+        }
+        let stop = part(self)?;
+        let step = if self.eat(&Tok::Colon) {
+            part(self)?
+        } else {
+            None
+        };
+        let close = self.expect(&Tok::RBracket, "`]`")?;
+        Ok(Expr::Slice {
+            base: Box::new(base.clone()),
+            start,
+            stop,
+            step,
+            span: base.span().to(close.span),
+        })
     }
 
     fn primary(&mut self) -> Result<Parsed, Diagnostic> {

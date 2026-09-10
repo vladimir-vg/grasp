@@ -506,6 +506,7 @@ before the join graph, so everything downstream sees the smaller core.
 | `{a: v}` | `{"a" => v}` |
 | `{"a": v}` | `{"a" => v}` |
 | `s.f` | `record:get(s, field: "f")` |
+| `arr[1:5:2]` | `array:slice(arr, start: 1, stop: 5, step: 2)` |
 | `s.a.b` | `record:get(record:get(s, field: "a"), field: "b")` |
 | `not e` in an expression | `boolean:not(e)` |
 
@@ -633,8 +634,16 @@ different types are two names, and two ways of calling one function are two
 shapes.
 
 **Operators are sugar for functions.** `a ++ b` is `string:concat(a, b)`, `not e`
-is `boolean:not(e)`, `r.f` is `record:get(r, field: "f")`, `d[k]` is
-`dict:get(d, key: k)`. A reader who knows the library knows the operators.
+is `boolean:not(e)`, `r.f` is `record:get(r, field: "f")`, `arr[1:5]` is
+`array:slice(arr, start: 1, stop: 5)`. A reader who knows the library knows the
+operators.
+
+A **subscript lookup** is the one whose function depends on more than its
+spelling: `d[k]` is `dict:get(d, key: k)` and `arr[i]` is
+`array:at(arr, index: i)`, and which of the two a program means is decided by
+the subject's type. That is why it is settled in inference rather than in
+desugaring — the same reason a dict destructure is — and it is why there is no
+row for it in the table above.
 
 **There is no `if`.** A conditional does not belong in a Datalog: a rule that
 holds for some rows and not others is what a rule *is*, so the answer is two

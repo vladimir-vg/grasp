@@ -424,13 +424,27 @@ pub enum Expr {
         name: String,
         span: Span,
     },
-    /// `d[k]` — a dict read by a key that need not be literal.
+    /// `d[k]` and `arr[i]` — a read by key or by position.
     ///
-    /// The postfix twin of [`Expr::Field`], and desugared the same way: this
-    /// becomes `dict:get(d, k)`, so nothing past desugaring has it.
+    /// The postfix twin of [`Expr::Field`], but unlike it **not** sugar: which
+    /// of `dict:get` and `array:at` it means is decided by the subject's type,
+    /// so it survives desugaring and is settled in `infer`.
     Index {
         base: Box<Expr>,
         key: Box<Expr>,
+        span: Span,
+    },
+    /// `arr[1:5:2]` — a slice, and the one subscript that is not a lookup.
+    ///
+    /// Each part may be left out: `arr[:5]`, `arr[2:]`, `arr[::2]`, `arr[:]`.
+    /// Unlike [`Expr::Index`] it needs no type to be understood — a dict cannot
+    /// be sliced — so this *is* sugar, and desugaring rewrites it to
+    /// `array:slice` with the keywords the parts were written under.
+    Slice {
+        base: Box<Expr>,
+        start: Option<Box<Expr>>,
+        stop: Option<Box<Expr>>,
+        step: Option<Box<Expr>>,
         span: Span,
     },
     Unary {
@@ -474,6 +488,7 @@ impl Expr {
             | Expr::Var { span, .. }
             | Expr::Field { span, .. }
             | Expr::Index { span, .. }
+            | Expr::Slice { span, .. }
             | Expr::Unary { span, .. }
             | Expr::Binary { span, .. }
             | Expr::Call { span, .. }

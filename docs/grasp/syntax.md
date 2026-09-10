@@ -173,7 +173,9 @@ cat_expr    ::= add_expr ("++" add_expr)*
 add_expr    ::= mul_expr (("+" | "-") mul_expr)*
 mul_expr    ::= unary (("*" | "/" | "%") unary)*
 unary       ::= "-" postfix | postfix
-postfix     ::= primary ("." name | "[" expr "]")*
+postfix     ::= primary ("." name | "[" subscript "]")*
+subscript   ::= expr                                -- a lookup
+              | [expr] ":" [expr] [":" [expr]]      -- a slice
 primary     ::= literal
               | variable
               | call
@@ -195,6 +197,32 @@ dict_entry     ::= expr "=>" expr       -- any key type
 record_literal ::= "record" "(" [rec_field ("," rec_field)*] [","] ")"
 rec_field      ::= dict_key ":" expr
 ```
+
+### Subscripts
+
+`d[k]` reads a dict by key, `arr[i]` an array by position, and
+`arr[1:5:2]` slices. Every part of a slice may be left out — `arr[:5]`,
+`arr[2:]`, `arr[::2]`, `arr[:]` — and a negative step reverses.
+
+A lookup is [sugar for a library function](semantics.md#the-standard-library),
+and **which one is decided by the subject's type**: `dict:get` on a dict,
+`array:at` on an array. A slice is always `array:slice`, a dict having no order
+to take a run of.
+
+**One hazard, and it is the lexer's.** `identifier ::= name (":" name)*` joins
+namespace segments, so `arr[x:y]` lexes as `arr[` *one qualified name* `]`, and
+`::` is a single token besides — `arr[::2]` would be an annotation. Inside a
+subscript both are put back: `::` becomes two colons, and a qualified identifier
+**not followed by `(`** is split into its segments.
+
+Nothing is lost, because a qualified name is only ever a callable and a callable
+is only ever followed by `(` — so `arr[string:length(s):n]` keeps its call and
+splits its slice. It has to happen before the expression is parsed rather than
+after: `arr[a+b:c]` joins `b` to `c`, and the tree that produces is `a + (b:c)`,
+which no rewriting could turn back into `a+b` and `c`.
+
+`arr[1:5]` and `arr[x:5]` were never at risk, a segment having to begin with a
+letter.
 
 ### Operator groups
 

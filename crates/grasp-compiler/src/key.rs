@@ -79,6 +79,11 @@ pub fn expr(e: &core::Expr) -> String {
 
 fn write_expr(out: &mut String, e: &core::Expr) {
     match e {
+        // `infer` rewrites every subscript into the call it means, so nothing
+        // from here down can meet one.
+        core::Expr::Index { .. } => {
+            unreachable!("a subscript is resolved into a call in `infer`")
+        }
         core::Expr::Lit { value, .. } => out.push_str(&lit(value)),
         core::Expr::Var { name, .. } => out.push_str(name),
         core::Expr::Unary { op, operand, .. } => {

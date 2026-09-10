@@ -259,11 +259,42 @@ fn expr_of(e: &ast::Expr) -> Result<core::Expr, Diagnostic> {
         // `d[k]` → `dict:get(d, k)`. The key is an ordinary expression, which
         // is the whole difference from `s.f`: a record's field is part of its
         // type and has to be written, a dict's key is a value.
-        ast::Expr::Index { base, key, span } => core::Expr::Call {
-            callee: core::Builtin::DictGet,
-            args: vec![expr_of(base)?, expr_of(key)?],
+        // Not rewritten here: `d[k]` is `dict:get` and `arr[i]` is `array:at`,
+        // and only the subject's type tells them apart. `infer` settles it.
+        ast::Expr::Index { base, key, span } => core::Expr::Index {
+            base: Box::new(expr_of(base)?),
+            key: Box::new(expr_of(key)?),
             span: *span,
         },
+
+        // A slice needs no type — a dict cannot be sliced — so this one really
+        // is sugar. Written as the call it stands for and resolved by the
+        // ordinary path, so the defaults live in `Builtin::signatures` and
+        // nowhere else.
+        ast::Expr::Slice {
+            base,
+            start,
+            stop,
+            step,
+            span,
+        } => {
+            let named = |name: &str, part: &Option<Box<ast::Expr>>| {
+                part.as_ref().map(|e| (name.to_string(), (**e).clone()))
+            };
+            return expr_of(&ast::Expr::Call {
+                name: core::Builtin::ArraySlice.as_str().to_string(),
+                positional: vec![(**base).clone()],
+                keyword: [
+                    named("start", start),
+                    named("stop", stop),
+                    named("step", step),
+                ]
+                .into_iter()
+                .flatten()
+                .collect(),
+                span: *span,
+            });
+        }
 
         // `s.f` → `record:get(s, "f")`, and `s.a.b` by recursion.
         ast::Expr::Field { base, name, span } => core::Expr::Call {

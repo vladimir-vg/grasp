@@ -1133,6 +1133,35 @@ impl Cx {
                 }
             }
 
+            // `d[k]` on a dict and `arr[i]` on an array. The two library
+            // functions this settles to are checked in `apply`, so this arm
+            // only picks which — and reports a subject that is neither, since
+            // no rewrite could be chosen for it.
+            core::Expr::Index { base, key, span } => {
+                let (subject, err) = self.expr_ty(base, vars);
+                if err.is_some() {
+                    return (Ty::Error, err);
+                }
+                let Some(callee) = subscript_callee(&subject) else {
+                    if matches!(subject, Ty::Unknown) {
+                        return (Ty::Unknown, None);
+                    }
+                    return (
+                        Ty::Error,
+                        Some(Diagnostic::error(
+                            Pass::Infer,
+                            *span,
+                            format!("`{subject}` is not a dict or an array, so it has no `[]`"),
+                        )),
+                    );
+                };
+                let (k, err) = self.expr_ty(key, vars);
+                if err.is_some() {
+                    return (Ty::Error, err);
+                }
+                self.apply(callee, &[subject, k], &[], *span)
+            }
+
             core::Expr::Call { callee, args, span } => {
                 let mut tys = Vec::with_capacity(args.len());
                 let mut err = None;
@@ -1856,13 +1885,80 @@ impl Cx {
         out: &mut BTreeMap<Span, Type>,
     ) {
         walk(e, &mut |sub| {
-            if let core::Expr::Call { callee, span, .. } = sub
-                && callee.partial()
-                && let Ok(ty) = settle(&self.expr_ty(sub, vars).0)
-            {
-                out.insert(*span, ty);
+            // A subscript is partial too, and keyed by the same span the call it
+            // becomes will carry — so `resolve_subscripts` can run after this
+            // and the plan still finds the entry.
+            let partial = match sub {
+                core::Expr::Call { callee, .. } => callee.partial(),
+                core::Expr::Index { .. } => true,
+                _ => false,
+            };
+            if partial && let Ok(ty) = settle(&self.expr_ty(sub, vars).0) {
+                out.insert(sub.span(), ty);
             }
         });
+    }
+
+    /// Rewrite every subscript into the call it means.
+    ///
+    /// The last thing this pass does to a rule, and the reason `core::Expr` has
+    /// an [`core::Expr::Index`][index] at all: below here a subscript **is**
+    /// `dict:get` or `array:at`, not something that emits the same text as one.
+    /// grasp-dbsp spells both `get`, so a subscript lowered directly would
+    /// agree with the library by coincidence, and the fixtures that assert a
+    /// sugar equals its expansion would pass without checking anything.
+    ///
+    /// The span is kept, so the entry [`collect_partials`][partials] made for
+    /// the subscript is the one the plan looks up for the call.
+    ///
+    /// [index]: core::Expr::Index
+    /// [partials]: Cx::collect_partials
+    fn resolve_subscripts(&self, rule: &mut core::Rule, vars: &BTreeMap<String, Ty>) {
+        for e in expressions_mut(rule) {
+            self.resolve_subscripts_in(e, vars);
+        }
+    }
+
+    fn resolve_subscripts_in(&self, e: &mut core::Expr, vars: &BTreeMap<String, Ty>) {
+        match e {
+            core::Expr::Index { base, key, span } => {
+                self.resolve_subscripts_in(base, vars);
+                self.resolve_subscripts_in(key, vars);
+                let (subject, _) = self.expr_ty(base, vars);
+                // `check` has reported anything `subscript_callee` refuses, so
+                // the fallback is unreachable — and a `dict:get` on something
+                // that is not a dict is a diagnostic downstream rather than a
+                // wrong answer.
+                let callee = subscript_callee(&subject).unwrap_or(core::Builtin::DictGet);
+                *e = core::Expr::Call {
+                    callee,
+                    args: vec![(**base).clone(), (**key).clone()],
+                    span: *span,
+                };
+            }
+            core::Expr::Unary { operand, .. } => self.resolve_subscripts_in(operand, vars),
+            core::Expr::Binary { lhs, rhs, .. } => {
+                self.resolve_subscripts_in(lhs, vars);
+                self.resolve_subscripts_in(rhs, vars);
+            }
+            core::Expr::Call { args, .. } | core::Expr::ArrayLit { elems: args, .. } => {
+                for a in args {
+                    self.resolve_subscripts_in(a, vars);
+                }
+            }
+            core::Expr::DictLit { entries, .. } => {
+                for (k, v) in entries {
+                    self.resolve_subscripts_in(k, vars);
+                    self.resolve_subscripts_in(v, vars);
+                }
+            }
+            core::Expr::RecordLit { fields, .. } => {
+                for (_, v) in fields {
+                    self.resolve_subscripts_in(v, vars);
+                }
+            }
+            core::Expr::Lit { .. } | core::Expr::Var { .. } => {}
+        }
     }
 
     fn check_unnest(&self, rule: &core::Rule) -> Option<Diagnostic> {
@@ -2337,6 +2433,43 @@ fn expressions(rule: &core::Rule) -> Vec<&core::Expr> {
     out
 }
 
+/// Which library function a subscript on this subject means.
+///
+/// "Access by position is `at`; access by key is `get`" — and a subject is one
+/// or the other, so the name follows from the type and there is nothing to
+/// choose. `json` is not here: a document is narrowed to what it holds and read
+/// with `dict:`, which is [one way in rather than
+/// two](../../../docs/grasp/semantics.md).
+fn subscript_callee(subject: &Ty) -> Option<core::Builtin> {
+    match subject {
+        Ty::Dict(..) => Some(core::Builtin::DictGet),
+        Ty::Array(_) => Some(core::Builtin::ArrayAt),
+        _ => None,
+    }
+}
+
+/// [`expressions`], for a pass that rewrites rather than reads.
+fn expressions_mut(rule: &mut core::Rule) -> Vec<&mut core::Expr> {
+    let mut out: Vec<&mut core::Expr> = rule.head.args.iter_mut().map(|(_, e)| e).collect();
+    for stmt in &mut rule.body {
+        match stmt {
+            core::Stmt::Atom { args, .. } => {
+                out.extend(args.iter_mut().filter_map(|(_, a)| match a {
+                    core::Arg::Expr(e) => Some(e),
+                    core::Arg::Wildcard(_) => None,
+                }));
+            }
+            core::Stmt::Filter { expr, .. } => out.push(expr),
+            core::Stmt::Match { rhs, .. } => match rhs {
+                core::Rhs::Expr(e) => out.push(e),
+                core::Rhs::Aggregate { arg, .. } => out.extend(arg.as_mut()),
+            },
+            core::Stmt::Assert { .. } | core::Stmt::Input { .. } => {}
+        }
+    }
+    out
+}
+
 fn walk(e: &core::Expr, f: &mut impl FnMut(&core::Expr)) {
     f(e);
     match e {
@@ -2344,6 +2477,10 @@ fn walk(e: &core::Expr, f: &mut impl FnMut(&core::Expr)) {
         core::Expr::Binary { lhs, rhs, .. } => {
             walk(lhs, f);
             walk(rhs, f);
+        }
+        core::Expr::Index { base, key, .. } => {
+            walk(base, f);
+            walk(key, f);
         }
         core::Expr::Call { args, .. } | core::Expr::ArrayLit { elems: args, .. } => {
             for a in args {
@@ -2468,8 +2605,10 @@ impl Cx {
                 }
             }
             let after = after(rule);
+            let mut resolved = rule.clone();
+            self.resolve_subscripts(&mut resolved, &typed.vars);
             decls.push(Decl::Rule(TypedRule {
-                rule: rule.clone(),
+                rule: resolved,
                 vars,
                 partials: typed.partials,
                 asserts: typed.filters,

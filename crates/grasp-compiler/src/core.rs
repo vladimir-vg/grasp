@@ -235,6 +235,18 @@ pub enum Expr {
         args: Vec<Expr>,
         span: Span,
     },
+    /// `d[k]` and `arr[i]` — a read by key or by position.
+    ///
+    /// Kept, for the reason [`Pattern::Dict`] is: the rewrite needs types.
+    /// Which of `dict:get` and `array:at` a subscript means is decided by the
+    /// subject's type, and desugaring has none — so this survives into the core
+    /// and `infer` settles it, the way `plan` settles a destructure. Nothing
+    /// below `infer` meets one.
+    Index {
+        base: Box<Expr>,
+        key: Box<Expr>,
+        span: Span,
+    },
     ArrayLit {
         elems: Vec<Expr>,
         span: Span,
@@ -257,6 +269,7 @@ impl Expr {
             | Expr::Unary { span, .. }
             | Expr::Binary { span, .. }
             | Expr::Call { span, .. }
+            | Expr::Index { span, .. }
             | Expr::ArrayLit { span, .. }
             | Expr::DictLit { span, .. }
             | Expr::RecordLit { span, .. } => *span,
