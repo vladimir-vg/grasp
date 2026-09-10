@@ -172,9 +172,12 @@ array:prepend :: function
 array:reverse :: function
     (array(T)) -> array(T)
 
+# Ascending without the keyword. `desc:` is a boolean rather than a direction
+# named by a string: grasp has no enum, and a two-valued choice spelled as text
+# is one the type language cannot check.
 array:sort :: function
     (array(T)) -> array(T)
-    (array(T), direction: string) -> array(T)
+    (array(T), desc: boolean) -> array(T)
 
 array:distinct :: function
     (array(T)) -> array(T)
