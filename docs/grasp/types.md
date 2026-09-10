@@ -33,10 +33,12 @@ to say about one.
 
 That is the whole vocabulary, and it is exactly what
 [grasp-dbsp](../grasp-dbsp/language.md#value-types) can carry. The wider set the
-Erlang implementation offers — `dynamic`, the narrower integers, `f32`,
-arbitrary-precision `integer` and `numeric`, `bytes`, `bits`, the temporal
-types, general `enum` — is listed under
+Erlang implementation offers — `dynamic`, the narrower integers, `f32`, string
+encodings, general `enum` — is listed under
 [future work](overview.md#future-work), each blocked on a grasp-dbsp value type.
+**Arbitrary precision is not on that list**: neither an unbounded `integer` nor
+an unbounded `numeric` is planned, and `overview.md` says why. Inexact
+arithmetic is `f64`; exact arithmetic is `i64`.
 
 **Scalars** are `boolean`, `i64`, `f64`, `string`, `bytes`, `date`, `time`,
 `timestamp` and `interval`. The word matters in two rules below: what may key a dict, and what

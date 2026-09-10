@@ -183,9 +183,11 @@ name. That is not a coincidence — it is why the names were chosen.
 | `dict(K,V)` | `dict(K,V)` | `K` is a scalar in both |
 
 The types grasp does not have yet — `dynamic`, the narrower integers, `f32`,
-`numeric`, `bytes`, `bits`, the temporal types, general `enum` — are absent for
-the same reason: there is nothing underneath them. Each arrives here when it
-arrives there. See [`overview.md`](overview.md#future-work).
+string encodings, general `enum` — are absent for the same reason: there is
+nothing underneath them. Each arrives here when it arrives there. The ones that
+are absent by **decision** rather than for want of a target type — `bits`,
+`bytes(N)`, months, timezones, and arbitrary precision — are recorded in
+[`overview.md`](overview.md#future-work).
 
 ## Expressions
 

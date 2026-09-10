@@ -592,9 +592,13 @@ guess from its argument. Namespacing is what makes that the *default*, so a name
 is one function unless the library says otherwise — and almost every one is.
 
 `integer:` and `float:` do not merge into a `number:`. Float semantics are not
-integer semantics, and `numeric` — arbitrary-precision decimal, when it arrives —
-is a third thing again. `float:floor` exists and `integer:floor` does not, being
-the identity on an `i64`.
+integer semantics. `float:floor` exists and `integer:floor` does not, being the
+identity on an `i64`.
+
+The `numeric:` namespace is held and **empty**, and stays that way: an
+arbitrary-precision decimal is [not planned](overview.md#future-work). The
+namespace is kept rather than released because releasing it would let a program
+take the name, and reclaiming one is worse than holding one.
 
 The library is [`stdlib.grasp`](stdlib.grasp), written in grasp and parsed as
 grasp, and it declares the **whole** library rather than the part that works.

@@ -96,10 +96,33 @@ design comes from. What is missing is missing on purpose.
 
 - **The rest of the type vocabulary.** `dynamic` — the top type, and the one
   most likely to be wanted first, since it is what an untyped subset of the
-  language would be built on. Then the narrower integers and `f32`, the
-  arbitrary-precision `integer` and `numeric`, string encodings, and general
-  `enum(...)` beyond the `boolean` case. Each needs a grasp-dbsp value type
-  underneath before grasp can offer it.
+  language would be built on. Then the narrower integers and `f32`, string
+  encodings, and general `enum(...)` beyond the `boolean` case. Each needs a
+  grasp-dbsp value type underneath before grasp can offer it.
+
+- **Arbitrary precision is not planned**, for `integer` or for `numeric`, and
+  the reasons are worth keeping so the question is not reopened from nothing.
+
+  There is **no bignum** in the target at all — Feldera's `Variant::BigInt` is
+  SQL's BIGINT, an `i64`. One would mean `num-bigint` plus a value type built
+  from scratch, and an unbounded value as a Z-set key touches the hashing and
+  storage invariants in [`compilation.md`](compilation.md), which are the ones
+  this workspace cannot relax. The name would also collide with its own
+  namespace: `integer:` already means the `i64` family, `integer:abs` and its
+  neighbours.
+
+  A decimal tops out at **38 significant digits** — `SqlDecimal<P,S>` is an
+  `i128` significand, so that is a ceiling rather than a setting. Feldera also
+  has a dynamic-scale form, but its ordering cannot be used: canonically `0.09`
+  is significand 9 at scale 2 and `0.1` is 1 at scale 1, which sorts backwards,
+  and [`mapping.md`](mapping.md) requires the stored order to be the value
+  order. A fixed scale would uphold it, and a parameterised `numeric(p, s)`
+  would be a **value parameter** — the shape `bytes(N)` was declined for, since
+  a typespec cannot say "any precision" and no `numeric:` function could then
+  accept more than one instantiation.
+
+  So what a program has for inexact arithmetic is `f64`, and for exact
+  arithmetic `i64`.
 
   The temporal family is **complete**: `date`, `time`, `timestamp` and
   `interval`. Neither timezones nor months are on this list, and both are
