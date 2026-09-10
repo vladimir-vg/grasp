@@ -138,14 +138,14 @@
     }
 
     circuit twice(src: s) {
-        first  := double(src: s)
-        second := double(src: first.out)
+        once  := double(src: s)
+        again := double(src: once.out)
     }
 
     t   := twice(src: a)
-    out := t.second.out
+    out := t.again.out
 
-  # `t.second.out` is a three-part path: the inner instantiation's node, reached
+  # `t.again.out` is a three-part path: the inner instantiation's node, reached
   # through the outer instance.
   input:
     - a:

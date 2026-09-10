@@ -599,6 +599,14 @@ above and with each other.
 | `dict_entries` | `dict(K,V) → array(record(key: K, value: V))` | a dict's entries, sorted by key |
 | `contains` | `array(T) × T → bool` | whether the array holds the element |
 | `slice` | `array(T) × optional(i64) × optional(i64) × i64 → array(T)` | Python's slice |
+| `make_date` | `i64 × i64 × i64 → optional(date)` | year, month, day |
+| `make_time` | `i64 × i64 × i64 × i64 → optional(time)` | hour, minute, second, microsecond |
+| `make_timestamp` | `date × time → timestamp` | the two halves of an instant |
+| `timestamp_from_micros` | `i64 → timestamp` | microseconds since the epoch |
+| `epoch_micros` | `timestamp → i64` | the inverse |
+| `epoch_days` | `date → i64` | days since the epoch |
+| `year` / `month` / `day` | `date → i64` | a date's components |
+| `hour` / `minute` / `second` / `microsecond` | `time → i64` | a time's components |
 
 Every builtin but `coalesce` and `slice` rejects an `optional` argument, for the
 reason under [Absence](#absence). Those two inspect absence rather than being
@@ -638,6 +646,22 @@ own slice carries `None` there.
 A step of zero selects nothing. Python raises; every expression here is total, so
 the empty array is the answer, and it is the one place this differs from the
 semantics it copies.
+
+`make_date` and `make_time` are **`optional`**, because not every triple of
+integers is a date and not every hour is an hour — the shape `/` already has.
+`make_timestamp` is not: every date and time-of-day is one instant.
+
+The components read the one type that holds them, so a component of a
+`timestamp` goes through a conversion — `year(cast(ts, date))`, `hour(cast(ts,
+time))`. One name over one type rather than a family whose meaning depends on
+which it was handed. `microsecond` is the **sub-second** part, unlike SQL's
+`EXTRACT(MICROSECOND)` which folds the seconds in, so that it is the inverse of
+the argument `make_time` takes and the two round-trip.
+
+Reserving `year` through `microsecond` takes six ordinary words out of the space
+of node names. That is the cost of having no namespaces here, and it is paid
+where the language is written by hand: a frontend's colliding name is mangled on
+the way in.
 
 `if` is the only branching construct, and the only builtin that does not
 evaluate all of its arguments — the untaken arm does not run. Because every

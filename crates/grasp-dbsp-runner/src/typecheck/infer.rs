@@ -886,6 +886,10 @@ fn conversion(from: &Ty, to: &TypeDesc, span: Span) -> TResult<Conv> {
         // spelling is the one the codec and a dict key already round-trip.
         (String, Date | Time | Timestamp) => Conv::StringToTemporal(target.clone()),
         (Date | Time | Timestamp, String) => Conv::TemporalToString,
+        // Both halves of an instant, and both total: a timestamp always has a
+        // date and a time-of-day. `make_timestamp` puts them back.
+        (Timestamp, Date) => Conv::TimestampToDate,
+        (Timestamp, Time) => Conv::TimestampToTime,
         _ => {
             return err(
                 span,
@@ -1278,6 +1282,81 @@ fn infer_builtin(
             }
             pin(&mut exprs[3], &TypeDesc::I64);
             Ty::Known(TypeDesc::Array(Box::new(element)))
+        }
+
+        // Components from integers. `optional`, because not every triple is a
+        // date and not every hour is an hour — the same shape `/` has, and the
+        // reason a frontend can turn a bad one into a dropped row.
+        Builtin::MakeDate | Builtin::MakeTime => {
+            for (i, arg) in args.iter().enumerate() {
+                definite(arg, name, span)?;
+                let t = arg.settle().expect("definite() rejected the none case");
+                if t.non_null() != &TypeDesc::I64 {
+                    return err(
+                        span,
+                        format!("`{name}`'s components are `i64`, but argument {i} is `{t}`"),
+                    );
+                }
+                pin(&mut exprs[i], &TypeDesc::I64);
+            }
+            Ty::Known(optional(if b == Builtin::MakeDate {
+                TypeDesc::Date
+            } else {
+                TypeDesc::Time
+            }))
+        }
+        // A date and a time-of-day are one instant, and every pair is one — so
+        // unlike the two above, this is total.
+        Builtin::MakeTimestamp => {
+            let want = [TypeDesc::Date, TypeDesc::Time];
+            for (i, arg) in args.iter().enumerate() {
+                definite(arg, name, span)?;
+                let t = arg.settle().expect("definite() rejected the none case");
+                if t.non_null() != &want[i] {
+                    return err(
+                        span,
+                        format!("`{name}` takes a `date` and a `time`, but argument {i} is `{t}`"),
+                    );
+                }
+                pin(&mut exprs[i], &want[i]);
+            }
+            Ty::Known(TypeDesc::Timestamp)
+        }
+        Builtin::TimestampFromMicros => {
+            definite(&args[0], name, span)?;
+            let t = args[0].settle().expect("definite() rejected the none case");
+            if t.non_null() != &TypeDesc::I64 {
+                return err(span, format!("`{name}` takes an `i64`, found `{t}`"));
+            }
+            pin(&mut exprs[0], &TypeDesc::I64);
+            Ty::Known(TypeDesc::Timestamp)
+        }
+        // Each reads the one type that holds the component, so a component of a
+        // `timestamp` is `year(cast(ts, date))` — one name over one type rather
+        // than a family whose result depends on which it was given.
+        Builtin::EpochMicros
+        | Builtin::EpochDays
+        | Builtin::Year
+        | Builtin::Month
+        | Builtin::Day
+        | Builtin::Hour
+        | Builtin::Minute
+        | Builtin::Second
+        | Builtin::Microsecond => {
+            let want = match b {
+                Builtin::EpochMicros => TypeDesc::Timestamp,
+                Builtin::EpochDays | Builtin::Year | Builtin::Month | Builtin::Day => {
+                    TypeDesc::Date
+                }
+                _ => TypeDesc::Time,
+            };
+            definite(&args[0], name, span)?;
+            let t = args[0].settle().expect("definite() rejected the none case");
+            if t.non_null() != &want {
+                return err(span, format!("`{name}` reads a `{want}`, found `{t}`"));
+            }
+            pin(&mut exprs[0], &want);
+            Ty::Known(TypeDesc::I64)
         }
 
         Builtin::Coalesce => {

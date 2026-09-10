@@ -209,6 +209,8 @@ fn hash_conv(h: &mut Xxh3Default, conv: &crate::expr::Conv) {
             return;
         }
         TemporalToString => 12,
+        TimestampToDate => 13,
+        TimestampToTime => 14,
     };
     tag.hash(h);
 }

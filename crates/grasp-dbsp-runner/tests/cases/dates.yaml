@@ -166,3 +166,137 @@
     - out:
         - [1, {d: "2024-01-15"}]
         - [1, {d: null}]
+
+# -- construction -------------------------------------------------------------
+#
+# `optional`, because not every triple of integers is a date. That is the shape
+# `/` already has, and it is what a frontend turns into a dropped row.
+
+- name: a date from its components
+  source: |
+    t := input("t")
+    t :: zset(record(y: i64, m: i64, d: i64))
+
+    out := map(t, function((r) -> record(d: make_date(r.y, r.m, r.d))))
+
+  input:
+    - t:
+        - [1, {y: 2024, m: 2, d: 29}]
+        - [1, {y: 2023, m: 2, d: 29}]
+
+  expected_exact_output:
+    - out:
+        - [1, {d: "2024-02-29"}]
+        - [1, {d: null}]
+
+- name: a time from its components, to the microsecond
+  source: |
+    t := input("t")
+    t :: zset(record(h: i64, m: i64, s: i64, us: i64))
+
+    out := map(t, function((r) -> record(t: make_time(r.h, r.m, r.s, r.us))))
+
+  input:
+    - t:
+        - [1, {h: 14, m: 30, s: 5, us: 123456}]
+        - [1, {h: 14, m: 30, s: 5, us: 0}]
+        - [1, {h: 25, m: 0, s: 0, us: 0}]
+
+  expected_exact_output:
+    - out:
+        - [1, {t: "14:30:05.123456"}]
+        - [1, {t: "14:30:05"}]
+        - [1, {t: null}]
+
+- name: a date and a time make an instant, and it comes apart again
+  source: |
+    t := input("t")
+    t :: zset(record(d: date, tm: time))
+
+    made := map(t, function((r) -> record(ts: make_timestamp(r.d, r.tm))))
+    back := map(made, function((r) -> record(
+        d: cast(r.ts, date),
+        tm: cast(r.ts, time))))
+
+  input:
+    - t:
+        - [1, {d: "2024-01-15", tm: "14:30:05.123456"}]
+
+  expected_exact_output:
+    - made:
+        - [1, {ts: "2024-01-15 14:30:05.123456"}]
+      back:
+        - [1, {d: "2024-01-15", tm: "14:30:05.123456"}]
+
+- name: an instant is microseconds since the epoch, both ways
+  source: |
+    t := input("t")
+    t :: zset(record(n: i64))
+
+    out := map(t, function((r) -> record(
+        ts: timestamp_from_micros(r.n),
+        back: epoch_micros(timestamp_from_micros(r.n)))))
+
+  input:
+    - t:
+        - [1, {n: 0}]
+        - [1, {n: 1705329005123456}]
+
+  expected_exact_output:
+    - out:
+        - [1, {ts: "1970-01-01 00:00:00", back: 0}]
+        - [1, {ts: "2024-01-15 14:30:05.123456", back: 1705329005123456}]
+
+- name: a date is days since the epoch, which is what a difference counts
+  source: |
+    t := input("t")
+    t :: zset(record(a: date, b: date))
+
+    out := map(t, function((r) -> record(days: epoch_days(r.a) - epoch_days(r.b))))
+
+  input:
+    - t:
+        - [1, {a: "2024-03-01", b: "2024-02-01"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {days: 29}]
+
+# -- components ---------------------------------------------------------------
+#
+# Each reads the one type that holds it, so a component of a `timestamp` goes
+# through `cast` — one name over one type rather than a family.
+
+- name: the components of a date and a time
+  source: |
+    t := input("t")
+    t :: zset(record(d: date, tm: time))
+
+    out := map(t, function((r) -> record(
+        y: year(r.d), mo: month(r.d), dy: day(r.d),
+        h: hour(r.tm), mi: minute(r.tm), s: second(r.tm), us: microsecond(r.tm))))
+
+  input:
+    - t:
+        - [1, {d: "2024-02-29", tm: "14:30:05.123456"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {y: 2024, mo: 2, dy: 29, h: 14, mi: 30, s: 5, us: 123456}]
+
+- name: a component of an instant goes through its date
+  source: |
+    t := input("t")
+    t :: zset(record(ts: timestamp))
+
+    out := map(t, function((r) -> record(
+        y: year(cast(r.ts, date)),
+        h: hour(cast(r.ts, time)))))
+
+  input:
+    - t:
+        - [1, {ts: "2024-01-15 14:30:05"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {y: 2024, h: 14}]

@@ -74,6 +74,36 @@ pub enum Builtin {
     /// **cannot reverse**, so a step below zero needs this whether or not the
     /// rest does.
     Slice,
+
+    /// `make_date(y, m, d)`, `make_time(h, m, s, us)` — a temporal value from
+    /// its components.
+    ///
+    /// **`optional`**, because not every triple of integers is a date:
+    /// `make_date(2024, 2, 31)` has no answer, and neither does an hour of 25.
+    /// That is the rule division already follows, and the one a frontend turns
+    /// into a dropped row.
+    MakeDate,
+    MakeTime,
+    /// `make_timestamp(d, t)` — a date and a time-of-day as one UTC instant.
+    /// Total: every pair is one.
+    MakeTimestamp,
+    /// `timestamp_from_micros(n)` and `epoch_micros(ts)` — the instant as
+    /// microseconds since the Unix epoch, both ways. Total.
+    TimestampFromMicros,
+    EpochMicros,
+    /// `epoch_days(d)` — the date as days since the Unix epoch. Total, and the
+    /// integer a difference between two dates is counted in.
+    EpochDays,
+    /// The components. `year`/`month`/`day` read a `date` and the rest read a
+    /// `time`, so a component of a `timestamp` is `year(cast(ts, date))` —
+    /// which keeps each name over one type instead of two.
+    Year,
+    Month,
+    Day,
+    Hour,
+    Minute,
+    Second,
+    Microsecond,
 }
 
 impl Builtin {
@@ -95,6 +125,19 @@ impl Builtin {
             "dict_entries" => Builtin::Entries,
             "contains" => Builtin::Contains,
             "slice" => Builtin::Slice,
+            "make_date" => Builtin::MakeDate,
+            "make_time" => Builtin::MakeTime,
+            "make_timestamp" => Builtin::MakeTimestamp,
+            "timestamp_from_micros" => Builtin::TimestampFromMicros,
+            "epoch_micros" => Builtin::EpochMicros,
+            "epoch_days" => Builtin::EpochDays,
+            "year" => Builtin::Year,
+            "month" => Builtin::Month,
+            "day" => Builtin::Day,
+            "hour" => Builtin::Hour,
+            "minute" => Builtin::Minute,
+            "second" => Builtin::Second,
+            "microsecond" => Builtin::Microsecond,
             _ => return None,
         })
     }
@@ -117,14 +160,31 @@ impl Builtin {
         "dict_entries",
         "contains",
         "slice",
+        "make_date",
+        "make_time",
+        "make_timestamp",
+        "timestamp_from_micros",
+        "epoch_micros",
+        "epoch_days",
+        "year",
+        "month",
+        "day",
+        "hour",
+        "minute",
+        "second",
+        "microsecond",
     ];
 
     /// Number of arguments, or `None` if variadic.
     pub fn arity(self) -> Option<usize> {
         Some(match self {
-            Builtin::Slice => 4,
-            Builtin::If => 3,
-            Builtin::Coalesce | Builtin::Concat | Builtin::Get | Builtin::Contains => 2,
+            Builtin::Slice | Builtin::MakeTime => 4,
+            Builtin::If | Builtin::MakeDate => 3,
+            Builtin::Coalesce
+            | Builtin::Concat
+            | Builtin::Get
+            | Builtin::Contains
+            | Builtin::MakeTimestamp => 2,
             _ => 1,
         })
     }
@@ -165,6 +225,10 @@ pub enum Conv {
     StringToTemporal(TypeDesc),
     /// Total. The written form, which is what the codec emits.
     TemporalToString,
+    /// Total: an instant always has both halves. `make_timestamp` is the
+    /// inverse, and takes the two together.
+    TimestampToDate,
+    TimestampToTime,
 
     /// Extract a document into the target type, which the variant carries
     /// because extraction is driven by what is wanted rather than by what the
@@ -553,6 +617,11 @@ fn convert(conv: &Conv, v: DynValue) -> DynValue {
             v.dict_key_string()
                 .expect("a temporal value has a written form"),
         ),
+        (Conv::TimestampToDate, Timestamp(t)) => Date(t.get_date()),
+        (Conv::TimestampToTime, Timestamp(t)) => match feldera_sqllib::cast_to_Time_Timestamp(t) {
+            Ok(time) => Time(time),
+            Err(_) => None,
+        },
         // The checker chose the conversion from the operand's type, so a
         // mismatch means the two passes disagree.
         _ => None,
@@ -824,6 +893,77 @@ fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValu
             DynValue::Array(items) => DynValue::Array(slice(items, &vals[1], &vals[2], &vals[3])),
             _ => DynValue::None,
         },
+        Builtin::MakeDate => match (&vals[0], &vals[1], &vals[2]) {
+            (DynValue::I64(y), DynValue::I64(m), DynValue::I64(d)) => {
+                match feldera_sqllib::make_date___(*y as i32, *m as i32, *d as i32) {
+                    Some(date) => DynValue::Date(date),
+                    _ => DynValue::None,
+                }
+            }
+            _ => DynValue::None,
+        },
+        // Built through the written form rather than from components, so that
+        // construction and parsing cannot disagree about what a time is — and
+        // because the component constructor that takes a fraction takes it as
+        // an `f64`, where a microsecond is not exactly representable.
+        Builtin::MakeTime => match (&vals[0], &vals[1], &vals[2], &vals[3]) {
+            (DynValue::I64(h), DynValue::I64(m), DynValue::I64(s), DynValue::I64(us))
+                if (0..24).contains(h)
+                    && (0..60).contains(m)
+                    && (0..60).contains(s)
+                    && (0..1_000_000).contains(us) =>
+            {
+                crate::value::parse_time(&format!("{h:02}:{m:02}:{s:02}.{us:06}"))
+                    .unwrap_or(DynValue::None)
+            }
+            _ => DynValue::None,
+        },
+        Builtin::MakeTimestamp => match (&vals[0], &vals[1]) {
+            (DynValue::Date(d), DynValue::Time(t)) => {
+                match feldera_sqllib::make_timestampNN(Some(*d), Some(*t)) {
+                    Some(ts) => DynValue::Timestamp(ts),
+                    _ => DynValue::None,
+                }
+            }
+            _ => DynValue::None,
+        },
+        Builtin::TimestampFromMicros => match &vals[0] {
+            DynValue::I64(n) => {
+                DynValue::Timestamp(feldera_sqllib::Timestamp::from_microseconds(*n))
+            }
+            _ => DynValue::None,
+        },
+        Builtin::EpochMicros => match &vals[0] {
+            DynValue::Timestamp(t) => DynValue::I64(t.microseconds()),
+            _ => DynValue::None,
+        },
+        Builtin::EpochDays => match &vals[0] {
+            DynValue::Date(d) => DynValue::I64(d.days() as i64),
+            _ => DynValue::None,
+        },
+        Builtin::Year | Builtin::Month | Builtin::Day => match &vals[0] {
+            DynValue::Date(d) => DynValue::I64(match f {
+                Builtin::Year => feldera_sqllib::extract_year_Date(*d),
+                Builtin::Month => feldera_sqllib::extract_month_Date(*d),
+                _ => feldera_sqllib::extract_day_Date(*d),
+            }),
+            _ => DynValue::None,
+        },
+        Builtin::Hour | Builtin::Minute | Builtin::Second | Builtin::Microsecond => {
+            match &vals[0] {
+                DynValue::Time(t) => DynValue::I64(match f {
+                    Builtin::Hour => feldera_sqllib::extract_hour_Time(*t),
+                    Builtin::Minute => feldera_sqllib::extract_minute_Time(*t),
+                    Builtin::Second => feldera_sqllib::extract_second_Time(*t),
+                    // SQL's `EXTRACT(MICROSECOND)` folds the seconds in, and
+                    // returns 5_123_456 for `…:05.123456`. Here it is the
+                    // sub-second part, so that `microsecond` is the inverse of
+                    // the argument `make_time` takes and the two round-trip.
+                    _ => feldera_sqllib::extract_microsecond_Time(*t) % 1_000_000,
+                }),
+                _ => DynValue::None,
+            }
+        }
         Builtin::Concat => match (as_str(&vals[0]), as_str(&vals[1])) {
             (Some(a), Some(b)) => DynValue::str(&format!("{a}{b}")),
             _ => DynValue::None,
