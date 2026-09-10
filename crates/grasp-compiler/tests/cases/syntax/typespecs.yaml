@@ -34,6 +34,51 @@
         (array(T), start: i64, stop: i64, step: i64) -> array(T)
   expected_ok: true
 
+# A default makes a parameter optional, and one line then answers every shape a
+# subset of them makes — which is how `array:slice`'s eight are written now.
+- name: defaults collapse the variants into one line
+  source: |
+    array:slice :: function
+        (array(T), start: i64 = NONE, stop: i64 = NONE, step: i64 = 1) -> array(T)
+  expected_ok: true
+
+- name: a default may be any literal, negative included
+  source: |
+    string:f :: function
+        (a: i64 = -1, b: f64 = 1.5, c: string = "x", d: boolean = false, e: i64 = NONE) -> i64
+  expected_ok: true
+
+# A default is what a call means when it leaves the parameter out, and an
+# expression there would be one the language has no place to evaluate.
+- name: a default is a literal and nothing else
+  source: |
+    string:f :: function
+        (a: i64 = 1 + 1) -> i64
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "unexpected token `+`; expected `)` or `,`"
+
+- name: and a name is not a literal
+  source: |
+    string:f :: function
+        (a: i64 = b) -> i64
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "a default must be a literal"
+
+# A positional parameter cannot be left out — the shape is its count — so a
+# default there would say something the resolution cannot use.
+- name: only a named parameter may have a default
+  source: |
+    string:f :: function
+        (i64 = 0) -> i64
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "only a named parameter may have a default; a positional one cannot be left out"
+
 - name: a type variable may appear anywhere a type may
   source: |
     dict:entries :: function

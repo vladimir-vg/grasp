@@ -82,8 +82,9 @@ col_type       ::= name ":" type
 
 fn_spec        ::= callable_name "::" "function" NEWLINE (INDENT variant NEWLINE)+
 variant        ::= "(" [params] ")" "->" type
-params         ::= type ("," type)* ("," name ":" type)*
-                 | name ":" type ("," name ":" type)*
+params         ::= type ("," type)* ("," param)*
+                 | param ("," param)*
+param          ::= name ":" type ["=" literal]   -- a default makes it optional
 
 rule           ::= fact | single_line_rule | multiline_rule
 
@@ -358,6 +359,20 @@ array:slice :: function
     (array(T), stop: i64) -> array(T)
     (array(T), start: i64, stop: i64) -> array(T)
 ```
+
+A parameter with a **default** is optional, and one variant then answers every
+shape a subset of them makes:
+
+```grasp
+array:slice :: function
+    (array(T), start: i64 = NONE, stop: i64 = NONE, step: i64 = 1) -> array(T)
+```
+
+Three optional keywords are the eight ways to call it, and the file says so once
+rather than listing them. A default is a **literal** — it is what a call means
+when it leaves the parameter out, and an expression there would be one the
+language has no place to evaluate — and only a *named* parameter may have one,
+since a positional parameter cannot be left out: the shape is its count.
 
 Written in bulk — one block per name, however many ways there are to call it —
 so that a function's typespec is in one place. **There is one typespec per

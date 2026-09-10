@@ -137,7 +137,7 @@ fn the_library_is_stdlib_grasp() {
         let Decl::Function(spec) = decl else {
             panic!("stdlib.grasp declares the library and nothing else, but it has a {decl:?}");
         };
-        let mut shapes: Vec<Shape> = spec.variants.iter().map(|v| v.shape()).collect();
+        let mut shapes: Vec<Shape> = spec.variants.iter().flat_map(|v| v.shapes()).collect();
         shapes.sort();
         declared.insert(spec.name.clone(), shapes);
     }

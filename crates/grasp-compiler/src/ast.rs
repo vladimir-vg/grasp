@@ -66,30 +66,67 @@ pub struct FnSpec {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Variant {
     pub positional: Vec<Type>,
-    pub keyword: Vec<(String, Type)>,
+    pub keyword: Vec<Parameter>,
     pub result: Type,
     pub span: Span,
 }
 
+/// One keyword parameter of a variant: `start: i64` or `start: i64 = 0`.
+///
+/// A default makes the parameter **optional**, and a variant with optional
+/// parameters covers one [`Shape`] per subset of them — so `array:slice` is one
+/// line rather than the eight it used to write out.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Parameter {
+    pub name: String,
+    pub ty: Type,
+    /// `None` where the call must supply it. Mirrors
+    /// [`crate::core::Param::default`], which is what the compiler's own table
+    /// holds.
+    pub default: Option<Lit>,
+}
+
 impl Variant {
-    /// What a call must match for this variant to be the one: its
-    /// [`Shape`], and the types under it.
+    /// What a call must match for this variant to be the one: the [`Shape`]s it
+    /// covers, and the types under them.
     ///
-    /// Two variants of one shape are only a conflict when this agrees too —
-    /// which is what lets `temporal:date` take a `string` and a `timestamp`
-    /// under one name. Keywords are sorted, so the pair compares as the set a
-    /// shape already is.
-    pub fn signature(&self) -> (Shape, Vec<Type>, Vec<(String, Type)>) {
-        let mut keyword = self.keyword.clone();
+    /// Two variants are only a conflict when their shapes meet *and* this
+    /// agrees — which is what lets `temporal:date` take a `string` and a
+    /// `timestamp` under one name. Keywords are sorted, so the pair compares as
+    /// the set a shape already is.
+    pub fn signature(&self) -> (Vec<Type>, Vec<(String, Type)>) {
+        let mut keyword: Vec<(String, Type)> = self
+            .keyword
+            .iter()
+            .map(|p| (p.name.clone(), p.ty.clone()))
+            .collect();
         keyword.sort_by(|a, b| a.0.cmp(&b.0));
-        (self.shape(), self.positional.clone(), keyword)
+        (self.positional.clone(), keyword)
     }
 
-    pub fn shape(&self) -> Shape {
-        Shape::new(
-            self.positional.len(),
-            self.keyword.iter().map(|(name, _)| name.clone()),
-        )
+    /// Every shape this variant accepts: the required parameters always, and
+    /// any subset of the ones with a default.
+    pub fn shapes(&self) -> Vec<Shape> {
+        let (optional, required): (Vec<&Parameter>, Vec<&Parameter>) =
+            self.keyword.iter().partition(|p| p.default.is_some());
+        (0..1u32 << optional.len())
+            .map(|mask| {
+                let taken = optional
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| mask >> i & 1 == 1)
+                    .map(|(_, p)| *p);
+                Shape::new(
+                    self.positional.len(),
+                    required
+                        .iter()
+                        .copied()
+                        .chain(taken)
+                        .map(|p| p.name.clone())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect()
     }
 }
 

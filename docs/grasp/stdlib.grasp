@@ -137,17 +137,11 @@ array:at :: function
     (array(T), index: i64) -> T
 
 # Python's slice: negative indices count from the end, the bounds clamp rather
-# than fail, and a negative step reverses. Eight variants over three keywords,
-# which is what a defaulting mechanism would otherwise be for.
+# than fail, and a negative step reverses. Three optional keywords, so eight
+# ways to call it — `NONE` for a bound means "no bound here", whose end depends
+# on the sign of the step and so is not a number.
 array:slice :: function
-    (array(T)) -> array(T)
-    (array(T), stop: i64) -> array(T)
-    (array(T), start: i64) -> array(T)
-    (array(T), start: i64, stop: i64) -> array(T)
-    (array(T), step: i64) -> array(T)
-    (array(T), stop: i64, step: i64) -> array(T)
-    (array(T), start: i64, step: i64) -> array(T)
-    (array(T), start: i64, stop: i64, step: i64) -> array(T)
+    (array(T), start: i64 = NONE, stop: i64 = NONE, step: i64 = 1) -> array(T)
 
 array:contains :: function
     (array(T), element: T) -> boolean
@@ -237,10 +231,7 @@ temporal:date :: function
 temporal:time :: function
     (string) -> time
     (timestamp) -> time
-    (hour: i64, minute: i64) -> time
-    (hour: i64, minute: i64, second: i64) -> time
-    (hour: i64, minute: i64, microsecond: i64) -> time
-    (hour: i64, minute: i64, second: i64, microsecond: i64) -> time
+    (hour: i64, minute: i64, second: i64 = 0, microsecond: i64 = 0) -> time
 
 temporal:timestamp :: function
     (string) -> timestamp

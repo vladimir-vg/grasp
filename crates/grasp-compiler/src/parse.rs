@@ -590,18 +590,27 @@ impl<'a> Parser<'a> {
             }
             let variant = self.variant()?;
             // "There shouldn't be conflicting typespecs for the same function."
-            // Two variants of one shape *and* one set of types are two answers
-            // to one call rather than an ambiguity to break by preferring the
-            // first. Of one shape and different types they are an overload, and
-            // the argument's type is what picks.
+            // Two variants that answer one shape *with the same types* are two
+            // answers to one call, rather than an ambiguity to break by
+            // preferring the first. With different types they are an overload,
+            // and the argument's type is what picks.
+            //
+            // Shapes rather than a shape, because an optional parameter makes a
+            // variant answer several.
             let signature = variant.signature();
-            if variants.iter().any(|v| v.signature() == signature) {
+            let shapes = variant.shapes();
+            let clash = variants.iter().find(|v| {
+                v.signature() == signature && v.shapes().iter().any(|s| shapes.contains(s))
+            });
+            if let Some(other) = clash {
+                let shape = other
+                    .shapes()
+                    .into_iter()
+                    .find(|s| shapes.contains(s))
+                    .expect("the clash was found by a shared shape");
                 return Err(self.error(
                     variant.span,
-                    format!(
-                        "`{name}` already has a variant called `{}` with these types",
-                        signature.0
-                    ),
+                    format!("`{name}` already has a variant called `{shape}` with these types"),
                 ));
             }
             variants.push(variant);
@@ -616,11 +625,37 @@ impl<'a> Parser<'a> {
     }
 
     /// `variant ::= "(" [params] ")" "->" type`
+    /// The value after `=` in a typespec parameter.
+    ///
+    /// A literal and nothing else: a default is what a call means when it
+    /// leaves the parameter out, and an expression there would be one the
+    /// language has no place to evaluate. A leading `-` is admitted on a
+    /// number, since `= -1` is a default a program would want to write.
+    fn default_literal(&mut self) -> Result<Lit, Diagnostic> {
+        let negated = self.eat(&Tok::Minus);
+        let span = self.here();
+        let value = match self.kind() {
+            Some(Tok::Int(n)) => Lit::Int(*n),
+            Some(Tok::Float(f)) => Lit::Float(*f),
+            Some(Tok::Str(s)) if !negated => Lit::Str(s.clone()),
+            Some(Tok::True) if !negated => Lit::Bool(true),
+            Some(Tok::False) if !negated => Lit::Bool(false),
+            Some(Tok::None) if !negated => Lit::None,
+            _ => return Err(self.error(span, "a default must be a literal")),
+        };
+        self.bump();
+        Ok(match (negated, value) {
+            (true, Lit::Int(n)) => Lit::Int(-n),
+            (true, Lit::Float(f)) => Lit::Float(-f),
+            (_, other) => other,
+        })
+    }
+
     fn variant(&mut self) -> Result<Variant, Diagnostic> {
         let start = self.here();
         self.expect(&Tok::LParen, "`(`")?;
         let mut positional: Vec<Type> = Vec::new();
-        let mut keyword: Vec<(String, Type)> = Vec::new();
+        let mut keyword: Vec<Parameter> = Vec::new();
         while !self.at(&Tok::RParen) {
             // `index: i64` is named; `array(T)` is not. A type name is followed
             // by `(` or by nothing, never by `:`, so one token of lookahead
@@ -631,10 +666,22 @@ impl<'a> Parser<'a> {
                 let (param, param_span) = self.expect_ident("a parameter name")?;
                 self.check_parameter_name(&param, param_span)?;
                 self.bump(); // `:`
-                if keyword.iter().any(|(k, _)| *k == param) {
+                if keyword.iter().any(|p| p.name == param) {
                     return Err(self.error(param_span, format!("duplicate parameter `{param}`")));
                 }
-                keyword.push((param, self.ty_of(true)?));
+                let ty = self.ty_of(true)?;
+                // `= 0` makes it optional, and a variant with optional
+                // parameters answers one shape per subset of them — which is
+                // what keeps `array:slice` to one line instead of eight.
+                let default = self
+                    .eat(&Tok::Eq)
+                    .then(|| self.default_literal())
+                    .transpose()?;
+                keyword.push(Parameter {
+                    name: param,
+                    ty,
+                    default,
+                });
             } else {
                 // "Subject positional, everything else keyword" — so a
                 // positional parameter after a named one would name a subject
@@ -646,6 +693,15 @@ impl<'a> Parser<'a> {
                     ));
                 }
                 positional.push(self.ty_of(true)?);
+                // A default is what makes a parameter optional, and a
+                // positional one cannot be left out: the shape is its count.
+                if self.at(&Tok::Eq) {
+                    return Err(self.error(
+                        self.here(),
+                        "only a named parameter may have a default; a positional \
+                         one cannot be left out",
+                    ));
+                }
             }
             if !self.eat(&Tok::Comma) {
                 break;
