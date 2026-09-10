@@ -54,9 +54,11 @@ one value. That is also why it is a scalar where a type carrying months beside
 them could not have been: 1 month against 31 days has no answer, and an order
 over it would have to be invented.
 
-Months are the one quantity that does not convert, and they are **not in this
-type**. A second `month_interval` is [future work](overview.md#future-work), and
-`1 month = 30 days` is not a rule grasp invents to avoid needing one.
+Months are the one quantity that does not convert, and grasp does not measure
+them: a month has no length until it lands on a calendar, so it belongs to
+neither this type nor any other here. `1 month = 30 days` is not a rule grasp
+invents to have one. **There is no month arithmetic**, and a program that wants
+"the same day next month" does not have it.
 
 A `timestamp` is always UTC; there is no `timestamp_with_timezone`. Values are
 built with `temporal:`, never with a literal — grasp has no temporal literal

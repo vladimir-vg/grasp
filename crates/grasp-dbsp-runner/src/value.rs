@@ -168,9 +168,9 @@ pub enum DynValue {
     ///
     /// One integer, because with no timezone a day is exactly 86400 seconds and
     /// every unit below a month converts into microseconds exactly. Months are
-    /// the one quantity that does not, and they are not in this type: a
-    /// `month_interval` beside it is future work, and `1 month = 30 days` is
-    /// not a rule this language invents to avoid needing one.
+    /// the one quantity that does not — a month has no length until it lands on
+    /// a calendar — so this language does not measure them, and
+    /// `1 month = 30 days` is not a rule invented to have one.
     Interval(feldera_sqllib::ShortInterval),
 }
 

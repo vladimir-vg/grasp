@@ -274,8 +274,8 @@ temporal:epoch_micros :: function
 
 # A span of time, in microseconds. Every unit below a month converts into
 # microseconds exactly — with no timezone a day is 86400 seconds — which is what
-# lets one type hold all five. Months are the one that does not, and they are
-# not here: a `month_interval` beside this is future work.
+# lets one type hold all five. Months are the one that does not — a month has no
+# length until it lands on a calendar — so grasp does not measure them at all.
 #
 # `+` and `-` do the rest: `ts - ts` is how far apart two instants are, and
 # `ts + iv` shifts one. A date has no sub-day resolution, so shifting one
