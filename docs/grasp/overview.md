@@ -169,10 +169,13 @@ design comes from. What is missing is missing on purpose.
   an atom at body-statement level and a call inside an expression — so nothing
   in the grammar depends on the production staying.
 
-- **A wider standard library.** The builtins available are the ones grasp-dbsp
-  provides, listed in [`semantics.md`](semantics.md#the-standard-library). The namespaces for types that
-  do not exist yet — temporal, bytes, bits, cryptographic hashing — arrive with
-  those types.
+- **The rest of the standard library.** [`stdlib.grasp`](stdlib.grasp) declares
+  the whole of it, and this compiler has some of it; calling one of the others is
+  `not implemented: <name>`, so what is left is the test suite's burn-down rather
+  than an entry here. Most of the remainder waits on grasp-dbsp — `contains` and
+  a Python `slice` over arrays and strings, and the same two extended to strings
+  — and the namespaces for types that do not exist yet, temporal, bytes, bits,
+  cryptographic hashing, arrive with those types.
 
 - **User-defined functions.** All callables are builtins. grasp-dbsp has
   `function` templates and `circuit` definitions that a frontend could use to

@@ -1,23 +1,56 @@
 # grasp's standard library.
 #
+# The **whole** library, not the part that works: a function this compiler has
+# not got is still declared here, and calling one is `not implemented: <name>`
+# rather than "there is no callable". The design lives in one place and the
+# burn-down carries what is left of it.
+#
 # Every function is namespaced, and the namespace is the type family it belongs
 # to: `string:length` and `array:length` are two functions rather than one asked
 # to guess from its argument. `integer:` and `float:` do not merge — float
 # semantics are not integer semantics, and `numeric`, when it arrives, is a
 # third thing again.
 #
-# Access by position is `at`; access by key is `get`. A partial function derives
-# no row rather than yielding an absent value: `dict:get` on a missing key has
-# no answer, and a rule derives a row only where every step of its body has one.
+# Access by position is `at`; access by key is `get`. The subject is positional
+# and everything else is a keyword, except a binary operation over one type,
+# which has no subject to set apart.
+#
+# A partial function derives no row rather than yielding an absent value:
+# `dict:get` on a missing key has no answer, and a rule derives a row only where
+# every step of its body has one. `array:index_of` and `array:min` are partial
+# for the same reason; `slice` is not, clamping the way Python's does.
+#
+# One callable is missing, and cannot be here: `record:get(r, field: "f")`, what
+# `r.f` desugars to. Its result is the *named field's* type — it depends on the
+# value of an argument rather than on its type — so no signature says what it
+# gives back, and this file declares what it can rather than declaring a lie.
 #
 # What each function *means* is `semantics.md`; this is what it takes and what
 # it gives back.
 
+# -- boolean ------------------------------------------------------------------
+
 boolean:not :: function
     (boolean) -> boolean
 
+# -- integer ------------------------------------------------------------------
+
 integer:abs :: function
     (i64) -> i64
+
+integer:sign :: function
+    (i64) -> i64
+
+integer:pow :: function
+    (i64, exponent: i64) -> i64
+
+integer:min :: function
+    (i64, i64) -> i64
+
+integer:max :: function
+    (i64, i64) -> i64
+
+# -- float --------------------------------------------------------------------
 
 float:abs :: function
     (f64) -> f64
@@ -30,6 +63,23 @@ float:ceil :: function
 
 float:round :: function
     (f64) -> f64
+
+float:sign :: function
+    (f64) -> f64
+
+float:sqrt :: function
+    (f64) -> f64
+
+float:pow :: function
+    (f64, exponent: f64) -> f64
+
+float:min :: function
+    (f64, f64) -> f64
+
+float:max :: function
+    (f64, f64) -> f64
+
+# -- string -------------------------------------------------------------------
 
 string:length :: function
     (string) -> i64
@@ -46,11 +96,99 @@ string:upper :: function
 string:trim :: function
     (string) -> string
 
+string:ltrim :: function
+    (string) -> string
+
+string:rtrim :: function
+    (string) -> string
+
+string:at :: function
+    (string, index: i64) -> string
+
+string:slice :: function
+    (string) -> string
+    (string, stop: i64) -> string
+    (string, start: i64) -> string
+    (string, start: i64, stop: i64) -> string
+    (string, step: i64) -> string
+    (string, stop: i64, step: i64) -> string
+    (string, start: i64, step: i64) -> string
+    (string, start: i64, stop: i64, step: i64) -> string
+
+string:starts_with :: function
+    (string, prefix: string) -> boolean
+
+string:ends_with :: function
+    (string, suffix: string) -> boolean
+
+string:contains :: function
+    (string, sub: string) -> boolean
+
+string:index_of :: function
+    (string, sub: string) -> i64
+
+string:replace :: function
+    (string, from: string, to: string) -> string
+
+string:split :: function
+    (string, delimiter: string) -> array(string)
+
+# -- array --------------------------------------------------------------------
+
 array:length :: function
     (array(T)) -> i64
 
 array:at :: function
     (array(T), index: i64) -> T
+
+# Python's slice: negative indices count from the end, the bounds clamp rather
+# than fail, and a negative step reverses. Eight variants over three keywords,
+# which is what a defaulting mechanism would otherwise be for.
+array:slice :: function
+    (array(T)) -> array(T)
+    (array(T), stop: i64) -> array(T)
+    (array(T), start: i64) -> array(T)
+    (array(T), start: i64, stop: i64) -> array(T)
+    (array(T), step: i64) -> array(T)
+    (array(T), stop: i64, step: i64) -> array(T)
+    (array(T), start: i64, step: i64) -> array(T)
+    (array(T), start: i64, stop: i64, step: i64) -> array(T)
+
+array:contains :: function
+    (array(T), element: T) -> boolean
+
+array:index_of :: function
+    (array(T), element: T) -> i64
+
+array:concat :: function
+    (array(T), array(T)) -> array(T)
+
+array:append :: function
+    (array(T), element: T) -> array(T)
+
+array:prepend :: function
+    (array(T), element: T) -> array(T)
+
+array:reverse :: function
+    (array(T)) -> array(T)
+
+array:sort :: function
+    (array(T)) -> array(T)
+    (array(T), direction: string) -> array(T)
+
+array:distinct :: function
+    (array(T)) -> array(T)
+
+array:flatten :: function
+    (array(array(T))) -> array(T)
+
+array:min :: function
+    (array(T)) -> T
+
+array:max :: function
+    (array(T)) -> T
+
+# -- dict ---------------------------------------------------------------------
 
 dict:length :: function
     (dict(K, V)) -> i64
@@ -58,21 +196,23 @@ dict:length :: function
 dict:get :: function
     (dict(K, V), key: K) -> V
 
+dict:has :: function
+    (dict(K, V), key: K) -> boolean
+
 dict:keys :: function
     (dict(K, V)) -> array(K)
+
+dict:values :: function
+    (dict(K, V)) -> array(V)
 
 dict:entries :: function
     (dict(K, V)) -> array(record(key: K, value: V))
 
-record:get :: function
-    (record(**), field: string) -> T
+dict:from_entries :: function
+    (array(record(key: K, value: V))) -> dict(K, V)
 
-# Written by desugaring and not by a program: the grasp-dbsp expression each
-# becomes binds a name, and grasp's expressions do not, so the binder is
-# introduced at emission.
+dict:without :: function
+    (dict(K, V), keys: array(K)) -> dict(K, V)
 
-array:drop :: function
-    (array(T), i64) -> array(T)
-
-dict:without_keys :: function
-    (dict(K, V), array(K)) -> dict(K, V)
+dict:merge :: function
+    (dict(K, V), dict(K, V)) -> dict(K, V)

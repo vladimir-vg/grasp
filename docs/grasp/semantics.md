@@ -595,8 +595,20 @@ integer semantics, and `numeric` — arbitrary-precision decimal, when it arrive
 is a third thing again. `float:floor` exists and `integer:floor` does not, being
 the identity on an `i64`.
 
-The library is `docs/grasp/stdlib.grasp`, which is where a signature is looked
-up. What follows is the shape it takes.
+The library is [`stdlib.grasp`](stdlib.grasp), written in grasp and parsed as
+grasp, and it declares the **whole** library rather than the part that works.
+Calling a function this compiler has not got is `not implemented: <name>` rather
+than "there is no callable": the language has the function, and what is left of
+it is a row of the test suite's burn-down rather than a promise in a document
+nobody counts.
+
+One callable is not in it and cannot be. `record:get(r, field: "f")`, what `r.f`
+desugars to, gives back the *named field's* type — which depends on the value of
+an argument rather than on its type, so no signature says what it returns.
+Inference reads the field literal instead. The file declares what it can rather
+than declaring a lie.
+
+What follows is the shape the library takes.
 
 **Access by position is `at`; access by key is `get`.** `array:at(a, index: 2)`,
 `dict:get(d, key: k)`, `record:get(r, field: "f")`.

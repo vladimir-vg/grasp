@@ -1,0 +1,365 @@
+# The standard library, function by function — `docs/grasp/stdlib.grasp`.
+#
+# That file declares the **whole** library, so most of what is below is pending:
+# the language has the function and this compiler has not caught up, and the
+# burn-down after each run is what is left. A case here is a test written before
+# the code, which is what makes the burn-down a work queue rather than a tally.
+
+# -- implemented --------------------------------------------------------------
+
+- name: the lengths are three functions over one name in the target
+  source: |
+    src :: relation(s: string, a: array(i64), d: dict(string, i64))
+    src(s:, a:, d:) <- input
+
+    out(s: x, a: y, d: z) <-
+        src(s: s, a: a, d: d)
+        x := string:length(s)
+        y := array:length(a)
+        z := dict:length(d)
+
+  input:
+    - src:
+        - [1, {s: "abc", a: [1, 2], d: {"k": 9}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {s: 3, a: 2, d: 1}]
+
+- name: the entries of a dict are records
+  source: |
+    src :: relation(d: dict(string, i64))
+    src(d:) <- input
+
+    out(k: k, v: v) <-
+        src(d: d)
+        (e) := *dict:entries(d)
+        k := e.key
+        v := e.value
+
+  input:
+    - src:
+        - [1, {d: {"a": 1, "b": 2}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {k: "a", v: 1}]
+        - [1, {k: "b", v: 2}]
+
+# -- waiting on this compiler, not on the target ------------------------------
+
+# `dict:has` is the way to ask about absence, since `dict:get` answers by not
+# deriving the row. It lowers to `get(d, k) != NONE`.
+- name: dict:has asks what dict:get answers by dropping
+  source: |
+    src :: relation(d: dict(string, i64))
+    src(d:) <- input
+
+    out(v: v) <-
+        src(d: d)
+        v := dict:has(d, key: "a")
+
+  input:
+    - src:
+        - [1, {d: {"b": 2}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: false}]
+
+- name: dict:values is dict:keys on the other column
+  source: |
+    src :: relation(d: dict(string, i64))
+    src(d:) <- input
+
+    out(v: v) <-
+        src(d: d)
+        (e) := *dict:values(d)
+        v := e
+
+  input:
+    - src:
+        - [1, {d: {"a": 1, "b": 2}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: 1}]
+        - [1, {v: 2}]
+
+- name: dict:from_entries undoes dict:entries
+  source: |
+    src :: relation(d: dict(string, i64))
+    src(d:) <- input
+
+    out(n: n) <-
+        src(d: d)
+        back := dict:from_entries(dict:entries(d))
+        n := dict:length(back)
+
+  input:
+    - src:
+        - [1, {d: {"a": 1, "b": 2}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {n: 2}]
+
+# The program-facing form of what a dict pattern's `**r` binds — but over an
+# array of keys a program computed, rather than the literal one a pattern names.
+- name: dict:without takes the keys as a value
+  source: |
+    src :: relation(d: dict(string, i64), ks: array(string))
+    src(d:, ks:) <- input
+
+    out(n: n) <-
+        src(d: d, ks: ks)
+        smaller := dict:without(d, keys: ks)
+        n := dict:length(smaller)
+
+  input:
+    - src:
+        - [1, {d: {"a": 1, "b": 2, "c": 3}, ks: ["a", "b"]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {n: 1}]
+
+# -- waiting on grasp-dbsp ----------------------------------------------------
+
+# `length(filter_array(a, …)) > 0` would allocate an array to answer a boolean,
+# so this waits on a `contains` in the target rather than composing one.
+- name: array:contains
+  source: |
+    src :: relation(a: array(i64))
+    src(a:) <- input
+
+    out(v: v) <-
+        src(a: a)
+        v := array:contains(a, element: 20)
+
+  input:
+    - src:
+        - [1, {a: [10, 20, 30]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: true}]
+
+- name: array:slice takes a start and a stop
+  source: |
+    src :: relation(a: array(i64))
+    src(a:) <- input
+
+    out(v: v) <-
+        src(a: a)
+        v := array:slice(a, start: 1, stop: 3)
+
+  input:
+    - src:
+        - [1, {a: [10, 20, 30, 40, 50]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: [20, 30]}]
+
+# Python's semantics, and each is a different way to be off by one.
+- name: a negative start counts from the end
+  source: |
+    src :: relation(a: array(i64))
+    src(a:) <- input
+
+    out(v: v) <-
+        src(a: a)
+        v := array:slice(a, start: -2)
+
+  input:
+    - src:
+        - [1, {a: [10, 20, 30, 40, 50]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: [40, 50]}]
+
+- name: the bounds clamp rather than fail
+  source: |
+    src :: relation(a: array(i64))
+    src(a:) <- input
+
+    out(v: v) <-
+        src(a: a)
+        v := array:slice(a, start: 0, stop: 99)
+
+  input:
+    - src:
+        - [1, {a: [10, 20, 30]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: [10, 20, 30]}]
+
+- name: a step takes every nth element
+  source: |
+    src :: relation(a: array(i64))
+    src(a:) <- input
+
+    out(v: v) <-
+        src(a: a)
+        v := array:slice(a, step: 2)
+
+  input:
+    - src:
+        - [1, {a: [10, 20, 30, 40, 50]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: [10, 30, 50]}]
+
+# The one variant `filter_array` cannot express, which is why `slice` has to be
+# the target's rather than grasp's.
+- name: a negative step reverses
+  source: |
+    src :: relation(a: array(i64))
+    src(a:) <- input
+
+    out(v: v) <-
+        src(a: a)
+        v := array:slice(a, step: -1)
+
+  input:
+    - src:
+        - [1, {a: [10, 20, 30]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: [30, 20, 10]}]
+
+- name: array:reverse
+  source: |
+    src :: relation(a: array(i64))
+    src(a:) <- input
+
+    out(v: v) <-
+        src(a: a)
+        v := array:reverse(a)
+
+  input:
+    - src:
+        - [1, {a: [1, 2, 3]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: [3, 2, 1]}]
+
+# Partial, like `dict:get`: a needle that is not there has no answer, so the row
+# is not derived.
+- name: array:index_of derives no row for an element that is not there
+  source: |
+    src :: relation(a: array(i64))
+    src(a:) <- input
+
+    out(v: v) <-
+        src(a: a)
+        v := array:index_of(a, element: 99)
+
+  input:
+    - src:
+        - [1, {a: [1, 2, 3]}]
+
+  expected_exact_output: []
+
+- name: string:starts_with
+  source: |
+    src :: relation(s: string)
+    src(s:) <- input
+
+    out(v: v) <-
+        src(s: s)
+        v := string:starts_with(s, prefix: "ab")
+
+  input:
+    - src:
+        - [1, {s: "abc"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: true}]
+
+- name: string:split
+  source: |
+    src :: relation(s: string)
+    src(s:) <- input
+
+    out(v: v) <-
+        src(s: s)
+        v := string:split(s, delimiter: ",")
+
+  input:
+    - src:
+        - [1, {s: "a,b"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: ["a", "b"]}]
+
+- name: integer:pow
+  source: |
+    src :: relation(x: i64)
+    src(x:) <- input
+
+    out(v: v) <-
+        src(x: x)
+        v := integer:pow(x, exponent: 3)
+
+  input:
+    - src:
+        - [1, {x: 2}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: 8}]
+
+# -- names the library does not have ------------------------------------------
+
+# A held namespace does not make every name under it a function. The library is
+# a list, not a prefix.
+- name: an invented name under a held namespace
+  source: |
+    src :: relation(s: string)
+    src(s:) <- input
+
+    out(v: v) <-
+        src(s: s)
+        v := string:frobnicate(s)
+  expected_diagnostics:
+    - severity: error
+      pass: desugar
+      message: "there is no callable `string:frobnicate`"
+
+- name: and one under a namespace nobody holds
+  source: |
+    src :: relation(s: string)
+    src(s:) <- input
+
+    out(v: v) <-
+        src(s: s)
+        v := mine:frobnicate(s)
+  expected_diagnostics:
+    - severity: error
+      pass: desugar
+      message: "there is no callable `mine:frobnicate`"
+
+# Written by desugaring and not by a program: `dict:without_keys` is what a dict
+# pattern's `**r` becomes, and it takes a *literal* array of the keys the pattern
+# named. A program that wrote one reached an emitter arm that could only panic.
+- name: what desugaring writes is not a name a program may take
+  source: |
+    src :: relation(d: dict(string, i64), ks: array(string))
+    src(d:, ks:) <- input
+
+    out(v: v) <-
+        src(d: d, ks: ks)
+        v := dict:without_keys(d, ks)
+  expected_diagnostics:
+    - severity: error
+      pass: desugar
+      message: "there is no callable `dict:without_keys`"

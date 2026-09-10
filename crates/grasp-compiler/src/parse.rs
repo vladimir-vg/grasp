@@ -41,33 +41,6 @@ pub const DECL_KINDS: &[&str] = &["relation", "function"];
 
 pub const AGGREGATORS: &[&str] = &["sum", "count", "min", "max", "avg"];
 
-/// The callables — `docs/grasp/semantics.md`, "The standard library". Not
-/// reserved as such:
-/// a *column* may be called `length`. They are unavailable as relation names by
-/// the one-name rule, which is a different check.
-pub const BUILTINS: &[&str] = &[
-    "boolean:not",
-    "integer:abs",
-    "float:abs",
-    "float:floor",
-    "float:ceil",
-    "float:round",
-    "string:length",
-    "string:concat",
-    "string:lower",
-    "string:upper",
-    "string:trim",
-    "array:length",
-    "array:at",
-    "array:drop",
-    "dict:length",
-    "dict:get",
-    "dict:keys",
-    "dict:entries",
-    "dict:without_keys",
-    "record:get",
-];
-
 /// "They are held now so that the standard library can grow into them without
 /// taking names a program was already using."
 pub const RESERVED_NAMESPACES: &[&str] = &[
@@ -345,14 +318,10 @@ impl<'a> Parser<'a> {
                 format!("`{name}` is a reserved word and cannot name a relation"),
             ));
         }
-        // "A name is either a relation or a callable, never both." This is what
-        // lets body-statement position resolve `name(` without lookahead.
-        if BUILTINS.contains(&name) {
-            return Err(self.error(
-                span,
-                format!("`{name}` is a builtin: a name cannot be both a relation and a callable"),
-            ));
-        }
+        // "A name is either a relation or a callable, never both." Every
+        // callable is namespaced, so holding the namespaces *is* the one-name
+        // rule — which is what lets body-statement position resolve `name(`
+        // without lookahead, and why a relation may still be called `length`.
         if let Some(ns) = namespace_of(name)
             && RESERVED_NAMESPACES.contains(&ns)
         {

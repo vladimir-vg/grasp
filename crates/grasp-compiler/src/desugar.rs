@@ -317,11 +317,18 @@ fn expr_of(e: &ast::Expr) -> Result<core::Expr, Diagnostic> {
             // this point a callable is a variant, not a string two passes have
             // to spell the same way.
             let Some(callee) = core::Builtin::from_name(name) else {
-                return Err(Diagnostic::error(
-                    Pass::Desugar,
-                    *span,
-                    format!("there is no callable `{name}`"),
-                ));
+                // A name the *library* has and this compiler has not is a gap,
+                // not a mistake — `stdlib.grasp` declares the whole library, so
+                // the burn-down carries what is left of it.
+                return Err(if core::DESIGNED.contains(&name.as_str()) {
+                    Diagnostic::unimplemented(Pass::Desugar, *span, name.clone())
+                } else {
+                    Diagnostic::error(
+                        Pass::Desugar,
+                        *span,
+                        format!("there is no callable `{name}`"),
+                    )
+                });
             };
             let sig = resolve(callee, positional, keyword, *span)?;
             // Resolution is what puts the arguments in order: below here a call

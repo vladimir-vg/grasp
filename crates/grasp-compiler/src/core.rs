@@ -264,6 +264,56 @@ impl Expr {
     }
 }
 
+/// The standard library grasp has designed and this compiler has not got.
+///
+/// `docs/grasp/stdlib.grasp` declares the **whole** library, so a call to one of
+/// these is `not implemented: <name>` rather than "there is no callable": the
+/// language has the function and the compiler has not caught up. The difference
+/// then shows in the test suite's burn-down, as a work queue rather than as a
+/// promise in a document nobody counts.
+///
+/// Sorted, and every entry is a name in that file — `tests/reserved.rs` checks
+/// both halves of that, so a function implemented without leaving this list is
+/// a failing test rather than a name reported unimplemented after it works.
+pub const DESIGNED: &[&str] = &[
+    "array:append",
+    "array:concat",
+    "array:contains",
+    "array:distinct",
+    "array:flatten",
+    "array:index_of",
+    "array:max",
+    "array:min",
+    "array:prepend",
+    "array:reverse",
+    "array:slice",
+    "array:sort",
+    "dict:from_entries",
+    "dict:has",
+    "dict:merge",
+    "dict:values",
+    "dict:without",
+    "float:max",
+    "float:min",
+    "float:pow",
+    "float:sign",
+    "float:sqrt",
+    "integer:max",
+    "integer:min",
+    "integer:pow",
+    "integer:sign",
+    "string:at",
+    "string:contains",
+    "string:ends_with",
+    "string:index_of",
+    "string:ltrim",
+    "string:replace",
+    "string:rtrim",
+    "string:slice",
+    "string:split",
+    "string:starts_with",
+];
+
 /// Every callable there is.
 ///
 /// **Every one is namespaced, and the namespace is the type family it belongs
@@ -327,6 +377,11 @@ pub enum Builtin {
 }
 
 impl Builtin {
+    /// The callable a program's `name(` means.
+    ///
+    /// [`Builtin::ArrayDrop`] and [`Builtin::DictWithoutKeys`] are not here:
+    /// they are what desugaring writes and are not names a program may take.
+    /// See [`Builtin::callable`].
     pub fn from_name(name: &str) -> Option<Builtin> {
         Some(match name {
             "boolean:not" => Builtin::BooleanNot,
@@ -342,12 +397,10 @@ impl Builtin {
             "string:trim" => Builtin::StringTrim,
             "array:length" => Builtin::ArrayLength,
             "array:at" => Builtin::ArrayAt,
-            "array:drop" => Builtin::ArrayDrop,
             "dict:length" => Builtin::DictLength,
             "dict:get" => Builtin::DictGet,
             "dict:keys" => Builtin::DictKeys,
             "dict:entries" => Builtin::DictEntries,
-            "dict:without_keys" => Builtin::DictWithoutKeys,
             "record:get" => Builtin::RecordGet,
             _ => return None,
         })
@@ -441,6 +494,31 @@ impl Builtin {
     /// The signature a call of this shape resolves to, if any.
     pub fn resolve(self, shape: &Shape) -> Option<&'static Signature> {
         self.signatures().iter().find(|s| s.shape() == *shape)
+    }
+
+    /// Whether a program may write this name.
+    ///
+    /// Two are written by desugaring and never by a person: [`Builtin::ArrayDrop`]
+    /// is what an array pattern's `*r` binds and [`Builtin::DictWithoutKeys`]
+    /// what a dict pattern's `**r` does. Neither is in the library, and
+    /// [`Builtin::from_name`] does not resolve them — which is not tidiness:
+    /// `dict:without_keys` needs a *literal* array of the keys the pattern
+    /// named, and a program that handed it a variable reached an emitter arm
+    /// that could only panic.
+    pub fn callable(self) -> bool {
+        !matches!(self, Builtin::ArrayDrop | Builtin::DictWithoutKeys)
+    }
+
+    /// Whether the type language can write this one's typespec.
+    ///
+    /// `record:get`'s result is the *named field's* type — it depends on the
+    /// value of its second argument rather than on its type — so no signature
+    /// says what it gives back, and [`crate::infer`] reads the key literal
+    /// instead of consulting one. It is a real callable a program may write, and
+    /// `docs/grasp/stdlib.grasp` declares what it can rather than declaring a
+    /// lie: this is the one entry that file does not carry.
+    pub fn has_typespec(self) -> bool {
+        !matches!(self, Builtin::RecordGet)
     }
 
     /// Whether it can fail to have an answer.

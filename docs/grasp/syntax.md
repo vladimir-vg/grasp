@@ -458,5 +458,7 @@ The AST is untyped: a `Field` still carries a name rather than an index, and a
 | ``duplicate column `c` `` | one atom or head names a column twice |
 | ``duplicate field `f` `` | one record or dict literal names a field twice |
 | ``inconsistent indentation`` | a body statement is indented less than the first |
-| ``a name cannot be both a relation and a callable`` | the one-name rule |
+| ``the namespace `n:` is reserved for the language`` | the one-name rule: a held namespace holds callables |
+| ``already has a relation typespec`` | two typespecs for one name |
+| ``already has a variant called `(…)` `` | two variants of one shape |
 | ``the wildcard `_` binds nothing and cannot be used here`` | `_` outside an atom argument |

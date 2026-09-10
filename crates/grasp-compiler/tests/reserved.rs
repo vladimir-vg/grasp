@@ -9,9 +9,8 @@
 //! It is the same guarantee `grasp-dbsp-runner`'s `tests/reserved.rs` gives
 //! `docs/grasp-dbsp/language.md`.
 
-use grasp_compiler::parse::{
-    AGGREGATORS, BUILTINS, DECL_KINDS, KEYWORDS, RESERVED_NAMESPACES, TYPE_NAMES, is_reserved,
-};
+use grasp_compiler::parse::{AGGREGATORS, DECL_KINDS, KEYWORDS, RESERVED_NAMESPACES, TYPE_NAMES};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 fn doc(name: &str) -> String {
@@ -112,40 +111,124 @@ fn the_reserved_namespaces_match_syntax_md() {
 
 /// The library the compiler has is the library `stdlib.grasp` declares.
 ///
-/// Read as text here. Once the function typespec is part of the grammar this
-/// becomes a parse, and the check grows from the names to the shapes.
+/// Read as grasp, not as text: the file is parsed and its typespecs are compared
+/// to `core::Builtin`'s signatures, so a builtin whose shape drifted from the
+/// declared one is a failure here rather than a surprise at a call site.
+///
+/// Three claims, and each has a way of failing:
+///
+/// - every implemented callable is declared, with the same shapes — so a
+///   `Builtin` added without an entry fails;
+/// - every declared name the compiler has not got is in `core::DESIGNED` — so an
+///   entry naming nothing fails, and a function implemented without leaving that
+///   list fails too;
+/// - nothing is declared that no program may write.
 #[test]
-fn the_builtins_match_stdlib_grasp() {
-    let text = doc("stdlib.grasp");
-    let listed: Vec<String> = text
-        .lines()
-        .filter_map(|l| l.strip_suffix(" :: function"))
-        .map(str::to_string)
-        .collect();
-    assert_same("builtins", &listed, BUILTINS);
-}
+fn the_library_is_stdlib_grasp() {
+    use grasp_compiler::ast::{Decl, Shape};
+    use grasp_compiler::core::{Builtin, DESIGNED};
 
-/// Every callable lives under a held namespace, which is what makes the shape
-/// of a name the answer to whether it is one.
-#[test]
-fn every_builtin_is_namespaced() {
-    for b in BUILTINS {
-        let ns = b.split_once(':').map(|(ns, _)| ns);
+    let text = doc("stdlib.grasp");
+    let program = grasp_compiler::parse::parse(&text)
+        .unwrap_or_else(|e| panic!("docs/grasp/stdlib.grasp does not parse: {e}"));
+
+    let mut declared: BTreeMap<String, Vec<Shape>> = BTreeMap::new();
+    for decl in &program {
+        let Decl::Function(spec) = decl else {
+            panic!("stdlib.grasp declares the library and nothing else, but it has a {decl:?}");
+        };
+        let mut shapes: Vec<Shape> = spec.variants.iter().map(|v| v.shape()).collect();
+        shapes.sort();
+        declared.insert(spec.name.clone(), shapes);
+    }
+
+    for b in Builtin::ALL {
+        let name = b.as_str();
+        if !b.callable() {
+            assert!(
+                !declared.contains_key(name),
+                "`{name}` is written by desugaring and is not a name a program \
+                 may take, so declaring it in the library offers something \
+                 nothing can call"
+            );
+            continue;
+        }
+        if !b.has_typespec() {
+            assert!(
+                !declared.contains_key(name),
+                "`{name}` has no typespec the type language can write — see \
+                 `Builtin::has_typespec` — so an entry for it would be a lie"
+            );
+            continue;
+        }
+        let Some(shapes) = declared.get(name) else {
+            panic!(
+                "`{name}` is a callable this compiler has, but the library does \
+                 not declare it — a program could call something no document \
+                 describes"
+            );
+        };
+        let mut mine: Vec<Shape> = b.signatures().iter().map(|s| s.shape()).collect();
+        mine.sort();
+        assert_eq!(
+            shapes, &mine,
+            "`{name}` is declared with different shapes than the compiler accepts, \
+             so the document and the code disagree about how it is called"
+        );
+    }
+
+    for name in declared.keys() {
+        if Builtin::from_name(name).is_some() {
+            continue;
+        }
         assert!(
-            ns.is_some_and(|ns| RESERVED_NAMESPACES.contains(&ns)),
-            "`{b}` is a callable outside every held namespace, so nothing stops a \
-             relation taking its name"
+            DESIGNED.contains(&name.as_str()),
+            "the library declares `{name}`, which this compiler has neither \
+             implemented nor listed in `core::DESIGNED` — so calling it would be \
+             reported as a name that does not exist"
+        );
+    }
+
+    for name in DESIGNED {
+        assert!(
+            declared.contains_key(*name),
+            "`core::DESIGNED` names `{name}`, which the library does not declare \
+             — a gap the burn-down counts and no document describes"
+        );
+        assert!(
+            Builtin::from_name(name).is_none(),
+            "`{name}` is implemented but still in `core::DESIGNED`, so a call to \
+             it would be reported unimplemented after it works"
         );
     }
 }
 
+/// Every callable lives under a held namespace, which is what makes the shape of
+/// a name the answer to whether it is one.
+///
+/// It is also the whole of the one-name rule now. There is no separate list of
+/// callable names to keep a relation off: `record:get` is unavailable because
+/// `record:` is held, and `length` is available because nothing is called that.
 #[test]
-fn builtins_are_not_reserved_words() {
-    for b in BUILTINS {
+fn every_callable_is_namespaced() {
+    use grasp_compiler::core::Builtin;
+
+    for b in Builtin::ALL {
+        let name = b.as_str();
+        let ns = name.split_once(':').map(|(ns, _)| ns);
         assert!(
-            !is_reserved(b),
-            "`{b}` is a builtin, which does not make it a reserved word — \
-             `docs/grasp/syntax.md` says a column may be called `length`"
+            ns.is_some_and(|ns| RESERVED_NAMESPACES.contains(&ns)),
+            "`{name}` is a callable outside every held namespace, so nothing \
+             stops a relation taking its name"
+        );
+    }
+    for name in grasp_compiler::core::DESIGNED {
+        let ns = name.split_once(':').map(|(ns, _)| ns);
+        assert!(
+            ns.is_some_and(|ns| RESERVED_NAMESPACES.contains(&ns)),
+            "`{name}` is a designed callable outside every held namespace, so a \
+             program could define a relation there and collide with it when it \
+             lands"
         );
     }
 }
@@ -162,52 +245,6 @@ fn every_reserved_word_is_rejected_as_a_relation_name() {
         assert!(
             grasp_compiler::parse::parse(&source).is_err(),
             "`{word}` is reserved but was accepted as a relation name"
-        );
-    }
-}
-
-/// `core::Builtin` and `parse::BUILTINS` are two lists of one thing.
-///
-/// `parse::BUILTINS` is what the one-name rule reserves and what
-/// `the_builtins_match_semantics_md` above pins against the specification;
-/// `core::Builtin` is what desugaring resolves a call to. Nothing connected
-/// them, so a builtin added to one and not the other would either be
-/// unreservable or unresolvable, and the fixture that caught it would blame
-/// something else.
-#[test]
-fn the_builtin_enum_and_the_reserved_list_agree() {
-    use grasp_compiler::core::Builtin;
-
-    for name in BUILTINS {
-        assert!(
-            Builtin::from_name(name).is_some(),
-            "`{name}` is reserved as a callable but `core::Builtin` cannot \
-             resolve it, so a program calling it would be told there is no \
-             such callable"
-        );
-    }
-
-    for b in Builtin::ALL {
-        let name = b.as_str();
-        // The namespaced three are what desugaring writes. They are not in
-        // `BUILTINS` because that list is what the *one-name rule* reserves —
-        // it stops a relation being called `length`, and no relation can be
-        // called `record:get` anyway, since the namespace is reserved outright.
-        if name.contains(':') {
-            let namespace = name.split_once(':').expect("checked").0;
-            assert!(
-                RESERVED_NAMESPACES.contains(&namespace),
-                "`{name}` lives in `{namespace}:`, which is not a reserved \
-                 namespace — so a program could define a relation there and \
-                 collide with what desugaring writes"
-            );
-            continue;
-        }
-        assert!(
-            BUILTINS.contains(&name),
-            "`{name}` is a callable but is not in `parse::BUILTINS`, so a \
-             relation could be given its name and the one-name rule would not \
-             notice"
         );
     }
 }

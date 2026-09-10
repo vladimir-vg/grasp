@@ -195,8 +195,16 @@ impl Diagnostic {
     /// in a bucket.
     ///
     /// The plan and emit stages have no entry here at all: everything the
-    /// pipeline reaches, it finishes. What is left is three constructs the
-    /// front of the pipeline refuses, and the list goes when they do.
+    /// pipeline reaches, it finishes. What is left is one construct the front of
+    /// the pipeline refuses, and the list goes when it does.
+    ///
+    /// The *constructs* are here. A [standard library function][designed] grasp
+    /// has designed and this compiler has not got is the other kind of gap, and
+    /// its name is admitted by [`Diagnostic::unimplemented`] without being
+    /// listed twice: `docs/grasp/stdlib.grasp` is where that half is written
+    /// down.
+    ///
+    /// [designed]: crate::core::DESIGNED
     pub const UNIMPLEMENTED: &[&str] = &["narrowing under two wrappers"];
 
     /// A construct this compiler has not implemented yet.
@@ -211,10 +219,11 @@ impl Diagnostic {
     ) -> Diagnostic {
         let construct = construct.into();
         debug_assert!(
-            Diagnostic::UNIMPLEMENTED.contains(&construct.as_str()),
-            "`{construct}` is not in `Diagnostic::UNIMPLEMENTED`; the burn-down \
-             groups by this string, so a new spelling of an existing gap would \
-             split its count"
+            Diagnostic::UNIMPLEMENTED.contains(&construct.as_str())
+                || crate::core::DESIGNED.contains(&construct.as_str()),
+            "`{construct}` is neither in `Diagnostic::UNIMPLEMENTED` nor a \
+             function `core::DESIGNED` names; the burn-down groups by this \
+             string, so a new spelling of an existing gap would split its count"
         );
         Diagnostic {
             severity: Severity::Error,

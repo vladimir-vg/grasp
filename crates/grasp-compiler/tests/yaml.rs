@@ -68,8 +68,12 @@ fn report_pending() {
     let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
     for reason in pending.iter() {
         assert!(
-            grasp_compiler::diag::Diagnostic::UNIMPLEMENTED.contains(&reason.as_str()),
-            "the compiler reported `{reason}` as unimplemented, which is not in              `Diagnostic::UNIMPLEMENTED` — the burn-down would count it as a row of              its own rather than with the gap it belongs to"
+            grasp_compiler::diag::Diagnostic::UNIMPLEMENTED.contains(&reason.as_str())
+                || grasp_compiler::core::DESIGNED.contains(&reason.as_str()),
+            "the compiler reported `{reason}` as unimplemented, which is neither in \
+             `Diagnostic::UNIMPLEMENTED` nor a function `core::DESIGNED` names — the \
+             burn-down would count it as a row of its own rather than with the gap \
+             it belongs to"
         );
         *counts.entry(reason.as_str()).or_default() += 1;
     }
