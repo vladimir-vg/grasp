@@ -107,6 +107,10 @@ design comes from. What is missing is missing on purpose.
   types, string encodings, and general `enum(...)` beyond the `boolean` case.
   Each needs a grasp-dbsp value type underneath before grasp can offer it.
 
+  The **bitwise and shift operators** arrive with `bits` and are part of that
+  entry rather than a separate one: they have no meaning without the type, and
+  the type is not much use without them.
+
 - **Input rules.** Today `<- input` only declares that a relation comes from
   outside. The full mechanism in the Erlang implementation is much larger: the
   rule body defines a *candidate space*, and a runtime chooses which candidates
@@ -125,10 +129,8 @@ design comes from. What is missing is missing on purpose.
   Erlang implementation, which is what makes them work and what this workspace
   does not have.
 
-  One consequence is worth naming, because it is a visible divergence: there,
-  every `f64` operation produces a `result_equivalent_closure` to cage the
-  machine-dependence of IEEE arithmetic, resolvable only through an explicit
-  eval against a shared cache. Here `f64` arithmetic is just arithmetic.
+  One consequence is a visible divergence, recorded with the others in
+  [`mapping.md`](mapping.md#where-this-dialect-diverges).
 
 - **Conversions.** grasp-dbsp has `cast(x, T)` and `coalesce(x, d)`; grasp has
   neither. A document is read by a runtime filter, and an absent value is
@@ -138,6 +140,34 @@ design comes from. What is missing is missing on purpose.
   division briefly got in. (A computed dict key was on this list until it got a
   spelling of grasp's own: `d[k]`, an expression rather than a borrowed
   builtin.)
+
+- **`in`, a membership test.** `x in xs` over an array, and by extension a
+  dict's keys. It is in the Erlang dialect's grammar and deferred there too, so
+  what exists is the name and not a design — in particular whether it is an
+  operator or a builtin, and whether a dict is searched by key or by value.
+
+- **A system relation.** That dialect has `temporal:unixtime`, a relation the
+  runtime feeds rather than a program: one row, retracted and re-inserted every
+  wall-clock second, the 1 Hz rate being part of the contract rather than a
+  configuration.
+
+  What it needs here is a relation that *exists without being declared*, and
+  grasp has no notion of one — every external relation arrives through
+  `<- input`, which a program writes. It is also what a time-varying query would
+  rest on: [`semantics.md`](semantics.md#time) says what a transaction is and
+  how weights accumulate, which is time as *ordering*, and says nothing about a
+  clock.
+
+- **Keyword arguments.** [`syntax.md`](syntax.md#expressions)'s `args` production
+  admits `f(a, b: 1)`, and **no builtin takes one** — so the form is grammatical
+  and cannot be satisfied, which is why the compiler reports it as unimplemented
+  rather than as a mistake. It waits on the library that wants it: that dialect's
+  stdlib is full of them, `dict:without(d, keys: ks)` and its neighbours.
+
+  Worth saying what they are *not* for here. There, `IDENTIFIER ":"` after `(`
+  is what tells an atom from a call. grasp needs no such lookahead — `name(` is
+  an atom at body-statement level and a call inside an expression — so nothing
+  in the grammar depends on the production staying.
 
 - **A wider standard library.** The builtins available are the ones grasp-dbsp
   provides, listed in [`semantics.md`](semantics.md#builtins). The namespaces for types that
@@ -164,8 +194,8 @@ design comes from. What is missing is missing on purpose.
   branchpoints, hot-reload and provenance tracking. None of that comes here. The
   language, the type system and the compiler middle-end do.
 
-  Where this dialect diverges from that one, [`mapping.md`](mapping.md) records
-  it.
+  Where this dialect diverges from that one,
+  [`mapping.md`](mapping.md#where-this-dialect-diverges) records it.
 
 - **Datalog** — the tradition. grasp takes stratified negation and stratified
   aggregation from it. It departs in having a real type system, an

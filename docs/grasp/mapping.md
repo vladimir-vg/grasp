@@ -619,6 +619,36 @@ grasp-dbsp name, so that one concept has one spelling across the boundary.
 | `==` and `=` mixed | `=` | that corpus used both; this settles it |
 | EDB / IDB | input table / derived table | that corpus had already moved |
 
+## Where this dialect diverges
+
+Names are the small half. These are the places grasp *means* something different
+from the Erlang dialect it is ported from, each a decision rather than an
+omission — what is merely missing is [future
+work](overview.md#future-work) instead.
+
+**Numbers do not widen.** That dialect defines a widening lattice, so an `i64`
+and an `f64` meet at `f64` and an expression mixing them has an answer. Here
+they do not meet in either direction: mixing them names both types and stops.
+[`types.md`](types.md#arithmetic) states the rule; the reason to prefer it is
+that a widening lattice decides silently, and the decision it makes — which
+operand loses precision — is the one a reader most wants written down.
+
+**Division is not `optional`.** There, `/` yields `optional(T)` and a zero
+divisor is an absent value the program goes on to handle. Here a rule derives no
+row where a step of its body has no answer, so the rows with a zero divisor are
+simply not there and `a / b` is an ordinary `T`. grasp-dbsp agrees with that
+dialect rather than with grasp, which is why this file has a
+[rule for reconciling them](#narrowing-and-dropping) — and why `optional`
+division briefly got into grasp by being copied from the target instead of
+designed.
+
+**`f64` arithmetic is arithmetic.** There, every `f64` operation produces a
+`result_equivalent_closure` to cage the machine-dependence of IEEE arithmetic,
+resolvable only through an explicit eval against a shared cache. That rests on
+the storage service backing [reference
+types](overview.md#future-work), which this workspace does not have — so `f64`
+here is an ordinary value and an `f64` result is an ordinary result.
+
 ## What the backend removes
 
 A reader coming from the Erlang design documents will find whole subsystems
