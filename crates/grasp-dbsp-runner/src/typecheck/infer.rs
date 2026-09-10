@@ -764,6 +764,32 @@ fn infer(
     })
 }
 
+/// The result of `+` or `-` over temporal values, or `None` where the pair is
+/// not one of the shapes.
+///
+/// **Every one is total.** A `date` has no sub-day resolution, so shifting one
+/// by an interval truncates to whole days — which is what a caller gets rather
+/// than an absent value, and is stated in `language.md` beside the operator.
+fn temporal_arith(op: BinOp, left: &TypeDesc, right: &TypeDesc) -> Option<TypeDesc> {
+    use TypeDesc::*;
+    Some(match (op, left, right) {
+        // A difference between two of a kind is how long apart they are.
+        (BinOp::Sub, Date, Date)
+        | (BinOp::Sub, Time, Time)
+        | (BinOp::Sub, Timestamp, Timestamp) => Interval,
+        // Shifting: the left operand keeps its type.
+        (_, Timestamp, Interval) | (_, Date, Interval) | (_, Time, Interval) => left.clone(),
+        // `interval + timestamp` reads as well as the other order, and means
+        // the same thing. Subtraction does not: a moment less a duration is a
+        // moment, and a duration less a moment is nothing.
+        (BinOp::Add, Interval, Timestamp)
+        | (BinOp::Add, Interval, Date)
+        | (BinOp::Add, Interval, Time) => right.clone(),
+        (_, Interval, Interval) => Interval,
+        _ => return None,
+    })
+}
+
 /// Whether a document can be extracted as this type.
 ///
 /// Everything in the vocabulary except a nested `optional`, which the type
@@ -775,7 +801,7 @@ fn extractable(t: &TypeDesc) -> bool {
         // A temporal value is a string in a document, and the codec reads the
         // one spelling its own `Display` writes — so extracting one is the same
         // operation a dict key already is.
-        TypeDesc::Date | TypeDesc::Time | TypeDesc::Timestamp => true,
+        TypeDesc::Date | TypeDesc::Time | TypeDesc::Timestamp | TypeDesc::Interval => true,
         TypeDesc::Record(fields) => fields.iter().all(|(_, f)| extractable(f.non_null())),
         TypeDesc::Array(elem) => extractable(elem.non_null()),
         // A document's object keys are strings, and a dict key parses from one,
@@ -884,8 +910,8 @@ fn conversion(from: &Ty, to: &TypeDesc, span: Span) -> TResult<Conv> {
         (String, F64) => Conv::StringToFloat,
         // Written text is how a temporal value arrives from outside, and the
         // spelling is the one the codec and a dict key already round-trip.
-        (String, Date | Time | Timestamp) => Conv::StringToTemporal(target.clone()),
-        (Date | Time | Timestamp, String) => Conv::TemporalToString,
+        (String, Date | Time | Timestamp | Interval) => Conv::StringToTemporal(target.clone()),
+        (Date | Time | Timestamp | Interval, String) => Conv::TemporalToString,
         // Both halves of an instant, and both total: a timestamp always has a
         // date and a time-of-day. `make_timestamp` puts them back.
         (Timestamp, Date) => Conv::TimestampToDate,
@@ -904,6 +930,7 @@ fn conversion(from: &Ty, to: &TypeDesc, span: Span) -> TResult<Conv> {
             Conv::StringToTemporal(t) => match t {
                 Date => "the text may not be a date",
                 Time => "the text may not be a time",
+                Interval => "the text may not be a duration",
                 _ => "the text may not be a timestamp",
             },
             _ => "the text may not parse",
@@ -1073,6 +1100,17 @@ fn infer_binop(
             };
             definite(&lt, name, span)?;
             definite(&rt, name, span)?;
+            // Temporal arithmetic is matched before `unify`, because none of
+            // its shapes unify: a timestamp and an interval are two types, and
+            // the answer is a third.
+            if matches!(op, Add | Sub)
+                && let (Some(l), Some(r)) = (lt.settle(), rt.settle())
+                && let Some(out) = temporal_arith(op, l.non_null(), r.non_null())
+            {
+                pin(le, l.non_null());
+                pin(re, r.non_null());
+                return Ok(Ty::Known(out));
+            }
             let shared = unify(lt, rt, span)?;
             if let Ty::Known(t) = &shared
                 && !is_numeric(t)
@@ -1321,6 +1359,28 @@ fn infer_builtin(
                 pin(&mut exprs[i], &want[i]);
             }
             Ty::Known(TypeDesc::Timestamp)
+        }
+        Builtin::MakeInterval => {
+            definite(&args[0], name, span)?;
+            let t = args[0].settle().expect("definite() rejected the none case");
+            if t.non_null() != &TypeDesc::I64 {
+                return err(span, format!("`{name}` takes an `i64`, found `{t}`"));
+            }
+            pin(&mut exprs[0], &TypeDesc::I64);
+            Ty::Known(TypeDesc::Interval)
+        }
+        Builtin::TotalDays
+        | Builtin::TotalHours
+        | Builtin::TotalMinutes
+        | Builtin::TotalSeconds
+        | Builtin::TotalMicroseconds => {
+            definite(&args[0], name, span)?;
+            let t = args[0].settle().expect("definite() rejected the none case");
+            if t.non_null() != &TypeDesc::Interval {
+                return err(span, format!("`{name}` reads an `interval`, found `{t}`"));
+            }
+            pin(&mut exprs[0], &TypeDesc::Interval);
+            Ty::Known(TypeDesc::I64)
         }
         Builtin::TimestampFromMicros => {
             definite(&args[0], name, span)?;

@@ -72,7 +72,8 @@ pub fn encode_value(v: &DynValue, ty: &TypeDesc) -> JResult<J> {
         // dict key already uses.
         (DynValue::Date(_), TypeDesc::Date)
         | (DynValue::Time(_), TypeDesc::Time)
-        | (DynValue::Timestamp(_), TypeDesc::Timestamp) => J::String(
+        | (DynValue::Timestamp(_), TypeDesc::Timestamp)
+        | (DynValue::Interval(_), TypeDesc::Interval) => J::String(
             v.dict_key_string()
                 .expect("a temporal value has a written form"),
         ),
@@ -151,7 +152,7 @@ pub fn decode_value(j: &J, ty: &TypeDesc) -> JResult<DynValue> {
         // A temporal value travels as a string, in the one spelling its type
         // reads back — the same round trip a dict key rests on, and the same
         // function on both sides of it.
-        TypeDesc::Date | TypeDesc::Time | TypeDesc::Timestamp => {
+        TypeDesc::Date | TypeDesc::Time | TypeDesc::Timestamp | TypeDesc::Interval => {
             let Some(s) = j.as_str() else {
                 return bad(format!("expected a `{ty}` as a string, found `{j}`"));
             };
@@ -265,6 +266,7 @@ fn type_key_name(ty: &TypeDesc) -> &'static str {
         TypeDesc::Date => "date",
         TypeDesc::Time => "time",
         TypeDesc::Timestamp => "timestamp",
+        TypeDesc::Interval => "interval",
         _ => "",
     }
 }

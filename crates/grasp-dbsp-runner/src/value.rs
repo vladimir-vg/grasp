@@ -161,6 +161,17 @@ pub enum DynValue {
     /// tzdata and DST semantics, and is future work in
     /// `docs/grasp-dbsp/overview.md`.
     Timestamp(feldera_sqllib::Timestamp),
+    /// `interval` — a span of time, in microseconds.
+    ///
+    /// **Appended, and new variants must be too**: the variant order is the
+    /// archived discriminant, which is a storage format.
+    ///
+    /// One integer, because with no timezone a day is exactly 86400 seconds and
+    /// every unit below a month converts into microseconds exactly. Months are
+    /// the one quantity that does not, and they are not in this type: a
+    /// `month_interval` beside it is future work, and `1 month = 30 days` is
+    /// not a rule this language invents to avoid needing one.
+    Interval(feldera_sqllib::ShortInterval),
 }
 
 impl DynValue {
@@ -210,6 +221,7 @@ impl DynValue {
             DynValue::Date(d) => Some(d.to_string()),
             DynValue::Time(t) => Some(time_string(t)),
             DynValue::Timestamp(t) => Some(t.to_string()),
+            DynValue::Interval(iv) => Some(interval_string(iv)),
             DynValue::F64(f) => {
                 let f = f.into_inner();
                 f.is_finite().then(|| f.to_string())
@@ -233,6 +245,7 @@ impl DynValue {
             DynValue::Date(_) => "date",
             DynValue::Time(_) => "time",
             DynValue::Timestamp(_) => "timestamp",
+            DynValue::Interval(_) => "interval",
         }
     }
 }
@@ -434,6 +447,8 @@ pub enum TypeDesc {
     Time,
     /// `timestamp` — an instant, always UTC.
     Timestamp,
+    /// `interval` — a span of time, in microseconds.
+    Interval,
 }
 
 impl TypeDesc {
@@ -491,6 +506,7 @@ impl TypeDesc {
                 | TypeDesc::Date
                 | TypeDesc::Time
                 | TypeDesc::Timestamp
+                | TypeDesc::Interval
         )
     }
 
@@ -511,6 +527,7 @@ impl TypeDesc {
             TypeDesc::Date => parse_date(s),
             TypeDesc::Time => parse_time(s),
             TypeDesc::Timestamp => parse_timestamp(s),
+            TypeDesc::Interval => parse_interval(s),
             _ => Option::None,
         }
     }
@@ -543,6 +560,7 @@ impl std::fmt::Display for TypeDesc {
             TypeDesc::Date => write!(f, "date"),
             TypeDesc::Time => write!(f, "time"),
             TypeDesc::Timestamp => write!(f, "timestamp"),
+            TypeDesc::Interval => write!(f, "interval"),
             TypeDesc::Record(fields) => {
                 write!(f, "record(")?;
                 for (i, (name, ty)) in fields.iter().enumerate() {
@@ -627,4 +645,104 @@ pub fn parse_timestamp(s: &str) -> Option<DynValue> {
     feldera_sqllib::cast_to_Timestamp_s(feldera_sqllib::SqlString::from_ref(s))
         .ok()
         .map(DynValue::Timestamp)
+}
+
+/// An `interval` from an ISO 8601 duration, and back.
+///
+/// The subset this type can hold: `[-]P[nD][T[nH][nM][n[.nnnnnn]S]]`. There is
+/// no year or month designator, because a month has no fixed length and this
+/// type stores microseconds — `P1M` is a value it cannot represent rather than
+/// one it would have to guess at.
+///
+/// The sign leads the whole duration, which is how a negative one is written
+/// unambiguously without a sign on every part.
+pub fn parse_interval(s: &str) -> Option<DynValue> {
+    let (sign, rest) = match s.strip_prefix('-') {
+        Some(rest) => (-1i64, rest),
+        None => (1i64, s),
+    };
+    let rest = rest.strip_prefix('P')?;
+    let (days, time) = match rest.split_once('T') {
+        Some((d, t)) => (d, Some(t)),
+        None => (rest, None),
+    };
+
+    let mut micros: i64 = 0;
+    if !days.is_empty() {
+        let n: i64 = days.strip_suffix('D')?.parse().ok()?;
+        micros = n.checked_mul(86_400_000_000)?;
+    }
+    if let Some(time) = time {
+        let mut rest = time;
+        for (mark, unit) in [('H', 3_600_000_000i64), ('M', 60_000_000)] {
+            if let Some(at) = rest.find(mark) {
+                let n: i64 = rest[..at].parse().ok()?;
+                micros = micros.checked_add(n.checked_mul(unit)?)?;
+                rest = &rest[at + 1..];
+            }
+        }
+        if let Some(secs) = rest.strip_suffix('S') {
+            let (whole, frac) = match secs.split_once('.') {
+                Some((w, f)) => (w, f),
+                None => (secs, ""),
+            };
+            if !frac.chars().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+            // Padded to six digits and no further: a finer fraction is not a
+            // value this type holds.
+            let mut digits = frac.to_string();
+            digits.truncate(6);
+            while digits.len() < 6 {
+                digits.push('0');
+            }
+            let n: i64 = whole.parse().ok()?;
+            micros = micros.checked_add(n.checked_mul(1_000_000)?)?;
+            micros = micros.checked_add(digits.parse::<i64>().ok()?)?;
+        } else if !rest.is_empty() {
+            return None;
+        }
+    }
+    Some(DynValue::Interval(
+        feldera_sqllib::ShortInterval::from_microseconds(sign.checked_mul(micros)?),
+    ))
+}
+
+/// The canonical spelling, which is what [`parse_interval`] reads back.
+///
+/// Zero parts are omitted, and an interval of nothing is `PT0S` — a duration
+/// needs at least one component to be a duration at all.
+fn interval_string(iv: &feldera_sqllib::ShortInterval) -> String {
+    let total = iv.microseconds();
+    let rest = total.unsigned_abs();
+    let (days, rest) = (rest / 86_400_000_000, rest % 86_400_000_000);
+    let (hours, minutes) = (rest / 3_600_000_000, rest / 60_000_000 % 60);
+    let (seconds, micros) = (rest / 1_000_000 % 60, rest % 1_000_000);
+
+    let mut out = String::new();
+    if total < 0 {
+        out.push('-');
+    }
+    out.push('P');
+    if days > 0 {
+        out.push_str(&format!("{days}D"));
+    }
+    if hours > 0 || minutes > 0 || seconds > 0 || micros > 0 || days == 0 {
+        out.push('T');
+        if hours > 0 {
+            out.push_str(&format!("{hours}H"));
+        }
+        if minutes > 0 {
+            out.push_str(&format!("{minutes}M"));
+        }
+        if seconds > 0 || micros > 0 || (hours == 0 && minutes == 0) {
+            if micros == 0 {
+                out.push_str(&format!("{seconds}S"));
+            } else {
+                let frac = format!("{micros:06}");
+                out.push_str(&format!("{seconds}.{}S", frac.trim_end_matches('0')));
+            }
+        }
+    }
+    out
 }

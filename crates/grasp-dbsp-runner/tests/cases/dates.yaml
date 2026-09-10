@@ -311,3 +311,201 @@
     - severity: error
       pass: typecheck
       message: "`hour` reads `time` or `timestamp`, found `date`"
+
+# -- interval -----------------------------------------------------------------
+#
+# A span of time, in microseconds. One integer, because with no timezone a day
+# is exactly 86400 seconds and every unit below a month converts exactly. Months
+# are the one that does not, and they are not in this type.
+#
+# It orders, so `min` folds it and it may key a dict. On the wire it is an ISO
+# 8601 duration.
+
+- name: an interval is written as a duration
+  source: |
+    t := input("t")
+    t :: zset(record(n: i64))
+
+    out := map(t, function((r) -> record(iv: make_interval(r.n))))
+
+  input:
+    - t:
+        - [1, {n: 0}]
+        - [1, {n: 1000000}]
+        - [1, {n: 90061000000}]
+        - [1, {n: 1500000}]
+        - [1, {n: -3600000000}]
+
+  expected_exact_output:
+    - out:
+        - [1, {iv: "PT0S"}]
+        - [1, {iv: "PT1S"}]
+        - [1, {iv: "P1DT1H1M1S"}]
+        - [1, {iv: "PT1.5S"}]
+        - [1, {iv: "-PT1H"}]
+
+- name: and read back from one
+  source: |
+    t := input("t")
+    t :: zset(record(s: string))
+
+    out := map(t, function((r) -> record(s: r.s, iv: cast(r.s, optional(interval)))))
+
+  input:
+    - t:
+        - [1, {s: "P1DT1H1M1S"}]
+        - [1, {s: "PT1.5S"}]
+        - [1, {s: "-PT1H"}]
+        - [1, {s: "P1M"}]
+        - [1, {s: "an hour"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {s: "P1DT1H1M1S", iv: "P1DT1H1M1S"}]
+        - [1, {s: "PT1.5S", iv: "PT1.5S"}]
+        - [1, {s: "-PT1H", iv: "-PT1H"}]
+        # No month designator: `P1M` is a span this type cannot hold.
+        - [1, {s: "P1M", iv: null}]
+        - [1, {s: "an hour", iv: null}]
+
+# Every unit below a month converts exactly, so two spellings of one span are
+# one value.
+- name: a day and twenty-four hours are one interval
+  source: |
+    t := input("t")
+    t :: zset(record(a: interval, b: interval))
+
+    out := map(t, function((r) -> record(same: r.a == r.b)))
+
+  input:
+    - t:
+        - [1, {a: "P1D", b: "PT24H"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {same: true}]
+
+- name: the whole units of a span
+  source: |
+    t := input("t")
+    t :: zset(record(iv: interval))
+
+    out := map(t, function((r) -> record(
+        d: total_days(r.iv), h: total_hours(r.iv), m: total_minutes(r.iv),
+        s: total_seconds(r.iv), us: total_microseconds(r.iv))))
+
+  input:
+    - t:
+        - [1, {iv: "P1DT1H"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {d: 1, h: 25, m: 1500, s: 90000, us: 90000000000}]
+
+# -- temporal arithmetic ------------------------------------------------------
+
+- name: a difference between two of a kind
+  source: |
+    t := input("t")
+    t :: zset(record(d1: date, d2: date, t1: time, t2: time, s1: timestamp, s2: timestamp))
+
+    out := map(t, function((r) -> record(
+        days: r.d1 - r.d2, times: r.t1 - r.t2, stamps: r.s1 - r.s2)))
+
+  input:
+    - t:
+        - [1, {d1: "2024-03-01", d2: "2024-02-01",
+               t1: "14:30:00", t2: "14:00:00",
+               s1: "2024-01-01 00:00:01", s2: "2024-01-01 00:00:00"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {days: "P29D", times: "PT30M", stamps: "PT1S"}]
+
+- name: an instant shifts exactly, in either order
+  source: |
+    t := input("t")
+    t :: zset(record(ts: timestamp, iv: interval))
+
+    out := map(t, function((r) -> record(
+        later: r.ts + r.iv, earlier: r.ts - r.iv, commuted: r.iv + r.ts)))
+
+  input:
+    - t:
+        - [1, {ts: "2024-01-15 12:00:00", iv: "PT90M"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {later: "2024-01-15 13:30:00", earlier: "2024-01-15 10:30:00",
+               commuted: "2024-01-15 13:30:00"}]
+
+- name: a time wraps at midnight
+  source: |
+    t := input("t")
+    t :: zset(record(tm: time, iv: interval))
+
+    out := map(t, function((r) -> record(later: r.tm + r.iv)))
+
+  input:
+    - t:
+        - [1, {tm: "23:30:00", iv: "PT1H"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {later: "00:30:00"}]
+
+# A date has no sub-day resolution, so a shift truncates toward zero. Total, and
+# the one lossy rule here — pinned in both directions.
+- name: a date shifts by whole days, truncating
+  source: |
+    t := input("t")
+    t :: zset(record(d: date, iv: interval))
+
+    out := map(t, function((r) -> record(iv: r.iv, later: r.d + r.iv)))
+
+  input:
+    - t:
+        - [1, {d: "2024-01-15", iv: "P1D"}]
+        - [1, {d: "2024-01-15", iv: "PT30H"}]
+        - [1, {d: "2024-01-15", iv: "PT1H"}]
+        - [1, {d: "2024-01-15", iv: "-PT1H"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {iv: "P1D", later: "2024-01-16"}]
+        # `PT30H` comes back canonical: one value, one spelling.
+        - [1, {iv: "P1DT6H", later: "2024-01-16"}]
+        - [1, {iv: "PT1H", later: "2024-01-15"}]
+        - [1, {iv: "-PT1H", later: "2024-01-15"}]
+
+- name: intervals add and subtract
+  source: |
+    t := input("t")
+    t :: zset(record(a: interval, b: interval))
+
+    out := map(t, function((r) -> record(sum: r.a + r.b, diff: r.a - r.b)))
+
+  input:
+    - t:
+        - [1, {a: "PT2H", b: "PT30M"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {sum: "PT2H30M", diff: "PT1H30M"}]
+
+- name: an interval orders, so min folds it
+  source: |
+    t := input("t")
+    t :: zset(record(k: i64, iv: interval))
+
+    by_k := map_index(t, function((r) -> record(key: r.k, value: r)))
+    shortest := aggregate(by_k, min, function((v) -> v.iv))
+
+  input:
+    - t:
+        - [1, {k: 1, iv: "PT2H"}]
+        - [1, {k: 1, iv: "PT30M"}]
+
+  expected_exact_output:
+    - shortest:
+        - [1, 1, "PT30M"]

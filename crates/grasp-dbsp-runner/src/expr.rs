@@ -104,6 +104,17 @@ pub enum Builtin {
     Minute,
     Second,
     Microsecond,
+    /// `make_interval(micros)` — a span of time. Total: every integer is one.
+    MakeInterval,
+    /// `total_days(iv)` … `total_microseconds(iv)` — the span in whole units of
+    /// one size. Named apart from the components because they answer a
+    /// different question: `minute(14:30)` is 30, `total_minutes(<100 hours>)`
+    /// is 6000.
+    TotalDays,
+    TotalHours,
+    TotalMinutes,
+    TotalSeconds,
+    TotalMicroseconds,
 }
 
 impl Builtin {
@@ -138,6 +149,12 @@ impl Builtin {
             "minute" => Builtin::Minute,
             "second" => Builtin::Second,
             "microsecond" => Builtin::Microsecond,
+            "make_interval" => Builtin::MakeInterval,
+            "total_days" => Builtin::TotalDays,
+            "total_hours" => Builtin::TotalHours,
+            "total_minutes" => Builtin::TotalMinutes,
+            "total_seconds" => Builtin::TotalSeconds,
+            "total_microseconds" => Builtin::TotalMicroseconds,
             _ => return None,
         })
     }
@@ -173,6 +190,12 @@ impl Builtin {
         "minute",
         "second",
         "microsecond",
+        "make_interval",
+        "total_days",
+        "total_hours",
+        "total_minutes",
+        "total_seconds",
+        "total_microseconds",
     ];
 
     /// Number of arguments, or `None` if variadic.
@@ -495,7 +518,10 @@ fn eval_binary(op: BinOp, l: &TypedExpr, r: &TypedExpr, args: &[&DynValue]) -> D
         // The type checker rejects arithmetic on an optional operand, so this
         // is defensive rather than a propagation rule.
         _ if lhs.is_none() || rhs.is_none() => DynValue::None,
-        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => arith(op, &lhs, &rhs),
+        BinOp::Add | BinOp::Sub => {
+            temporal(op, &lhs, &rhs).unwrap_or_else(|| arith(op, &lhs, &rhs))
+        }
+        BinOp::Mul | BinOp::Div | BinOp::Rem => arith(op, &lhs, &rhs),
         BinOp::And | BinOp::Or => unreachable!("handled above"),
     }
 }
@@ -536,8 +562,55 @@ fn compare(l: &DynValue, r: &DynValue) -> Option<std::cmp::Ordering> {
         (Date(a), Date(b)) => Some(a.cmp(b)),
         (Time(a), Time(b)) => Some(a.cmp(b)),
         (Timestamp(a), Timestamp(b)) => Some(a.cmp(b)),
+        // One integer, so the order is the span it names.
+        (Interval(a), Interval(b)) => Some(a.cmp(b)),
         _ => Option::None,
     }
+}
+
+/// `+` and `-` over temporal values, or `None` where the pair is not one of the
+/// shapes and ordinary arithmetic should have it.
+///
+/// **Every one is total.** A `date` has no sub-day resolution, so an interval
+/// applied to one truncates toward zero: a shift of 30 hours moves it a day and
+/// a shift of one hour leaves it alone. A `time` wraps at midnight.
+fn temporal(op: BinOp, l: &DynValue, r: &DynValue) -> Option<DynValue> {
+    use DynValue::*;
+    use feldera_sqllib as sql;
+    let sub = op == BinOp::Sub;
+    // Shifting reads as well in either order, and the operand that is not the
+    // interval is the one whose type comes back. Subtraction does not commute:
+    // a moment less a duration is a moment, a duration less a moment is
+    // nothing, which the checker refuses before this runs.
+    let (subject, iv) = match (l, r) {
+        (_, Interval(iv)) => (l, *iv),
+        (Interval(iv), _) if !sub => (r, *iv),
+        _ => (l, sql::ShortInterval::from_microseconds(0)),
+    };
+    let signed = sql::ShortInterval::from_microseconds(if sub {
+        iv.microseconds().wrapping_neg()
+    } else {
+        iv.microseconds()
+    });
+    Some(match (l, r) {
+        (Date(a), Date(b)) if sub => Interval(sql::minus_ShortInterval_Date_Date__(*a, *b)),
+        (Time(a), Time(b)) if sub => Interval(sql::minus_ShortInterval_Time_Time__(*a, *b)),
+        (Timestamp(a), Timestamp(b)) if sub => {
+            Interval(sql::minus_ShortInterval_Timestamp_Timestamp__(*a, *b))
+        }
+        (Interval(a), Interval(b)) => Interval(sql::ShortInterval::from_microseconds(if sub {
+            a.microseconds().wrapping_sub(b.microseconds())
+        } else {
+            a.microseconds().wrapping_add(b.microseconds())
+        })),
+        _ => match subject {
+            Timestamp(t) => Timestamp(sql::plus_Timestamp_Timestamp_ShortInterval__(*t, signed)),
+            // Truncating toward zero, which is `plus_Date_Date_ShortInterval__`.
+            Date(d) => Date(sql::plus_Date_Date_ShortInterval__(*d, signed)),
+            Time(t) => Time(sql::plus_Time_Time_ShortInterval__(*t, signed)),
+            _ => return Option::None,
+        },
+    })
 }
 
 fn arith(op: BinOp, l: &DynValue, r: &DynValue) -> DynValue {
@@ -613,7 +686,7 @@ fn convert(conv: &Conv, v: DynValue) -> DynValue {
             _ => None,
         },
         (Conv::StringToTemporal(t), String(s)) => t.parse_dict_key(s.as_str()).unwrap_or(None),
-        (Conv::TemporalToString, v @ (Date(_) | Time(_) | Timestamp(_))) => String(
+        (Conv::TemporalToString, v @ (Date(_) | Time(_) | Timestamp(_) | Interval(_))) => String(
             v.dict_key_string()
                 .expect("a temporal value has a written form"),
         ),
@@ -975,6 +1048,26 @@ fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValu
                 _ => feldera_sqllib::extract_microsecond_Time(time) % 1_000_000,
             })
         }
+        Builtin::MakeInterval => match &vals[0] {
+            DynValue::I64(n) => {
+                DynValue::Interval(feldera_sqllib::ShortInterval::from_microseconds(*n))
+            }
+            _ => DynValue::None,
+        },
+        Builtin::TotalDays
+        | Builtin::TotalHours
+        | Builtin::TotalMinutes
+        | Builtin::TotalSeconds
+        | Builtin::TotalMicroseconds => match &vals[0] {
+            DynValue::Interval(iv) => DynValue::I64(match f {
+                Builtin::TotalDays => iv.days(),
+                Builtin::TotalHours => iv.hours(),
+                Builtin::TotalMinutes => iv.minutes(),
+                Builtin::TotalSeconds => iv.seconds(),
+                _ => iv.microseconds(),
+            }),
+            _ => DynValue::None,
+        },
         Builtin::Concat => match (as_str(&vals[0]), as_str(&vals[1])) {
             (Some(a), Some(b)) => DynValue::str(&format!("{a}{b}")),
             _ => DynValue::None,

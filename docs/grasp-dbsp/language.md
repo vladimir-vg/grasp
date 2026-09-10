@@ -85,14 +85,15 @@ value_type := scalar | record_type | array_type | dict_type | "json"
 
 scalar      := bool | i64 | f64 | string | temporal
                  | optional "(" value_type ")"
-temporal    := date | time | timestamp
+temporal    := date | time | timestamp | interval
 
 record_type := "record" "(" [field ("," field)*] ")"
 field       := FIELD_NAME ":" value_type
 
 array_type  := "array" "(" value_type ")"
 dict_type   := "dict" "(" key_type "," value_type ")"
-key_type    := "bool" | "i64" | "f64" | "string" | "date" | "time" | "timestamp"
+key_type    := "bool" | "i64" | "f64" | "string"
+                 | "date" | "time" | "timestamp" | "interval"
 ```
 
 That is the whole vocabulary. It is deliberately narrow: the other integer
@@ -123,8 +124,36 @@ way from the others. All three are **microsecond precision**: `time` counts
 nanoseconds underneath, and a finer fraction is truncated where text enters
 rather than kept and then lost on the way out.
 
-There is no arithmetic on them. Difference and offset need an `interval`, which
-is future work — comparison and the builtins are what there is.
+**`interval` is a span of time, in microseconds.** One integer, because with no
+timezone a day is exactly 86400 seconds and every unit below a month converts
+into microseconds exactly. Months are the one quantity that does not, and they
+are **not in this type**: a `month_interval` beside it is future work, and
+`1 month = 30 days` is not a rule invented to avoid needing one.
+
+It writes as an ISO 8601 duration — `P1DT1H1M1.5S`, `-PT1H`, `PT0S` — with no
+year or month designator, so `P1M` is text this type cannot read. The form is
+**canonical**, so `PT30H` reads back as `P1DT6H`: one value, one spelling.
+
+`+` and `-` work on all four, and every case is total:
+
+| | result | |
+|---|---|---|
+| `date - date`, `time - time`, `timestamp - timestamp` | `interval` | how far apart |
+| `timestamp ± interval` | `timestamp` | exact |
+| `time ± interval` | `time` | wraps at midnight |
+| `date ± interval` | `date` | **truncates to whole days** |
+| `interval ± interval` | `interval` | exact |
+
+`interval + x` reads as well as `x + interval` and means the same thing.
+Subtraction does not commute: a moment less a duration is a moment, and a
+duration less a moment is nothing, so only the first order typechecks.
+
+A `date` has no sub-day resolution, so a shift truncates toward zero — 30 hours
+moves it a day, one hour leaves it alone, and so does minus one hour. That is
+the one lossy rule here, and it is what keeps every case total. Two consequences
+worth knowing: it is **not invertible** — `(d + iv) - iv` is `d` only for a whole
+number of days — and **not associative over addition**, since two shifts of
+twelve hours move nothing where one of a day moves a day.
 
 `record(f: T, …)` is a named-field record. Field names are bare identifiers;
 quote a name that is not a valid identifier (`record("total count": i64)`).
@@ -605,8 +634,10 @@ above and with each other.
 | `timestamp_from_micros` | `i64 → timestamp` | microseconds since the epoch |
 | `epoch_micros` | `timestamp → i64` | the inverse |
 | `epoch_days` | `date → i64` | days since the epoch |
-| `year` / `month` / `day` | `date → i64` | a date's components |
-| `hour` / `minute` / `second` / `microsecond` | `time → i64` | a time's components |
+| `year` / `month` / `day` | `date \| timestamp → i64` | a date's components |
+| `hour` / `minute` / `second` / `microsecond` | `time \| timestamp → i64` | a time's components |
+| `make_interval` | `i64 → interval` | microseconds |
+| `total_days` … `total_microseconds` | `interval → i64` | the span in whole units of one size |
 
 Every builtin but `coalesce` and `slice` rejects an `optional` argument, for the
 reason under [Absence](#absence). Those two inspect absence rather than being
@@ -651,12 +682,15 @@ semantics it copies.
 integers is a date and not every hour is an hour — the shape `/` already has.
 `make_timestamp` is not: every date and time-of-day is one instant.
 
-The components read the one type that holds them, so a component of a
-`timestamp` goes through a conversion — `year(cast(ts, date))`, `hour(cast(ts,
-time))`. One name over one type rather than a family whose meaning depends on
-which it was handed. `microsecond` is the **sub-second** part, unlike SQL's
-`EXTRACT(MICROSECOND)` which folds the seconds in, so that it is the inverse of
-the argument `make_time` takes and the two round-trip.
+The components read **either type that holds them** — `year` a `date` or a
+`timestamp`, `hour` a `time` or one — the way `length` reads a string, an array
+or a dict, so an instant needs no conversion written around it. `microsecond` is
+the **sub-second** part, unlike SQL's `EXTRACT(MICROSECOND)` which folds the
+seconds in, so that it is the inverse of the argument `make_time` takes and the
+two round-trip.
+
+The `total_*` readers are named apart from the components because they answer a
+different question: `minute(14:30)` is 30, and `total_minutes(PT100H)` is 6000.
 
 Reserving `year` through `microsecond` takes six ordinary words out of the space
 of node names. That is the cost of having no namespaces here, and it is paid
