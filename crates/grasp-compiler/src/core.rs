@@ -433,9 +433,12 @@ pub enum Builtin {
     TemporalMakeTimestamp,
     TemporalFromMicros,
 
-    /// The components, each over the one type that holds it. A component of a
-    /// timestamp is `temporal:year(temporal:date(ts))` — one way to do each
-    /// thing.
+    /// The components, each over **either type that holds it**: `years` a
+    /// `date` or a `timestamp`, `hours` a `time` or one. Plural, because the
+    /// answer is a count of them.
+    ///
+    /// The target's are polymorphic the way `length` is over string, array and
+    /// dict, so this is one variant per component rather than a family.
     TemporalYear,
     TemporalMonth,
     TemporalDay,
@@ -495,13 +498,13 @@ impl Builtin {
             "temporal:date" => Builtin::TemporalDate,
             "temporal:time" => Builtin::TemporalTime,
             "temporal:timestamp" => Builtin::TemporalTimestamp,
-            "temporal:year" => Builtin::TemporalYear,
-            "temporal:month" => Builtin::TemporalMonth,
-            "temporal:day" => Builtin::TemporalDay,
-            "temporal:hour" => Builtin::TemporalHour,
-            "temporal:minute" => Builtin::TemporalMinute,
-            "temporal:second" => Builtin::TemporalSecond,
-            "temporal:microsecond" => Builtin::TemporalMicrosecond,
+            "temporal:years" => Builtin::TemporalYear,
+            "temporal:months" => Builtin::TemporalMonth,
+            "temporal:days" => Builtin::TemporalDay,
+            "temporal:hours" => Builtin::TemporalHour,
+            "temporal:minutes" => Builtin::TemporalMinute,
+            "temporal:seconds" => Builtin::TemporalSecond,
+            "temporal:microseconds" => Builtin::TemporalMicrosecond,
             "temporal:epoch_micros" => Builtin::TemporalEpochMicros,
             "temporal:days_between" => Builtin::TemporalDaysBetween,
             "temporal:micros_between" => Builtin::TemporalMicrosBetween,
@@ -924,13 +927,13 @@ impl Builtin {
             | Builtin::TemporalParseTimestamp
             | Builtin::TemporalMakeTimestamp
             | Builtin::TemporalFromMicros => "temporal:timestamp",
-            Builtin::TemporalYear => "temporal:year",
-            Builtin::TemporalMonth => "temporal:month",
-            Builtin::TemporalDay => "temporal:day",
-            Builtin::TemporalHour => "temporal:hour",
-            Builtin::TemporalMinute => "temporal:minute",
-            Builtin::TemporalSecond => "temporal:second",
-            Builtin::TemporalMicrosecond => "temporal:microsecond",
+            Builtin::TemporalYear => "temporal:years",
+            Builtin::TemporalMonth => "temporal:months",
+            Builtin::TemporalDay => "temporal:days",
+            Builtin::TemporalHour => "temporal:hours",
+            Builtin::TemporalMinute => "temporal:minutes",
+            Builtin::TemporalSecond => "temporal:seconds",
+            Builtin::TemporalMicrosecond => "temporal:microseconds",
             Builtin::TemporalEpochMicros => "temporal:epoch_micros",
             Builtin::TemporalDaysBetween => "temporal:days_between",
             Builtin::TemporalMicrosBetween => "temporal:micros_between",

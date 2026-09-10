@@ -139,6 +139,11 @@ fn the_library_is_stdlib_grasp() {
         };
         let mut shapes: Vec<Shape> = spec.variants.iter().flat_map(|v| v.shapes()).collect();
         shapes.sort();
+        // A **set**: two variants of one shape are an overload, and which side
+        // spells the alternatives is a matter of how each says "either type".
+        // The file writes two lines; the compiler may write one signature whose
+        // check accepts both, as the polymorphic component accessors do.
+        shapes.dedup();
         declared.insert(spec.name.clone(), shapes);
     }
 
@@ -174,6 +179,7 @@ fn the_library_is_stdlib_grasp() {
         // file writes out.
         let mut mine: Vec<Shape> = b.signatures().iter().flat_map(|s| s.shapes()).collect();
         mine.sort();
+        mine.dedup();
         assert_eq!(
             shapes, &mine,
             "`{name}` is declared with different shapes than the compiler accepts, \

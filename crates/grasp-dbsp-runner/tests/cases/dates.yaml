@@ -284,14 +284,14 @@
     - out:
         - [1, {y: 2024, mo: 2, dy: 29, h: 14, mi: 30, s: 5, us: 123456}]
 
-- name: a component of an instant goes through its date
+# A component reads either type that holds it, the way `length` reads a string,
+# an array or a dict — so an instant is taken directly.
+- name: a component of an instant needs no conversion
   source: |
     t := input("t")
     t :: zset(record(ts: timestamp))
 
-    out := map(t, function((r) -> record(
-        y: year(cast(r.ts, date)),
-        h: hour(cast(r.ts, time)))))
+    out := map(t, function((r) -> record(y: year(r.ts), h: hour(r.ts))))
 
   input:
     - t:
@@ -300,3 +300,14 @@
   expected_exact_output:
     - out:
         - [1, {y: 2024, h: 14}]
+
+- name: and reads nothing that does not hold it
+  source: |
+    t := input("t")
+    t :: zset(record(d: date))
+
+    out := map(t, function((r) -> record(h: hour(r.d))))
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+      message: "`hour` reads `time` or `timestamp`, found `date`"

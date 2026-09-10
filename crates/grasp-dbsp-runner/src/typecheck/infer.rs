@@ -1343,19 +1343,24 @@ fn infer_builtin(
         | Builtin::Minute
         | Builtin::Second
         | Builtin::Microsecond => {
-            let want = match b {
-                Builtin::EpochMicros => TypeDesc::Timestamp,
-                Builtin::EpochDays | Builtin::Year | Builtin::Month | Builtin::Day => {
-                    TypeDesc::Date
+            let want: &[TypeDesc] = match b {
+                Builtin::EpochMicros => &[TypeDesc::Timestamp],
+                Builtin::EpochDays => &[TypeDesc::Date],
+                Builtin::Year | Builtin::Month | Builtin::Day => {
+                    &[TypeDesc::Date, TypeDesc::Timestamp]
                 }
-                _ => TypeDesc::Time,
+                _ => &[TypeDesc::Time, TypeDesc::Timestamp],
             };
             definite(&args[0], name, span)?;
             let t = args[0].settle().expect("definite() rejected the none case");
-            if t.non_null() != &want {
-                return err(span, format!("`{name}` reads a `{want}`, found `{t}`"));
-            }
-            pin(&mut exprs[0], &want);
+            let Some(matched) = want.iter().find(|w| t.non_null() == *w) else {
+                let shown: Vec<String> = want.iter().map(|w| format!("`{w}`")).collect();
+                return err(
+                    span,
+                    format!("`{name}` reads {}, found `{t}`", shown.join(" or ")),
+                );
+            };
+            pin(&mut exprs[0], matched);
             Ty::Known(TypeDesc::I64)
         }
 

@@ -238,29 +238,36 @@ temporal:timestamp :: function
     (date: date, time: time) -> timestamp
     (epoch_microseconds: i64) -> timestamp
 
-# The components, each over the one type that holds it. A component of an
-# instant is `temporal:year(temporal:date(ts))` — one way to do each thing.
+# The components, each over **either type that holds it** — so an instant needs
+# no conversion written around it. Plural, because the answer is a count of them.
 
-temporal:year :: function
+temporal:years :: function
     (date) -> i64
+    (timestamp) -> i64
 
-temporal:month :: function
+temporal:months :: function
     (date) -> i64
+    (timestamp) -> i64
 
-temporal:day :: function
+temporal:days :: function
     (date) -> i64
+    (timestamp) -> i64
 
-temporal:hour :: function
+temporal:hours :: function
     (time) -> i64
+    (timestamp) -> i64
 
-temporal:minute :: function
+temporal:minutes :: function
     (time) -> i64
+    (timestamp) -> i64
 
-temporal:second :: function
+temporal:seconds :: function
     (time) -> i64
+    (timestamp) -> i64
 
-temporal:microsecond :: function
+temporal:microseconds :: function
     (time) -> i64
+    (timestamp) -> i64
 
 temporal:epoch_micros :: function
     (timestamp) -> i64

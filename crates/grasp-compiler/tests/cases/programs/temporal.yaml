@@ -114,7 +114,7 @@
 
     out(y: y) <-
         src(ts: ts)
-        y := temporal:year(temporal:date(ts))
+        y := temporal:years(ts)
 
   input:
     - src:
@@ -217,6 +217,43 @@
 
 # -- components and differences -----------------------------------------------
 
+# A component reads either type that holds it, so an instant needs no conversion
+# written around it — the same shape `length` has over string, array and dict.
+- name: an instant yields its components directly
+  source: |
+    src :: relation(ts: timestamp)
+    src(ts:) <- input
+
+    out(y: y, mo: mo, dy: dy, h: h, mi: mi, s: s) <-
+        src(ts: ts)
+        y := temporal:years(ts)
+        mo := temporal:months(ts)
+        dy := temporal:days(ts)
+        h := temporal:hours(ts)
+        mi := temporal:minutes(ts)
+        s := temporal:seconds(ts)
+
+  input:
+    - src:
+        - [1, {ts: "2024-02-29 14:30:05"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {y: 2024, mo: 2, dy: 29, h: 14, mi: 30, s: 5}]
+
+- name: but not a type that does not hold the component
+  source: |
+    src :: relation(d: date)
+    src(d:) <- input
+
+    out(v: v) <-
+        src(d: d)
+        v := temporal:hours(d)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "no version of `temporal:hours` takes `date`"
+
 - name: every component of a date and a time
   source: |
     src :: relation(d: date, t: time)
@@ -224,13 +261,13 @@
 
     out(y: y, mo: mo, dy: dy, h: h, mi: mi, s: s, us: us) <-
         src(d: d, t: t)
-        y := temporal:year(d)
-        mo := temporal:month(d)
-        dy := temporal:day(d)
-        h := temporal:hour(t)
-        mi := temporal:minute(t)
-        s := temporal:second(t)
-        us := temporal:microsecond(t)
+        y := temporal:years(d)
+        mo := temporal:months(d)
+        dy := temporal:days(d)
+        h := temporal:hours(t)
+        mi := temporal:minutes(t)
+        s := temporal:seconds(t)
+        us := temporal:microseconds(t)
 
   input:
     - src:

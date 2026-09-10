@@ -625,7 +625,14 @@ lets `array:slice` be eight variants over `start:` `stop:` `step:` rather than
 one signature with a defaulting rule, and it settles every call in the library
 but two.
 
-**Where two variants share a shape, the argument's type decides.**
+A name may also take **more than one type in one signature**, where the answer
+is the same thing either way: `temporal:hours` reads a `time` or a `timestamp`,
+and gives the hour of each. That is not an overload — there is nothing to choose
+between — it is one function with a wider argument, and the distinction matters
+because only the first kind needs the type to *pick* anything.
+
+**Where two variants share a shape and mean different things, the argument's
+type decides.**
 `temporal:date(s)` parses a string and `temporal:date(ts)` extracts from an
 instant: both are one argument by position, so the shape cannot choose. Nothing
 else in the library needs this, and the reason is the namespacing above — two

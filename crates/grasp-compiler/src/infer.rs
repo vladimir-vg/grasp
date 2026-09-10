@@ -1645,13 +1645,29 @@ impl Cx {
             }
             B::TemporalFromMicros => one(args, &arity, Ty::I64, Ty::Timestamp, &wrong),
 
-            // Each reads the one type that holds the component, so a component
-            // of an instant is `temporal:year(temporal:date(ts))`.
-            B::TemporalYear | B::TemporalMonth | B::TemporalDay => {
-                one(args, &arity, Ty::Date, Ty::I64, &wrong)
-            }
-            B::TemporalHour | B::TemporalMinute | B::TemporalSecond | B::TemporalMicrosecond => {
-                one(args, &arity, Ty::Time, Ty::I64, &wrong)
+            // Each reads **either type that holds it**, so `temporal:years(ts)`
+            // needs no conversion written around it. The target's builtin is
+            // polymorphic the same way, which is why this is one variant per
+            // component rather than a family.
+            B::TemporalYear
+            | B::TemporalMonth
+            | B::TemporalDay
+            | B::TemporalHour
+            | B::TemporalMinute
+            | B::TemporalSecond
+            | B::TemporalMicrosecond => {
+                if let Some(d) = arity(1) {
+                    return (Ty::Error, Some(d));
+                }
+                let whole = match callee {
+                    B::TemporalYear | B::TemporalMonth | B::TemporalDay => Ty::Date,
+                    _ => Ty::Time,
+                };
+                match &args[0] {
+                    t if *t == whole || *t == Ty::Timestamp => (Ty::I64, None),
+                    Ty::Unknown => (Ty::Unknown, None),
+                    _ => wrong(),
+                }
             }
             B::TemporalEpochMicros => one(args, &arity, Ty::Timestamp, Ty::I64, &wrong),
 

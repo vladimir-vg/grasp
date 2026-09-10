@@ -941,28 +941,39 @@ fn eval_call(f: Builtin, call_args: &[TypedExpr], args: &[&DynValue]) -> DynValu
             DynValue::Date(d) => DynValue::I64(d.days() as i64),
             _ => DynValue::None,
         },
-        Builtin::Year | Builtin::Month | Builtin::Day => match &vals[0] {
-            DynValue::Date(d) => DynValue::I64(match f {
-                Builtin::Year => feldera_sqllib::extract_year_Date(*d),
-                Builtin::Month => feldera_sqllib::extract_month_Date(*d),
-                _ => feldera_sqllib::extract_day_Date(*d),
-            }),
-            _ => DynValue::None,
-        },
+        // Each reads either type that holds the component, so a `timestamp` is
+        // taken directly rather than through a written conversion.
+        Builtin::Year | Builtin::Month | Builtin::Day => {
+            let date = match &vals[0] {
+                DynValue::Date(d) => *d,
+                DynValue::Timestamp(t) => t.get_date(),
+                _ => return DynValue::None,
+            };
+            DynValue::I64(match f {
+                Builtin::Year => feldera_sqllib::extract_year_Date(date),
+                Builtin::Month => feldera_sqllib::extract_month_Date(date),
+                _ => feldera_sqllib::extract_day_Date(date),
+            })
+        }
         Builtin::Hour | Builtin::Minute | Builtin::Second | Builtin::Microsecond => {
-            match &vals[0] {
-                DynValue::Time(t) => DynValue::I64(match f {
-                    Builtin::Hour => feldera_sqllib::extract_hour_Time(*t),
-                    Builtin::Minute => feldera_sqllib::extract_minute_Time(*t),
-                    Builtin::Second => feldera_sqllib::extract_second_Time(*t),
-                    // SQL's `EXTRACT(MICROSECOND)` folds the seconds in, and
-                    // returns 5_123_456 for `…:05.123456`. Here it is the
-                    // sub-second part, so that `microsecond` is the inverse of
-                    // the argument `make_time` takes and the two round-trip.
-                    _ => feldera_sqllib::extract_microsecond_Time(*t) % 1_000_000,
-                }),
-                _ => DynValue::None,
-            }
+            let time = match &vals[0] {
+                DynValue::Time(t) => *t,
+                DynValue::Timestamp(t) => match feldera_sqllib::cast_to_Time_Timestamp(*t) {
+                    Ok(time) => time,
+                    Err(_) => return DynValue::None,
+                },
+                _ => return DynValue::None,
+            };
+            DynValue::I64(match f {
+                Builtin::Hour => feldera_sqllib::extract_hour_Time(time),
+                Builtin::Minute => feldera_sqllib::extract_minute_Time(time),
+                Builtin::Second => feldera_sqllib::extract_second_Time(time),
+                // SQL's `EXTRACT(MICROSECOND)` folds the seconds in, and
+                // returns 5_123_456 for `…:05.123456`. Here it is the
+                // sub-second part, so that `microsecond` is the inverse of
+                // the argument `make_time` takes and the two round-trip.
+                _ => feldera_sqllib::extract_microsecond_Time(time) % 1_000_000,
+            })
         }
         Builtin::Concat => match (as_str(&vals[0]), as_str(&vals[1])) {
             (Some(a), Some(b)) => DynValue::str(&format!("{a}{b}")),

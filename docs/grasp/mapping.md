@@ -244,6 +244,7 @@ rather than another call:
 | `record:get(r, field: "f")` | `r.f` |
 | `temporal:date(s)` | `cast(s, optional(date))`, then the narrowing |
 | `temporal:date(ts)` | `cast(ts, date)` |
+| `temporal:hours(x)` | `hour(x)`, for a `time` or a `timestamp` alike |
 | `temporal:days_between(a, b)` | `(epoch_days(a) - epoch_days(b))` |
 | `dict:has(d, key: k)` | `(get(d, k) != NONE)` |
 | `dict:values(d)` | `map_array(dict_entries(d), function((e) -> e.value))` |
