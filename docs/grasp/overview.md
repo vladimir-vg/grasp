@@ -97,9 +97,9 @@ design comes from. What is missing is missing on purpose.
 - **The rest of the type vocabulary.** `dynamic` — the top type, and the one
   most likely to be wanted first, since it is what an untyped subset of the
   language would be built on. Then the narrower integers and `f32`, the
-  arbitrary-precision `integer` and `numeric`, `bytes` and `bits`, string
-  encodings, and general `enum(...)` beyond the `boolean` case. Each needs a
-  grasp-dbsp value type underneath before grasp can offer it.
+  arbitrary-precision `integer` and `numeric`, string encodings, and general
+  `enum(...)` beyond the `boolean` case. Each needs a grasp-dbsp value type
+  underneath before grasp can offer it.
 
   The temporal family is **complete**: `date`, `time`, `timestamp` and
   `interval`. Neither timezones nor months are on this list, and both are
@@ -108,9 +108,25 @@ design comes from. What is missing is missing on purpose.
   `epoch`; scaling a span, `iv * 3`; and unary `-iv`, which a negative component
   in the constructor covers.
 
-  The **bitwise and shift operators** arrive with `bits` and are part of that
-  entry rather than a separate one: they have no meaning without the type, and
-  the type is not much use without them.
+- **Bitwise and shift operators.** `&`, `|`, `^`, `<<`, `>>` on `i64` — masks
+  and flags, which is the common case and needs no binary type at all. `bytes`
+  already has `bytes:and`, `bytes:or` and `bytes:xor`, so this entry is about
+  integers and nothing else.
+
+  It was previously written as arriving with a `bits` type, on the grounds that
+  the operators "have no meaning without" one. Both halves were wrong, and the
+  coupling would have made either wait for the other.
+
+- **`bits`, binary at bit granularity.** No target type helps: it would be bytes
+  plus a bit length, with its own ordering, JSON form, and every operation
+  written from scratch — shifts and masks that do not align to a byte boundary,
+  and a concatenation that renormalises. Erlang has bitstrings natively, which
+  is why the design this is ported from has the type; nothing here does.
+
+  A fixed-size **`bytes(N)`** is not planned either, and for a sharper reason:
+  it would be the first type with a *value* parameter, and a typespec cannot say
+  "sized or unsized" — so the whole `bytes:` library would stop applying to one.
+  See [`types.md`](types.md#value-types).
 
 - **Input rules.** Today `<- input` only declares that a relation comes from
   outside. The full mechanism in the Erlang implementation is much larger: the

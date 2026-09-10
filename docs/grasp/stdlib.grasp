@@ -209,6 +209,50 @@ dict:without :: function
 dict:merge :: function
     (dict(K, V), dict(K, V)) -> dict(K, V)
 
+# -- bytes --------------------------------------------------------------------
+#
+# Binary data, any length. A scalar: it orders lexicographically, so `min` folds
+# it and it keys a dict. There is no bit-granular form and no fixed-size one.
+#
+# The encoding is in the **name**, never in a conversion, so which one a program
+# means is written at every call. Only the readings that can fail are partial:
+# every payload has a base64 and a hex spelling, but not every one is text, and
+# not every string is base64.
+
+bytes:length :: function
+    (bytes) -> i64
+
+bytes:concat :: function
+    (bytes, bytes) -> bytes
+
+# Bytewise, and partial: two payloads of different lengths have no answer.
+bytes:and :: function
+    (bytes, bytes) -> bytes
+
+bytes:or :: function
+    (bytes, bytes) -> bytes
+
+bytes:xor :: function
+    (bytes, bytes) -> bytes
+
+bytes:to_base64 :: function
+    (bytes) -> string
+
+bytes:from_base64 :: function
+    (string) -> bytes
+
+bytes:to_hex :: function
+    (bytes) -> string
+
+bytes:from_hex :: function
+    (string) -> bytes
+
+bytes:to_string :: function
+    (bytes) -> string
+
+bytes:from_string :: function
+    (string) -> bytes
+
 # -- temporal -----------------------------------------------------------------
 #
 # `date`, `time`, `timestamp` and `interval`. A timestamp is always UTC — there

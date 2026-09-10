@@ -1,0 +1,207 @@
+# `bytes` — binary data, any length.
+#
+# A scalar: it orders lexicographically, so `min` folds it and it keys a dict.
+# There is no bit-granular type beside it and no fixed-size one — a `bytes` is a
+# `bytes`, which is what keeps the whole `bytes:` library applicable to every
+# value of it.
+#
+# The encoding is in the **name**, never in a conversion, so which one a program
+# means is written at every call.
+
+- name: bytes carry through a rule
+  source: |
+    src :: relation(b: bytes)
+    src(b:) <- input
+
+    out(n: n, text: t) <-
+        src(b: b)
+        n := bytes:length(b)
+        t := bytes:to_string(b)
+
+  input:
+    - src:
+        - [1, {b: {base64: "SGVsbG8="}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {n: 5, text: "Hello"}]
+
+- name: three encodings, and back
+  source: |
+    src :: relation(s: string)
+    src(s:) <- input
+
+    out(b64: a, hex: h, back: r) <-
+        src(s: s)
+        b := bytes:from_string(s)
+        a := bytes:to_base64(b)
+        h := bytes:to_hex(b)
+        r := bytes:to_string(bytes:from_base64(a))
+
+  input:
+    - src:
+        - [1, {s: "Hello"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {b64: "SGVsbG8=", hex: "48656c6c6f", back: "Hello"}]
+
+# Partial, so a string that is not a reading derives no row — the rule
+# `dict:get`, `/`, parsing and `make_date` all follow.
+- name: a string that is not base64 derives no row
+  source: |
+    src :: relation(s: string)
+    src(s:) <- input
+
+    out(v: v) <-
+        src(s: s)
+        v := bytes:length(bytes:from_base64(s))
+
+  input:
+    - src:
+        - [1, {s: "not base64!"}]
+
+  expected_exact_output:
+    - {}
+
+- name: and a payload that is not text derives no row
+  source: |
+    src :: relation(b: bytes)
+    src(b:) <- input
+
+    out(v: v) <-
+        src(b: b)
+        v := bytes:to_string(b)
+
+  input:
+    - src:
+        - [1, {b: {base64: "/w=="}}]
+
+  expected_exact_output:
+    - {}
+
+# -- bytewise -----------------------------------------------------------------
+
+- name: bytewise and, or, xor
+  source: |
+    src :: relation(a: bytes, b: bytes)
+    src(a:, b:) <- input
+
+    out(masked: x, merged: y, differing: z) <-
+        src(a: a, b: b)
+        x := bytes:to_hex(bytes:and(a, b))
+        y := bytes:to_hex(bytes:or(a, b))
+        z := bytes:to_hex(bytes:xor(a, b))
+
+  input:
+    - src:
+        - [1, {a: {base64: "8A=="}, b: {base64: "zw=="}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {masked: "c0", merged: "ff", differing: "3f"}]
+
+# Two payloads of different lengths have no bytewise answer. Concatenation takes
+# any two, which is why only the first three are partial.
+- name: different lengths derive no row
+  source: |
+    src :: relation(a: bytes, b: bytes)
+    src(a:, b:) <- input
+
+    out(v: v) <-
+        src(a: a, b: b)
+        v := bytes:to_hex(bytes:and(a, b))
+
+  input:
+    - src:
+        - [1, {a: {base64: "8A=="}, b: {base64: "z88="}}]
+
+  expected_exact_output:
+    - {}
+
+- name: concatenation takes any two
+  source: |
+    src :: relation(a: bytes, b: bytes)
+    src(a:, b:) <- input
+
+    out(v: v) <-
+        src(a: a, b: b)
+        v := bytes:to_string(bytes:concat(a, b))
+
+  input:
+    - src:
+        - [1, {a: {base64: "SGVsbG8="}, b: {base64: "IQ=="}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: "Hello!"}]
+
+# -- scalar -------------------------------------------------------------------
+
+- name: bytes order, so they group and fold
+  source: |
+    src :: relation(k: i64, b: bytes)
+    src(k:, b:) <- input
+
+    least(k: k, smallest: min<b>) <-
+        src(k: k, b: b)
+
+  input:
+    - src:
+        - [1, {k: 1, b: {base64: "/w=="}}]
+        - [1, {k: 1, b: {base64: "AA=="}}]
+
+  expected_exact_output:
+    - least:
+        - [1, {k: 1, smallest: {base64: "AA=="}}]
+
+- name: and key a dict
+  source: |
+    src :: relation(b: bytes, n: i64)
+    src(b:, n:) <- input
+
+    out(m: m) <-
+        src(b: b, n: n)
+        m := {b => n}
+
+  input:
+    - src:
+        - [1, {b: {base64: "SGVsbG8="}, n: 7}]
+
+  expected_exact_output:
+    - out:
+        - [1, {m: {"base64:SGVsbG8=": 7}}]
+
+- name: a document narrows to bytes
+  source: |
+    src :: relation(doc: json)
+    src(doc:) <- input
+
+    out(n: n) <-
+        src(doc: doc)
+        b := doc
+        b :: bytes
+        n := bytes:length(b)
+
+  input:
+    - src:
+        - [1, {doc: {base64: "SGVsbG8="}}]
+        - [1, {doc: "not bytes"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {n: 5}]
+
+# Bytes are not numbers and not text, so neither operator applies.
+- name: there is no arithmetic on bytes
+  source: |
+    src :: relation(b: bytes)
+    src(b:) <- input
+
+    out(v: v) <-
+        src(b: b)
+        v := b + 1
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "no version of `+` takes `bytes` and `an integer literal`"

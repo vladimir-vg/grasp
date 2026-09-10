@@ -577,6 +577,7 @@ impl fmt::Display for Type {
             Type::Time => f.write_str("time"),
             Type::Timestamp => f.write_str("timestamp"),
             Type::Interval => f.write_str("interval"),
+            Type::Bytes => f.write_str("bytes"),
             Type::Var(name) => f.write_str(name),
             Type::Optional(t) => write!(f, "optional({t})"),
             Type::Array(t) => write!(f, "array({t})"),
@@ -619,6 +620,8 @@ pub enum Type {
     /// A span of time, in microseconds. Months are not in it — see
     /// `overview.md`.
     Interval,
+    /// Binary data, any length. There is no bit-granular or fixed-size form.
+    Bytes,
     /// `T` — a type variable, and the one thing here that is not a type.
     ///
     /// Legal in a [function typespec][`FnSpec`] and nowhere else: it says that

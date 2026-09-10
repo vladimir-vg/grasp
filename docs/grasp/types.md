@@ -23,6 +23,7 @@ is in [`syntax.md`](syntax.md#grammar).
 | `time` | a time of day — no date, no zone |
 | `timestamp` | an instant, always UTC |
 | `interval` | a span of time, in microseconds |
+| `bytes` | binary data, any length |
 
 A **type variable** — `T`, `K`, `V` — is not in this table, being not a type but
 a stand-in for one. It is legal in a
@@ -37,8 +38,8 @@ arbitrary-precision `integer` and `numeric`, `bytes`, `bits`, the temporal
 types, general `enum` — is listed under
 [future work](overview.md#future-work), each blocked on a grasp-dbsp value type.
 
-**Scalars** are `boolean`, `i64`, `f64`, `string`, `date`, `time`, `timestamp`
-and `interval`. The word matters in two rules below: what may key a dict, and what
+**Scalars** are `boolean`, `i64`, `f64`, `string`, `bytes`, `date`, `time`,
+`timestamp` and `interval`. The word matters in two rules below: what may key a dict, and what
 may be compared.
 
 The **temporal** three are scalars because each orders as the instant it names,
@@ -67,6 +68,17 @@ component beside a time one. And an instant is one number, so it orders, keys a
 dict and compares structurally like every other value here — a zone-carrying
 instant would be the first type in the language where two equal values were not
 identical, or two identical ones did not sort together.
+
+**`bytes`** is binary data of any length, and a scalar because it orders
+lexicographically. There is no bit-granular type beside it and no fixed-size
+one: a `bytes(16)` would be the first type here with a *value* parameter, and
+nothing in the `bytes:` library could then accept it — a typespec cannot say
+"sized or unsized", and making the size a type variable is dependent types.
+
+Its encoding is in the **name** of each conversion — `bytes:to_base64`,
+`bytes:from_hex`, `bytes:to_string` — so which one a program means is written at
+every call rather than hidden in the type. It travels as `{"base64": "…"}`,
+which leaves room for a second encoding without the old form changing meaning.
 
 A program that needs a local reading carries the zone as data, in a column, and
 converts where it displays. That is the Datalog answer: a zone is something a
@@ -247,7 +259,7 @@ same program.
 | `optional(T)` | `T` | the value is absent |
 | `optional(A)` | `optional(B)` | present and not a `B` |
 | `json` | `T` | the document does not hold a `T` |
-| `json` | `date` / `time` / `timestamp` / `interval` | the document does not hold one, written |
+| `json` | `bytes` / `date` / `time` / `timestamp` / `interval` | the document does not hold one, written |
 | `array(A)` | `array(B)` | any element is not a `B` |
 | `dict(K,A)` | `dict(K,B)` | any value is not a `B` |
 

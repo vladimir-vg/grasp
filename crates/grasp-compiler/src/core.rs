@@ -463,6 +463,28 @@ pub enum Builtin {
     TemporalTotalSeconds,
     TemporalTotalMicroseconds,
 
+    /// The `bytes:` family. Binary data, any length — no bit-granular form and
+    /// no fixed-size one.
+    BytesLength,
+    BytesConcat,
+    /// Bytewise, and **partial**: two payloads of different lengths have no
+    /// answer, so the row is not derived.
+    BytesAnd,
+    BytesOr,
+    BytesXor,
+    /// Text, both ways. The encoding is in the name rather than in a `cast`, so
+    /// which one a program means is written at every call.
+    ///
+    /// Only the readings that can fail are partial: every payload has a base64
+    /// and a hex spelling, but not every one is text, and not every string is
+    /// base64.
+    BytesToBase64,
+    BytesFromBase64,
+    BytesToHex,
+    BytesFromHex,
+    BytesToString,
+    BytesFromString,
+
     /// `record:get(r, field: "f")` — what `r.f` desugars to.
     ///
     /// Not a name a program may write, and the reason is its type: the result is
@@ -521,6 +543,17 @@ impl Builtin {
             "temporal:total_minutes" => Builtin::TemporalTotalMinutes,
             "temporal:total_seconds" => Builtin::TemporalTotalSeconds,
             "temporal:total_microseconds" => Builtin::TemporalTotalMicroseconds,
+            "bytes:length" => Builtin::BytesLength,
+            "bytes:concat" => Builtin::BytesConcat,
+            "bytes:and" => Builtin::BytesAnd,
+            "bytes:or" => Builtin::BytesOr,
+            "bytes:xor" => Builtin::BytesXor,
+            "bytes:to_base64" => Builtin::BytesToBase64,
+            "bytes:from_base64" => Builtin::BytesFromBase64,
+            "bytes:to_hex" => Builtin::BytesToHex,
+            "bytes:from_hex" => Builtin::BytesFromHex,
+            "bytes:to_string" => Builtin::BytesToString,
+            "bytes:from_string" => Builtin::BytesFromString,
             _ => return None,
         })
     }
@@ -579,6 +612,17 @@ impl Builtin {
         Builtin::TemporalTotalMinutes,
         Builtin::TemporalTotalSeconds,
         Builtin::TemporalTotalMicroseconds,
+        Builtin::BytesLength,
+        Builtin::BytesConcat,
+        Builtin::BytesAnd,
+        Builtin::BytesOr,
+        Builtin::BytesXor,
+        Builtin::BytesToBase64,
+        Builtin::BytesFromBase64,
+        Builtin::BytesToHex,
+        Builtin::BytesFromHex,
+        Builtin::BytesToString,
+        Builtin::BytesFromString,
         Builtin::RecordGet,
     ];
 
@@ -803,7 +847,17 @@ impl Builtin {
             | Builtin::TemporalTotalHours
             | Builtin::TemporalTotalMinutes
             | Builtin::TemporalTotalSeconds
-            | Builtin::TemporalTotalMicroseconds => UNARY,
+            | Builtin::TemporalTotalMicroseconds
+            | Builtin::BytesLength
+            | Builtin::BytesToBase64
+            | Builtin::BytesFromBase64
+            | Builtin::BytesToHex
+            | Builtin::BytesFromHex
+            | Builtin::BytesToString
+            | Builtin::BytesFromString => UNARY,
+            Builtin::BytesConcat | Builtin::BytesAnd | Builtin::BytesOr | Builtin::BytesXor => {
+                BINARY
+            }
             // Five optional keywords, so thirty-two ways to call it — one line
             // in `stdlib.grasp`, since a typespec can say a default.
             Builtin::TemporalInterval => &[Signature {
@@ -931,6 +985,14 @@ impl Builtin {
                 | Builtin::TemporalParseTimestamp
                 | Builtin::TemporalMakeDate
                 | Builtin::TemporalMakeTime
+                // Two payloads of different lengths have no bytewise answer,
+                // and not every string is a reading.
+                | Builtin::BytesAnd
+                | Builtin::BytesOr
+                | Builtin::BytesXor
+                | Builtin::BytesFromBase64
+                | Builtin::BytesFromHex
+                | Builtin::BytesToString
         )
     }
 
@@ -990,6 +1052,17 @@ impl Builtin {
             Builtin::TemporalTotalMinutes => "temporal:total_minutes",
             Builtin::TemporalTotalSeconds => "temporal:total_seconds",
             Builtin::TemporalTotalMicroseconds => "temporal:total_microseconds",
+            Builtin::BytesLength => "bytes:length",
+            Builtin::BytesConcat => "bytes:concat",
+            Builtin::BytesAnd => "bytes:and",
+            Builtin::BytesOr => "bytes:or",
+            Builtin::BytesXor => "bytes:xor",
+            Builtin::BytesToBase64 => "bytes:to_base64",
+            Builtin::BytesFromBase64 => "bytes:from_base64",
+            Builtin::BytesToHex => "bytes:to_hex",
+            Builtin::BytesFromHex => "bytes:from_hex",
+            Builtin::BytesToString => "bytes:to_string",
+            Builtin::BytesFromString => "bytes:from_string",
             Builtin::RecordGet => "record:get",
         }
     }
@@ -1061,6 +1134,17 @@ impl Builtin {
             Builtin::TemporalTotalMinutes => Some("total_minutes"),
             Builtin::TemporalTotalSeconds => Some("total_seconds"),
             Builtin::TemporalTotalMicroseconds => Some("total_microseconds"),
+            Builtin::BytesLength => Some("octet_length"),
+            Builtin::BytesConcat => Some("bytes_concat"),
+            Builtin::BytesAnd => Some("bytes_and"),
+            Builtin::BytesOr => Some("bytes_or"),
+            Builtin::BytesXor => Some("bytes_xor"),
+            Builtin::BytesToBase64 => Some("to_base64"),
+            Builtin::BytesFromBase64 => Some("from_base64"),
+            Builtin::BytesToHex => Some("to_hex"),
+            Builtin::BytesFromHex => Some("from_hex"),
+            Builtin::BytesToString => Some("to_utf8"),
+            Builtin::BytesFromString => Some("from_utf8"),
             Builtin::RecordGet => None,
         }
     }

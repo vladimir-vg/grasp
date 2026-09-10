@@ -62,6 +62,7 @@ pub enum Ty {
     Time,
     Timestamp,
     Interval,
+    Bytes,
 }
 
 impl Ty {
@@ -77,6 +78,7 @@ impl Ty {
             Type::Time => Ty::Time,
             Type::Timestamp => Ty::Timestamp,
             Type::Interval => Ty::Interval,
+            Type::Bytes => Ty::Bytes,
             Type::Optional(inner) => Ty::Optional(Box::new(Ty::known(inner))),
             Type::Array(inner) => Ty::Array(Box::new(Ty::known(inner))),
             Type::Dict(k, v) => Ty::Dict(Box::new(Ty::known(k)), Box::new(Ty::known(v))),
@@ -146,6 +148,7 @@ impl fmt::Display for Ty {
             Ty::Time => f.write_str("time"),
             Ty::Timestamp => f.write_str("timestamp"),
             Ty::Interval => f.write_str("interval"),
+            Ty::Bytes => f.write_str("bytes"),
             Ty::Optional(t) => write!(f, "optional({t})"),
             Ty::Array(t) => write!(f, "array({t})"),
             Ty::Dict(k, v) => write!(f, "dict({k}, {v})"),
@@ -458,6 +461,7 @@ fn holdable(t: &Ty) -> bool {
             | Ty::Time
             | Ty::Timestamp
             | Ty::Interval
+            | Ty::Bytes
     )
 }
 
@@ -497,6 +501,7 @@ pub fn settle(ty: &Ty) -> Result<Type, Open> {
         Ty::Time => Type::Time,
         Ty::Timestamp => Type::Timestamp,
         Ty::Interval => Type::Interval,
+        Ty::Bytes => Type::Bytes,
         Ty::Optional(t) => Type::Optional(Box::new(settle(t)?)),
         Ty::Array(t) => Type::Array(Box::new(settle(t)?)),
         Ty::Dict(k, v) => Type::Dict(Box::new(settle(k)?), Box::new(settle(v)?)),

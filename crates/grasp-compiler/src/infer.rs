@@ -1698,6 +1698,24 @@ impl Cx {
             | B::TemporalTotalSeconds
             | B::TemporalTotalMicroseconds => one(args, &arity, Ty::Interval, Ty::I64, &wrong),
 
+            B::BytesLength => one(args, &arity, Ty::Bytes, Ty::I64, &wrong),
+            B::BytesToBase64 | B::BytesToHex | B::BytesToString => {
+                one(args, &arity, Ty::Bytes, Ty::String, &wrong)
+            }
+            B::BytesFromBase64 | B::BytesFromHex | B::BytesFromString => {
+                one(args, &arity, Ty::String, Ty::Bytes, &wrong)
+            }
+            B::BytesConcat | B::BytesAnd | B::BytesOr | B::BytesXor => {
+                if let Some(d) = arity(2) {
+                    return (Ty::Error, Some(d));
+                }
+                if args.iter().all(|t| matches!(t, Ty::Bytes | Ty::Unknown)) {
+                    (Ty::Bytes, None)
+                } else {
+                    wrong()
+                }
+            }
+
             // Not a signature list: its result depends on *which* field, so it
             // reads the key literal rather than a type.
             B::RecordGet => {
@@ -1803,6 +1821,8 @@ fn scalar(t: &Ty) -> bool {
             // One integer, so it orders — which is what a type carrying months
             // beside them could not have done.
             | Ty::Interval
+            // Lexicographic, which is the order the payload already has.
+            | Ty::Bytes
     )
 }
 
