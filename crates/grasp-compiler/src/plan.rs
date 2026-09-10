@@ -703,14 +703,16 @@ enum Body {
     },
     /// `v :: T`, where a check could settle it.
     Assert(infer::Assert),
-    /// A binding whose value has to be narrowed before anything reads it.
+    /// A binding whose value is a partial call this pass wrote itself.
     ///
-    /// One dependent rather than a `Bind` and an `Assert`, because a narrow
-    /// only *consumes* its variable — it binds nothing, so nothing orders it
-    /// before another consumer, and `place_ready` may put a second
-    /// destructure's size check between the two. That check then reads an
-    /// `optional(T)` and grasp-dbsp refuses it. Keeping them one dependent is
-    /// what makes "bound" mean bound *and* narrowed.
+    /// [`lift`] narrows the partial calls a *program* wrote, reading their
+    /// types from [`infer::TypedRule::partials`]. The gets a destructure
+    /// expands to were never in the source, so they are not in that table and
+    /// this says what they are instead — the variable's own settled type, which
+    /// is what the pattern promised.
+    ///
+    /// One dependent rather than two, so that anything reading the variable is
+    /// ordered after the narrowing as well as after the bind.
     Bound {
         name: String,
         value: core::Expr,
@@ -1676,6 +1678,7 @@ fn lower(
     typed: &infer::TypedRule,
     columns: &[(String, Type)],
 ) -> Rule {
+    let partials = &typed.partials;
     // "The primary producer is whichever comes first in the post-order. Every
     // other producer becomes an equality filter." Writing `x` twice says both
     // computations agree; one supplies the value and the rest check it.
@@ -1717,7 +1720,7 @@ fn lower(
                 for a in aggs.take().expect("one aggregate step per rule") {
                     let arg = match a.arg {
                         Some(e) => {
-                            let (pre, e) = total(fresh, e);
+                            let (pre, e) = total(partials, fresh, e);
                             steps.extend(pre);
                             Some(e)
                         }
@@ -1732,10 +1735,11 @@ fn lower(
             Item::Join => steps.push(Step::Join),
             Item::Cross => steps.push(Step::Cross),
             Item::Dep(d) => match &deps[*d].body {
-                Body::Filter(e) => push_total(&mut steps, fresh, Step::Filter, e.clone()),
+                Body::Filter(e) => push_total(partials, &mut steps, fresh, Step::Filter, e.clone()),
                 Body::Bind(name, e) => {
                     let name = name.clone();
                     push_total(
+                        partials,
                         &mut steps,
                         fresh,
                         move |e| Step::Bind(name.clone(), e),
@@ -1748,6 +1752,7 @@ fn lower(
                 Body::Bound { name, value, ty } => {
                     let bound = name.clone();
                     push_total(
+                        partials,
                         &mut steps,
                         fresh,
                         move |e| Step::Bind(bound.clone(), e),
@@ -1778,6 +1783,7 @@ fn lower(
                 Body::Unnest { over, vars, kind } => {
                     let (vars, kind) = (vars.clone(), *kind);
                     push_total(
+                        partials,
                         &mut steps,
                         fresh,
                         move |over| Step::Unnest {
@@ -1799,6 +1805,7 @@ fn lower(
                     for (name, e) in computed {
                         let name = name.clone();
                         push_total(
+                            partials,
                             &mut steps,
                             fresh,
                             move |e| Step::Bind(name.clone(), e),
@@ -1814,7 +1821,7 @@ fn lower(
             },
         }
     }
-    let (pre, head) = total_row(fresh, rule.head.args.clone());
+    let (pre, head) = total_row(partials, fresh, rule.head.args.clone());
     steps.extend(pre);
     steps.push(Step::Row(
         head.into_iter()
@@ -2266,24 +2273,26 @@ fn lower(
 
 /// Push a step whose expression may be partial, lifting the partiality out.
 fn push_total(
+    partials: &BTreeMap<Span, Type>,
     steps: &mut Vec<Step>,
     fresh: &mut Fresh,
     make: impl Fn(core::Expr) -> Step,
     e: core::Expr,
 ) {
-    let (pre, e) = total(fresh, e);
+    let (pre, e) = total(partials, fresh, e);
     steps.extend(pre);
     steps.push(make(e));
 }
 
 fn total_row(
+    partials: &BTreeMap<Span, Type>,
     fresh: &mut Fresh,
     row: Vec<(String, core::Expr)>,
 ) -> (Vec<Step>, Vec<(String, core::Expr)>) {
     let mut pre = Vec::new();
     let mut out = Vec::new();
     for (name, e) in row {
-        let (p, e) = total(fresh, e);
+        let (p, e) = total(partials, fresh, e);
         pre.extend(p);
         out.push((name, e));
     }
@@ -2309,17 +2318,26 @@ fn total_row(
 /// above it saw to that — and is chosen because it has precisely the type the
 /// division yields, in every case, without this pass having to work out what
 /// that type is.
-fn total(fresh: &mut Fresh, e: core::Expr) -> (Vec<Step>, core::Expr) {
+fn total(
+    partials: &BTreeMap<Span, Type>,
+    fresh: &mut Fresh,
+    e: core::Expr,
+) -> (Vec<Step>, core::Expr) {
     let mut steps = Vec::new();
-    let out = lift(fresh, &mut steps, e);
+    let out = lift(partials, fresh, &mut steps, e);
     (steps, out)
 }
 
-fn lift(fresh: &mut Fresh, steps: &mut Vec<Step>, e: core::Expr) -> core::Expr {
+fn lift(
+    partials: &BTreeMap<Span, Type>,
+    fresh: &mut Fresh,
+    steps: &mut Vec<Step>,
+    e: core::Expr,
+) -> core::Expr {
     match e {
         core::Expr::Binary { op, lhs, rhs, span } => {
-            let lhs = lift(fresh, steps, *lhs);
-            let rhs = lift(fresh, steps, *rhs);
+            let lhs = lift(partials, fresh, steps, *lhs);
+            let rhs = lift(partials, fresh, steps, *rhs);
             let joined = core::Expr::Binary {
                 op,
                 lhs: Box::new(lhs.clone()),
@@ -2340,29 +2358,58 @@ fn lift(fresh: &mut Fresh, steps: &mut Vec<Step>, e: core::Expr) -> core::Expr {
         }
         core::Expr::Unary { op, operand, span } => core::Expr::Unary {
             op,
-            operand: Box::new(lift(fresh, steps, *operand)),
+            operand: Box::new(lift(partials, fresh, steps, *operand)),
             span,
         },
-        core::Expr::Call { callee, args, span } => core::Expr::Call {
-            callee,
-            args: args.into_iter().map(|a| lift(fresh, steps, a)).collect(),
-            span,
-        },
+        core::Expr::Call { callee, args, span } => {
+            let call = core::Expr::Call {
+                callee,
+                args: args
+                    .into_iter()
+                    .map(|a| lift(partials, fresh, steps, a))
+                    .collect(),
+                span,
+            };
+            // A partial call has no answer for some arguments, and a rule
+            // derives no row where a step of its body has none — so it becomes
+            // a node exactly as `/` does. The type to rebind it at is `infer`'s
+            // answer: a lookup has no operand of its result's type, so nothing
+            // here could work it out.
+            let Some(ty) = callee.partial().then(|| partials.get(&span)).flatten() else {
+                return call;
+            };
+            let name = fresh.next();
+            steps.push(Step::Bind(name.clone(), call));
+            steps.push(Step::Narrow {
+                name: name.clone(),
+                cast: None,
+                into: Narrowed::Definite(Definite::Of(ty.clone())),
+            });
+            core::Expr::Var { name, span }
+        }
         core::Expr::ArrayLit { elems, span } => core::Expr::ArrayLit {
-            elems: elems.into_iter().map(|a| lift(fresh, steps, a)).collect(),
+            elems: elems
+                .into_iter()
+                .map(|a| lift(partials, fresh, steps, a))
+                .collect(),
             span,
         },
         core::Expr::DictLit { entries, span } => core::Expr::DictLit {
             entries: entries
                 .into_iter()
-                .map(|(k, v)| (lift(fresh, steps, k), lift(fresh, steps, v)))
+                .map(|(k, v)| {
+                    (
+                        lift(partials, fresh, steps, k),
+                        lift(partials, fresh, steps, v),
+                    )
+                })
                 .collect(),
             span,
         },
         core::Expr::RecordLit { fields, span } => core::Expr::RecordLit {
             fields: fields
                 .into_iter()
-                .map(|(n, v)| (n, lift(fresh, steps, v)))
+                .map(|(n, v)| (n, lift(partials, fresh, steps, v)))
                 .collect(),
             span,
         },

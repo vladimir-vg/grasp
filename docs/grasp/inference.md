@@ -89,7 +89,7 @@ An atom is the only thing that gives a variable a type *from outside* the rule.
 Everything else relates variables to each other.
 
 A destructure's variable is **definite** where the source is not: `dict:get`
-yields `optional(V)` and the pattern promises the key is there, so `a` is a `V`
+has no answer for a key that is not there, so the row is dropped and `a` is a `V`
 and the row whose dict lacked the key is not derived. That is why the patterns
 are typed here rather than expanded before this pass — the narrowing has to name
 `V`, and nothing knows it earlier. `record(a:)` needs no narrowing at all: a

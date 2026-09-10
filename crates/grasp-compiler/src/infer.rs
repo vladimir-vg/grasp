@@ -97,6 +97,16 @@ pub struct TypedRule {
     pub rule: core::Rule,
     /// Every variable the rule binds, and its type.
     pub vars: BTreeMap<String, Type>,
+    /// What each call to a [partial][`core::Builtin::partial`] builtin settles
+    /// to, by the span of the call.
+    ///
+    /// `dict:get` yields a `V` and derives no row for a missing key, so the
+    /// call has to become a node — a filter and a rebinding — and the rebinding
+    /// needs a definite value of `V` to coalesce to. Division gets that from
+    /// its dividend, which has the result's type; a dict lookup has no operand
+    /// of its value type, so this pass says what it is. It is the channel
+    /// [`Assert`] already is: the plan needs the answer, not the reasoning.
+    pub partials: BTreeMap<Span, Type>,
     /// The assertions that became runtime filters, in body order.
     pub asserts: Vec<Assert>,
     /// What an aggregate in this rule groups by — the variables the head's
@@ -302,6 +312,8 @@ struct RuleTypes {
     /// `json` and `i64` — the two are not disagreeing, they are saying
     /// different things.
     source: BTreeMap<String, Ty>,
+    /// See [`TypedRule::partials`].
+    partials: BTreeMap<Span, Type>,
     filters: Vec<Assert>,
     head: BTreeMap<String, Ty>,
     /// The first thing wrong, which is the only thing reported.
@@ -899,12 +911,21 @@ impl Cx {
             head.insert(column.clone(), ty);
         }
 
+        // What each partial call settles to, walked once with the finished
+        // table rather than collected during it: a type read mid-walk may be
+        // the one a later statement corrects.
+        let mut partials = BTreeMap::new();
+        for e in expressions(rule) {
+            self.collect_partials(e, &vars, &mut partials);
+        }
+
         RuleTypes {
             vars,
             source,
             head,
             fault,
             filters,
+            partials,
         }
     }
 
@@ -1342,9 +1363,7 @@ impl Cx {
                     return (Ty::Error, Some(d));
                 }
                 match &args[0] {
-                    Ty::Array(e) if matches!(args[1], Ty::I64 | Ty::Int) => {
-                        (Ty::Optional(e.clone()), None)
-                    }
+                    Ty::Array(e) if matches!(args[1], Ty::I64 | Ty::Int) => ((**e).clone(), None),
                     Ty::Unknown => (Ty::Unknown, None),
                     _ => wrong(),
                 }
@@ -1394,7 +1413,7 @@ impl Cx {
                                 )),
                             );
                         }
-                        (Ty::Optional(v.clone()), None)
+                        ((**v).clone(), None)
                     }
                     Ty::Unknown => (Ty::Unknown, None),
                     _ => wrong(),
@@ -1708,6 +1727,26 @@ impl Cx {
     /// It runs before every other check because a malformed pattern has no
     /// settled meaning, and the checks after it all read what a statement
     /// binds.
+    /// Every call to a partial builtin under `e`, and what it settles to.
+    ///
+    /// Bottom-up, so a lookup inside a lookup is recorded too — the inner one
+    /// becomes a node first and the outer reads its variable.
+    fn collect_partials(
+        &self,
+        e: &core::Expr,
+        vars: &BTreeMap<String, Ty>,
+        out: &mut BTreeMap<Span, Type>,
+    ) {
+        walk(e, &mut |sub| {
+            if let core::Expr::Call { callee, span, .. } = sub
+                && callee.partial()
+                && let Ok(ty) = settle(&self.expr_ty(sub, vars).0)
+            {
+                out.insert(*span, ty);
+            }
+        });
+    }
+
     fn check_unnest(&self, rule: &core::Rule) -> Option<Diagnostic> {
         for stmt in &rule.body {
             let core::Stmt::Match {
@@ -2160,6 +2199,26 @@ fn unbound(e: &core::Expr, bound: &BTreeSet<&str>, where_: &str) -> Option<Diagn
     found
 }
 
+/// Every expression a rule holds, head and body alike.
+fn expressions(rule: &core::Rule) -> Vec<&core::Expr> {
+    let mut out: Vec<&core::Expr> = rule.head.args.iter().map(|(_, e)| e).collect();
+    for stmt in &rule.body {
+        match stmt {
+            core::Stmt::Atom { args, .. } => out.extend(args.iter().filter_map(|(_, a)| match a {
+                core::Arg::Expr(e) => Some(e),
+                core::Arg::Wildcard(_) => None,
+            })),
+            core::Stmt::Filter { expr, .. } => out.push(expr),
+            core::Stmt::Match { rhs, .. } => match rhs {
+                core::Rhs::Expr(e) => out.push(e),
+                core::Rhs::Aggregate { arg, .. } => out.extend(arg.as_ref()),
+            },
+            core::Stmt::Assert { .. } | core::Stmt::Input { .. } => {}
+        }
+    }
+    out
+}
+
 fn walk(e: &core::Expr, f: &mut impl FnMut(&core::Expr)) {
     f(e);
     match e {
@@ -2294,6 +2353,7 @@ impl Cx {
             decls.push(Decl::Rule(TypedRule {
                 rule: rule.clone(),
                 vars,
+                partials: typed.partials,
                 asserts: typed.filters,
                 group: group_of(rule, &after),
             }));

@@ -10,7 +10,6 @@
     out(k: k, v: v) <-
         src(d: d, k: k)
         v := d[k]
-        v :: i64
 
   input:
     - src:
@@ -22,7 +21,8 @@
         - [1, {k: "a", v: 10}]
         - [1, {k: "b", v: 20}]
 
-# "An absent value is dropped by that same filter rather than defaulted."
+# A key that is not there has no answer, and a rule derives a row only where
+# every step of its body has one — the same rule `/` by zero obeys.
 - name: a key that is not there drops the row
   source: |
     src :: relation(d: dict(string, i64), k: string)
@@ -31,7 +31,6 @@
     out(k: k, v: v) <-
         src(d: d, k: k)
         v := d[k]
-        v :: i64
 
   input:
     - src:
@@ -42,17 +41,17 @@
     - out:
         - [1, {k: "a", v: 10}]
 
-# Without the narrowing the value keeps its wrapper, which is what makes the
-# narrowing a choice rather than a formality.
-- name: a subscript without a narrowing is optional
+# A lookup that has no answer derives no row, so absence is never a value a
+# program has to unwrap. Asking whether a key is there is `dict:has`, and the
+# rule below reads the two that are.
+- name: a subscript inside a larger expression drops the row too
   source: |
     src :: relation(d: dict(string, i64), k: string)
-    out :: relation(k: string, v: optional(i64))
     src(d:, k:) <- input
 
     out(k: k, v: v) <-
         src(d: d, k: k)
-        v := d[k]
+        v := d[k] * 2
 
   input:
     - src:
@@ -61,8 +60,7 @@
 
   expected_exact_output:
     - out:
-        - [1, {k: "a", v: 10}]
-        - [1, {k: "zz", v: null}]
+        - [1, {k: "a", v: 20}]
 
 # A subscript chains with field access, both being postfix.
 - name: a subscript chains with field access
@@ -73,7 +71,6 @@
     out(v: v) <-
         src(r: r)
         v := r.d["a"]
-        v :: i64
 
   input:
     - src:
@@ -111,7 +108,6 @@
     out(v: v) <-
         src(d: d, k: k)
         v := d[k]
-        v :: i64
   equivalent_to: |
     src :: relation(d: dict(string, i64), k: string)
     src(d:, k:) <- input

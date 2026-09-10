@@ -518,16 +518,15 @@ like any other. Written in the shorthand, since that is how they are written.
 | `[x, y] := arr` | `array:length(arr) = 2`, `x := array:get(arr, 0)`, `x :: E`, and so on |
 | `[x, y, *] := arr` | `array:length(arr) >= 2`, then the two bindings |
 | `[x, y, *r] := arr` | as above, and `r` is the elements from position 2 on |
-| `{a:} := d` | `dict:length(d) = 1`, `a := dict:get(d, "a")`, `a :: V` |
-| `{a:, **} := d` | `a := dict:get(d, "a")`, `a :: V` — no size check |
+| `{a:} := d` | `dict:length(d) = 1`, `a := dict:get(d, "a")` |
+| `{a:, **} := d` | `a := dict:get(d, "a")` — no size check |
 | `{a:, **e} := d` | as above, and `e := dict:without_keys(d, ["a"])` |
 | `record(a:) := s` | `a := record:get(s, "a")`; `s`'s type must have exactly that field |
 | `record(a:, **) := s` | `a := record:get(s, "a")` — extra fields allowed |
 | `record(a:, **e) := s` | as above, and `e` is a record of the fields left |
 
-`dict:get` yields `optional(V)`, so the `a :: V` assertion is what makes a
-missing key drop the row rather than bind absence. That is the exactness the
-pattern promises.
+`dict:get` has no answer for a key that is not there, so the row is not derived
+— nothing has to be unwrapped, and that is the exactness the pattern promises.
 
 **A dict and a record are exact in different senses**, and the difference is
 worth stating because both spellings look alike. A dict's size is *data*, so

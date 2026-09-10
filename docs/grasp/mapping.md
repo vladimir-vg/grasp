@@ -271,7 +271,7 @@ promise is one mechanism rather than two.
 | grasp | grasp-dbsp |
 |---|---|
 | `{k => v, …}` | `{k => v, …}` — identical |
-| `d[k]` lookup | `get(d, k)` → `optional(V)` |
+| `d[k]` lookup | `get(d, k)`, then the narrowing that makes it a `V` |
 | `keys(d)` | `keys(d)` → `array(K)` |
 | `dict:length(d)` | `length(d)` |
 | `{a:} := d` destructure | `get(d, "a")` per key, guarded by `length(d) = N` |

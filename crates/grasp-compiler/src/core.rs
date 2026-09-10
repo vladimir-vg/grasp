@@ -378,6 +378,18 @@ impl Builtin {
         Builtin::RecordGet,
     ];
 
+    /// Whether it can fail to have an answer.
+    ///
+    /// `dict:get` on a key that is not there and `array:at` past the end have
+    /// none, and [a rule derives a row only where every step of its body has
+    /// one][semantics] — so a call to one becomes a node, a filter and a
+    /// rebinding, exactly as division does.
+    ///
+    /// [semantics]: ../../../docs/grasp/semantics.md
+    pub fn partial(self) -> bool {
+        matches!(self, Builtin::DictGet | Builtin::ArrayAt)
+    }
+
     /// What grasp calls it.
     pub fn as_str(self) -> &'static str {
         match self {
