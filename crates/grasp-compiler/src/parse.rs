@@ -38,14 +38,33 @@ pub const AGGREGATORS: &[&str] = &["sum", "count", "min", "max", "avg"];
 /// a *column* may be called `length`. They are unavailable as relation names by
 /// the one-name rule, which is a different check.
 pub const BUILTINS: &[&str] = &[
-    "abs", "floor", "ceil", "round", "length", "concat", "lower", "upper", "trim", "if", "keys",
-    "entries",
+    "boolean:not",
+    "integer:abs",
+    "float:abs",
+    "float:floor",
+    "float:ceil",
+    "float:round",
+    "string:length",
+    "string:concat",
+    "string:lower",
+    "string:upper",
+    "string:trim",
+    "array:length",
+    "array:at",
+    "array:drop",
+    "dict:length",
+    "dict:get",
+    "dict:keys",
+    "dict:entries",
+    "dict:without_keys",
+    "record:get",
 ];
 
 /// "They are held now so that the standard library can grow into them without
 /// taking names a program was already using."
 pub const RESERVED_NAMESPACES: &[&str] = &[
-    "string", "array", "dict", "record", "json", "boolean", "agg", "temporal",
+    "string", "array", "dict", "record", "json", "boolean", "agg", "temporal", "integer", "float",
+    "numeric", "bytes", "bits", "crypto",
 ];
 
 /// Reserved as a relation, variable or column name.
@@ -61,6 +80,15 @@ fn is_identifier(name: &str) -> bool {
         .next()
         .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Whether a name sits under one of the namespaces the language holds.
+///
+/// Those hold callables and nothing else, which is what lets body-statement
+/// position tell an atom from a filter without a lookahead or a list.
+pub fn in_reserved_namespace(name: &str) -> bool {
+    name.split_once(':')
+        .is_some_and(|(ns, _)| RESERVED_NAMESPACES.contains(&ns))
 }
 
 pub fn is_reserved(name: &str) -> bool {
@@ -525,9 +553,15 @@ impl<'a> Parser<'a> {
                 // match ::= variable ":=" ...
                 Some(Tok::Assign) => return self.match_stmt(start),
                 // "At body-statement level, `name(` always begins an atom" —
-                // for every name that can be a relation. A builtin cannot, by
-                // the one-name rule, so `length(s) > 3` is a filter.
-                Some(Tok::LParen) if !BUILTINS.contains(&name.as_str()) => {
+                // for every name that can be a relation. A name under a
+                // reserved namespace cannot be one, so `string:length(s) > 3`
+                // is a filter.
+                //
+                // Structural, where it used to be a lookup in the builtin list:
+                // every callable is namespaced now, and every namespace a
+                // callable lives in is reserved, so the shape of the name is
+                // the answer.
+                Some(Tok::LParen) if !in_reserved_namespace(&name) => {
                     let name_span = self.bump().span;
                     self.check_relation_name(&name, name_span)?;
                     let (args, close) = self.atom_args()?;

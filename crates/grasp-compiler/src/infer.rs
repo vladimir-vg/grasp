@@ -1243,28 +1243,38 @@ impl Cx {
             )
         };
         let open = |t: &Ty| matches!(t, Ty::Unknown);
+        // One argument of one type, one result. Most of a namespaced library
+        // looks like this, which is the point of namespacing it.
+        let one = |args: &[Ty],
+                   arity: &dyn Fn(usize) -> Option<Diagnostic>,
+                   want: Ty,
+                   out: Ty,
+                   wrong: &dyn Fn() -> (Ty, Option<Diagnostic>)| {
+            if let Some(d) = arity(1) {
+                return (Ty::Error, Some(d));
+            }
+            if args[0] == want || open(&args[0]) {
+                (out, None)
+            } else {
+                wrong()
+            }
+        };
 
         match callee {
-            B::Abs | B::Floor | B::Ceil | B::Round => {
-                if let Some(d) = arity(1) {
-                    return (Ty::Error, Some(d));
-                }
-                if numeric(&args[0]) || open(&args[0]) {
-                    (args[0].clone(), None)
-                } else {
-                    wrong()
-                }
+            // Namespaced, so each of these is one type and one signature —
+            // `string:length` and `array:length` are two functions rather than
+            // one asked to guess. What the arms below check is the argument
+            // *is* what the name already said it would be.
+            B::IntegerAbs => one(args, &arity, Ty::I64, Ty::I64, &wrong),
+            B::FloatAbs | B::FloatFloor | B::FloatCeil | B::FloatRound => {
+                one(args, &arity, Ty::F64, Ty::F64, &wrong)
             }
-            B::Length => {
-                if let Some(d) = arity(1) {
-                    return (Ty::Error, Some(d));
-                }
-                match &args[0] {
-                    Ty::String | Ty::Array(_) | Ty::Dict(..) | Ty::Unknown => (Ty::I64, None),
-                    _ => wrong(),
-                }
+            B::StringLower | B::StringUpper | B::StringTrim => {
+                one(args, &arity, Ty::String, Ty::String, &wrong)
             }
-            B::Concat => {
+            B::StringLength => one(args, &arity, Ty::String, Ty::I64, &wrong),
+            B::BooleanNot => one(args, &arity, Ty::Boolean, Ty::Boolean, &wrong),
+            B::StringConcat => {
                 if let Some(d) = arity(2) {
                     return (Ty::Error, Some(d));
                 }
@@ -1274,51 +1284,35 @@ impl Cx {
                     wrong()
                 }
             }
-            B::Lower | B::Upper | B::Trim => {
+            B::ArrayLength => {
                 if let Some(d) = arity(1) {
                     return (Ty::Error, Some(d));
                 }
                 match &args[0] {
-                    Ty::String | Ty::Unknown => (Ty::String, None),
+                    Ty::Array(_) | Ty::Unknown => (Ty::I64, None),
                     _ => wrong(),
                 }
             }
-            B::BooleanNot => {
+            B::DictLength => {
                 if let Some(d) = arity(1) {
                     return (Ty::Error, Some(d));
                 }
                 match &args[0] {
-                    Ty::Boolean | Ty::Unknown => (Ty::Boolean, None),
+                    Ty::Dict(..) | Ty::Unknown => (Ty::I64, None),
                     _ => wrong(),
                 }
             }
-            B::If => {
-                if let Some(d) = arity(3) {
-                    return (Ty::Error, Some(d));
-                }
-                if !matches!(args[0], Ty::Boolean | Ty::Unknown) {
-                    return wrong();
-                }
-                match compose(&args[1], &args[2]) {
-                    Ok(t) => (t, None),
-                    Err(_) => wrong(),
-                }
-            }
-            B::Keys => {
+            B::DictKeys => {
                 if let Some(d) = arity(1) {
                     return (Ty::Error, Some(d));
                 }
                 match &args[0] {
-                    Ty::Json => (
-                        Ty::Optional(Box::new(Ty::Array(Box::new(Ty::String)))),
-                        None,
-                    ),
                     Ty::Dict(k, _) => (Ty::Array(k.clone()), None),
                     Ty::Unknown => (Ty::Unknown, None),
                     _ => wrong(),
                 }
             }
-            B::Entries => {
+            B::DictEntries => {
                 if let Some(d) = arity(1) {
                     return (Ty::Error, Some(d));
                 }
@@ -1343,7 +1337,7 @@ impl Cx {
             // may be past the end. The index is an `i64`; a pattern only ever
             // writes a literal one, so this is a check on the emitter as much
             // as on a program.
-            B::ArrayGet => {
+            B::ArrayAt => {
                 if let Some(d) = arity(2) {
                     return (Ty::Error, Some(d));
                 }

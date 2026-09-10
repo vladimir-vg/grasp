@@ -168,12 +168,12 @@
 # only the positional form is exercisable today.
 - name: a call with several positional arguments
   source: |
-    s :: relation(x: i64, y: i64)
+    s :: relation(x: i64, y: i64, arr: array(i64))
 
     r(v: a, w: b) <-
-        s(x: x, y: y)
-        a := if(x > 1, y, x)
-        b := abs(x)
+        s(x: x, y: y, arr: arr)
+        a := integer:abs(x)
+        b := array:at(arr, y)
   expected_ok: true
 
 - name: a call inside a filter
@@ -182,7 +182,7 @@
 
     long(name: s) <-
         person(name: s)
-        length(s) > 3
+        string:length(s) > 3
   expected_ok: true
 
 # array_literal / record_literal

@@ -101,22 +101,25 @@
       pass: infer
       message: "this dict is keyed by `string`, but the key is `an integer literal`"
 
-# `d[k]` is the spelling, and the only one. `dict:get` was callable and gave a
-# program the computed dict lookup `semantics.md` holds back, unchecked and
-# undocumented.
-- name: dict:get is not a name a program can write
+# `d[k]` is sugar for `dict:get`, which is an ordinary library function like any
+# other — every callable is namespaced now, so there is nothing to hold back.
+- name: a subscript is dict:get written shorter
   source: |
-    src :: relation(d: dict(string, i64))
-    src(d:) <- input
+    src :: relation(d: dict(string, i64), k: string)
+    src(d:, k:) <- input
 
     out(v: v) <-
-        src(d: d)
-        v := dict:get(d, "a")
+        src(d: d, k: k)
+        v := d[k]
+        v :: i64
+  equivalent_to: |
+    src :: relation(d: dict(string, i64), k: string)
+    src(d:, k:) <- input
 
-  expected_diagnostics:
-    - severity: error
-      pass: desugar
-      message: "there is no callable `dict:get`"
+    out(v: v) <-
+        src(d: d, k: k)
+        v := dict:get(d, k)
+        v :: i64
 
 # The written halves of `.` and `not` keep their names, which is what lets
 # `programs/desugar.yaml` write an expansion out and compare it.

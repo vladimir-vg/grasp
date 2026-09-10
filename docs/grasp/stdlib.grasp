@@ -1,0 +1,78 @@
+# grasp's standard library.
+#
+# Every function is namespaced, and the namespace is the type family it belongs
+# to: `string:length` and `array:length` are two functions rather than one asked
+# to guess from its argument. `integer:` and `float:` do not merge — float
+# semantics are not integer semantics, and `numeric`, when it arrives, is a
+# third thing again.
+#
+# Access by position is `at`; access by key is `get`. A partial function derives
+# no row rather than yielding an absent value: `dict:get` on a missing key has
+# no answer, and a rule derives a row only where every step of its body has one.
+#
+# What each function *means* is `semantics.md`; this is what it takes and what
+# it gives back.
+
+boolean:not :: function
+    (boolean) -> boolean
+
+integer:abs :: function
+    (i64) -> i64
+
+float:abs :: function
+    (f64) -> f64
+
+float:floor :: function
+    (f64) -> f64
+
+float:ceil :: function
+    (f64) -> f64
+
+float:round :: function
+    (f64) -> f64
+
+string:length :: function
+    (string) -> i64
+
+string:concat :: function
+    (string, string) -> string
+
+string:lower :: function
+    (string) -> string
+
+string:upper :: function
+    (string) -> string
+
+string:trim :: function
+    (string) -> string
+
+array:length :: function
+    (array(T)) -> i64
+
+array:at :: function
+    (array(T), index: i64) -> T
+
+dict:length :: function
+    (dict(K, V)) -> i64
+
+dict:get :: function
+    (dict(K, V), key: K) -> V
+
+dict:keys :: function
+    (dict(K, V)) -> array(K)
+
+dict:entries :: function
+    (dict(K, V)) -> array(record(key: K, value: V))
+
+record:get :: function
+    (record(**), field: string) -> T
+
+# Written by desugaring and not by a program: the grasp-dbsp expression each
+# becomes binds a name, and grasp's expressions do not, so the binder is
+# introduced at emission.
+
+array:drop :: function
+    (array(T), i64) -> array(T)
+
+dict:without_keys :: function
+    (dict(K, V), array(K)) -> dict(K, V)

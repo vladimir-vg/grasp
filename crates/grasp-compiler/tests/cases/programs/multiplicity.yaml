@@ -179,7 +179,7 @@
     n :: relation(name: string, c: i64)
     n(name: p, c: c) <-
         person(name: p, tags: arr)
-        c := length(arr)
+        c := array:length(arr)
 
   input:
     - person:

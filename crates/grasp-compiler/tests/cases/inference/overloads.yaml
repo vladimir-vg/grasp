@@ -77,8 +77,8 @@
 
     sizes(chars: a, tags: b) <-
         doc(title: t, tags: g)
-        a := length(t)
-        b := length(g)
+        a := string:length(t)
+        b := array:length(g)
   expected_types:
     sizes:   {chars: i64, tags: i64}
     sizes:0: {t: string, g: "array(string)", a: i64, b: i64}

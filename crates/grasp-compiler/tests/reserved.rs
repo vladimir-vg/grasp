@@ -105,21 +105,35 @@ fn the_reserved_namespaces_match_syntax_md() {
     assert_same("reserved namespaces", &listed, RESERVED_NAMESPACES);
 }
 
+/// The library the compiler has is the library `stdlib.grasp` declares.
+///
+/// Read as text here. Once the function typespec is part of the grammar this
+/// becomes a parse, and the check grows from the names to the shapes.
 #[test]
-fn the_builtins_match_semantics_md() {
-    let text = doc("semantics.md");
-    let builtins = section(&text, "## Builtins", "## Example");
-    // The first column of each table row holds the names.
-    let listed: Vec<String> = builtins
+fn the_builtins_match_stdlib_grasp() {
+    let text = doc("stdlib.grasp");
+    let listed: Vec<String> = text
         .lines()
-        .filter(|l| l.starts_with("| `"))
-        .flat_map(|l| backticked(l.split('|').nth(1).expect("a first column")))
+        .filter_map(|l| l.strip_suffix(" :: function"))
+        .map(str::to_string)
         .collect();
     assert_same("builtins", &listed, BUILTINS);
 }
 
-/// The one-name rule is a separate check from reservation, and the difference
-/// is visible: a column may be called `length`, but a relation may not.
+/// Every callable lives under a held namespace, which is what makes the shape
+/// of a name the answer to whether it is one.
+#[test]
+fn every_builtin_is_namespaced() {
+    for b in BUILTINS {
+        let ns = b.split_once(':').map(|(ns, _)| ns);
+        assert!(
+            ns.is_some_and(|ns| RESERVED_NAMESPACES.contains(&ns)),
+            "`{b}` is a callable outside every held namespace, so nothing stops a \
+             relation taking its name"
+        );
+    }
+}
+
 #[test]
 fn builtins_are_not_reserved_words() {
     for b in BUILTINS {

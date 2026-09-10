@@ -293,8 +293,8 @@ only ever a subexpression:
 ```grasp
 result(v: n) <-
     person(name: s)
-    n := length(s)          # a call, inside a match
-    length(s) > 3           # a call, inside a filter
+    n := string:length(s)   # a call, inside a match
+    string:length(s) > 3    # a call, inside a filter
 ```
 
 There is no statement that is a bare call, so nothing has to disambiguate.
@@ -304,10 +304,11 @@ never compete.
 
 ## Name resolution
 
-**A name is either a relation or a callable, never both.** The compiler enforces
-this when the program loads: if a program defines a relation `total`, `total`
-cannot also name a builtin, and vice versa. This is what lets body-statement
-position resolve `name(` without lookahead.
+**A name under a reserved namespace is a callable; every other name is a
+relation's.** Every function in the library is namespaced, so the two can never
+collide and body-statement position resolves `name(` without lookahead: a
+qualified name under a held prefix is a call, and anything else begins an atom.
+A relation may be called `length`.
 
 Column names, variable names and namespace-qualified names are separate scopes
 and unaffected.
@@ -326,15 +327,18 @@ by the one-name rule above, but a column may be called `length`.
 
 ### Reserved namespace prefixes
 
-`string:`, `array:`, `dict:`, `record:`, `json:`, `boolean:`, `agg:` and
-`temporal:` belong to the language. User code may not define names under them.
-Most are held so that the standard library can grow into them without taking
-names a program was already using — see [`overview.md`](overview.md#future-work).
+`string:`, `array:`, `dict:`, `record:`, `json:`, `boolean:`, `integer:`,
+`float:`, `numeric:`, `bytes:`, `bits:`, `temporal:`, `crypto:` and `agg:`
+belong to the language. User code may not define names under them.
 
-Three are not held but occupied. `record:get`, `dict:get` and `boolean:not` are
-what [desugaring](semantics.md#desugaring) writes, so those namespaces are
-reserved for the reason the others will be one day: something already lives
-there, and a relation of the same name would collide with it.
+They hold the [standard library](semantics.md#the-standard-library), every
+function of which is namespaced — so a name under one of these is a callable and
+a name under none of them is a relation's. That is what lets body-statement
+position tell an atom from a filter without a lookahead, and it is why a
+relation may be called `length`.
+
+Several are held and empty, for families that arrive with their types. The rest
+are in `stdlib.grasp`.
 
 ## AST
 

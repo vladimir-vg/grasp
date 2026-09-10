@@ -27,7 +27,7 @@
 
     r(x: x) <-
         s(x: x)
-        length(x)
+        string:length(x)
   expected_diagnostics:
     - severity: error
       pass: infer

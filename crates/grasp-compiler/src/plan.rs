@@ -1333,7 +1333,7 @@ fn destructure(
         let size = core::Expr::Binary {
             op: BinOp::Eq,
             lhs: Box::new(core::Expr::Call {
-                callee: core::Builtin::Length,
+                callee: core::Builtin::DictLength,
                 args: vec![subject.clone()],
                 span,
             }),
@@ -1477,7 +1477,7 @@ fn destructure_array(
 ) {
     let consumes = free(subject);
     let length = core::Expr::Call {
-        callee: core::Builtin::Length,
+        callee: core::Builtin::ArrayLength,
         args: vec![subject.clone()],
         span,
     };
@@ -1504,7 +1504,7 @@ fn destructure_array(
     });
 
     let at = |i: usize| core::Expr::Call {
-        callee: core::Builtin::ArrayGet,
+        callee: core::Builtin::ArrayAt,
         args: vec![
             subject.clone(),
             core::Expr::Lit {

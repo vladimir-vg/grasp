@@ -218,7 +218,7 @@
 
     r(v: n) <-
         p(s: s)
-        n := length(s)
+        n := string:length(s)
   expected_ok: true
 
 # A brace form is parsed once and read as a pattern only if `:=` follows, so

@@ -33,7 +33,7 @@
     r(x: x, y: v) <-
         s(x: x, y: v)
 
-# `a ++ b`  ->  `concat(a, b)`
+# `a ++ b`  ->  `string:concat(a, b)`
 - name: concatenation is concat
   source: |
     s :: relation(a: string, b: string)
@@ -46,7 +46,7 @@
 
     r(v: n) <-
         s(a: a, b: b)
-        n := concat(a, b)
+        n := string:concat(a, b)
 
 - name: chained concatenation nests to the left
   source: |
@@ -60,7 +60,7 @@
 
     r(v: n) <-
         s(a: a, b: b, c: c)
-        n := concat(concat(a, b), c)
+        n := string:concat(string:concat(a, b), c)
 
 # `{a: v}`  ->  `{"a" => v}`  and  `{"a": v}`  ->  `{"a" => v}`
 - name: the colon dict form is the arrow form with a string key
@@ -164,7 +164,7 @@
 
     r(x: x, v: n) <-
         s(x: x, rec: rec, a: a, b: b)
-        n := {"tag" => record:get(rec, "f"), "joined" => concat(a, b)}
+        n := {"tag" => record:get(rec, "f"), "joined" => string:concat(a, b)}
 
 # `equivalent_to` says nothing about whether either side is right, so pin the
 # sources here too.
@@ -184,6 +184,6 @@
 
     r(x: x, v: n, w: d) <-
         s(x: x, rec: rec, a: a, b: b)
-        n := boolean:not(concat(a, b) = "x")
+        n := boolean:not(string:concat(a, b) = "x")
         d := {"tag" => record:get(rec, "f")}
   expected_ok: true

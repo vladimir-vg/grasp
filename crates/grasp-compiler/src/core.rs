@@ -266,129 +266,177 @@ impl Expr {
 
 /// Every callable there is.
 ///
-/// The first group is `docs/grasp/semantics.md`'s builtin table — what a person
-/// writes. The last three are what desugaring writes: they live in reserved
-/// namespaces, and a program that spells one is writing the expansion by hand
-/// rather than reaching for something new.
+/// **Every one is namespaced, and the namespace is the type family it belongs
+/// to.** That is what makes each name monomorphic — `string:length` and
+/// `array:length` are two functions, not one overloaded on its argument — and it
+/// is why `record:get`, `dict:get` and `boolean:not` stopped being three
+/// exceptions beside a dozen bare names.
 ///
-/// The reserved namespaces hold *no other* names. `string:length` parses as a
-/// qualified identifier and resolves to nothing, because those namespaces are
-/// held for a library that has not grown into them yet.
+/// `integer:` and `float:` do not merge into a `number:`. Float semantics are
+/// not integer semantics, and `numeric` — arbitrary-precision decimal, when it
+/// arrives — is a third thing again. `float:floor` exists and `integer:floor`
+/// does not, being the identity on an `i64`.
+///
+/// A few are what desugaring writes rather than what a person does; each says
+/// so. The rest are `docs/grasp/stdlib.grasp`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Builtin {
-    Abs,
-    Floor,
-    Ceil,
-    Round,
-    Length,
-    Concat,
-    Lower,
-    Upper,
-    Trim,
-    /// `if(cond, a, b)` — the only branching construct.
-    If,
-    Keys,
-    Entries,
-
-    /// `record:get(s, "f")` — what `s.f` desugars to.
-    RecordGet,
-    /// `dict:get(d, k)` — what `d[k]` and a dict pattern desugar to.
-    ///
-    /// The one of the three with no name a program can write: `d[k]` is the
-    /// spelling, and giving it a second one would be giving grasp the computed
-    /// dict lookup [`semantics.md`] holds back, unchecked, under a name nothing
-    /// documents. `record:get` and `boolean:not` keep theirs, being the written
-    /// halves of `.` and `not`.
-    ///
-    /// [`semantics.md`]: ../../../docs/grasp/semantics.md
-    DictGet,
     /// `boolean:not(e)` — what `not e` desugars to in expression position.
     BooleanNot,
-    /// `array:get(a, i)` — an element by 0-based position, `optional(E)`.
+
+    IntegerAbs,
+
+    FloatAbs,
+    FloatFloor,
+    FloatCeil,
+    FloatRound,
+
+    StringLength,
+    /// What `a ++ b` desugars to.
+    StringConcat,
+    StringLower,
+    StringUpper,
+    StringTrim,
+
+    ArrayLength,
+    /// `array:at(a, index: i)` — an element by 0-based position.
     ///
-    /// What an array pattern reads each of its variables with. Not a name a
-    /// program can write, for `dict:get`'s reason: grasp has no element-access
-    /// syntax yet, and a namespaced spelling would be one by the back door.
-    ArrayGet,
+    /// Access **by position** is `at` and access by key is `get`, throughout.
+    ArrayAt,
     /// `array:drop(a, n)` — the elements from position `n` on.
     ///
-    /// What an array pattern's `*r` binds. It exists because the grasp-dbsp
-    /// expression it becomes binds a name — `filter_array(a, function((e, i) ->
-    /// i >= n))` — and grasp's expressions do not, so the binder is introduced
-    /// at emission rather than carried through the middle of the compiler.
+    /// What an array pattern's `*r` binds, and not a name a program writes: the
+    /// grasp-dbsp expression it becomes binds a name — `filter_array(a,
+    /// function((e, i) -> i >= n))` — and grasp's expressions do not, so the
+    /// binder is introduced at emission rather than carried through the middle
+    /// of the compiler.
     ArrayDrop,
-    /// `dict:without_keys(d, ["a"])` — the entries the pattern did not name.
+
+    DictLength,
+    /// `dict:get(d, key: k)` — what `d[k]` and a dict pattern desugar to.
+    DictGet,
+    DictKeys,
+    DictEntries,
+    /// `dict:without_keys(d, ["a"])` — the entries a pattern did not name.
     ///
-    /// What a dict pattern's `**e` binds, and an emission-time binder like
-    /// [`Builtin::ArrayDrop`]: it becomes a `filter_array` over the dict's
-    /// entries, rebuilt with `dict`.
+    /// An emission-time binder like [`Builtin::ArrayDrop`], for the same reason.
     DictWithoutKeys,
+
+    /// `record:get(r, field: "f")` — what `r.f` desugars to.
+    RecordGet,
 }
 
 impl Builtin {
     pub fn from_name(name: &str) -> Option<Builtin> {
         Some(match name {
-            "abs" => Builtin::Abs,
-            "floor" => Builtin::Floor,
-            "ceil" => Builtin::Ceil,
-            "round" => Builtin::Round,
-            "length" => Builtin::Length,
-            "concat" => Builtin::Concat,
-            "lower" => Builtin::Lower,
-            "upper" => Builtin::Upper,
-            "trim" => Builtin::Trim,
-            "if" => Builtin::If,
-            "keys" => Builtin::Keys,
-            "entries" => Builtin::Entries,
-            "record:get" => Builtin::RecordGet,
             "boolean:not" => Builtin::BooleanNot,
+            "integer:abs" => Builtin::IntegerAbs,
+            "float:abs" => Builtin::FloatAbs,
+            "float:floor" => Builtin::FloatFloor,
+            "float:ceil" => Builtin::FloatCeil,
+            "float:round" => Builtin::FloatRound,
+            "string:length" => Builtin::StringLength,
+            "string:concat" => Builtin::StringConcat,
+            "string:lower" => Builtin::StringLower,
+            "string:upper" => Builtin::StringUpper,
+            "string:trim" => Builtin::StringTrim,
+            "array:length" => Builtin::ArrayLength,
+            "array:at" => Builtin::ArrayAt,
+            "array:drop" => Builtin::ArrayDrop,
+            "dict:length" => Builtin::DictLength,
+            "dict:get" => Builtin::DictGet,
+            "dict:keys" => Builtin::DictKeys,
+            "dict:entries" => Builtin::DictEntries,
+            "dict:without_keys" => Builtin::DictWithoutKeys,
+            "record:get" => Builtin::RecordGet,
             _ => return None,
         })
     }
 
-    /// Every callable, for the test that pins this list against the one
-    /// `parse.rs` reserves and `semantics.md` documents.
+    /// Every callable, for the test that pins this list against
+    /// `docs/grasp/stdlib.grasp`.
     pub const ALL: &'static [Builtin] = &[
-        Builtin::Abs,
-        Builtin::Floor,
-        Builtin::Ceil,
-        Builtin::Round,
-        Builtin::Length,
-        Builtin::Concat,
-        Builtin::Lower,
-        Builtin::Upper,
-        Builtin::Trim,
-        Builtin::If,
-        Builtin::Keys,
-        Builtin::Entries,
-        Builtin::RecordGet,
-        Builtin::DictGet,
         Builtin::BooleanNot,
-        Builtin::ArrayGet,
+        Builtin::IntegerAbs,
+        Builtin::FloatAbs,
+        Builtin::FloatFloor,
+        Builtin::FloatCeil,
+        Builtin::FloatRound,
+        Builtin::StringLength,
+        Builtin::StringConcat,
+        Builtin::StringLower,
+        Builtin::StringUpper,
+        Builtin::StringTrim,
+        Builtin::ArrayLength,
+        Builtin::ArrayAt,
         Builtin::ArrayDrop,
+        Builtin::DictLength,
+        Builtin::DictGet,
+        Builtin::DictKeys,
+        Builtin::DictEntries,
         Builtin::DictWithoutKeys,
+        Builtin::RecordGet,
     ];
 
+    /// What grasp calls it.
     pub fn as_str(self) -> &'static str {
         match self {
-            Builtin::Abs => "abs",
-            Builtin::Floor => "floor",
-            Builtin::Ceil => "ceil",
-            Builtin::Round => "round",
-            Builtin::Length => "length",
-            Builtin::Concat => "concat",
-            Builtin::Lower => "lower",
-            Builtin::Upper => "upper",
-            Builtin::Trim => "trim",
-            Builtin::If => "if",
-            Builtin::Keys => "keys",
-            Builtin::Entries => "entries",
-            Builtin::RecordGet => "record:get",
-            Builtin::DictGet => "dict:get",
-            Builtin::ArrayGet => "array:get",
-            Builtin::ArrayDrop => "array:drop",
-            Builtin::DictWithoutKeys => "dict:without_keys",
             Builtin::BooleanNot => "boolean:not",
+            Builtin::IntegerAbs => "integer:abs",
+            Builtin::FloatAbs => "float:abs",
+            Builtin::FloatFloor => "float:floor",
+            Builtin::FloatCeil => "float:ceil",
+            Builtin::FloatRound => "float:round",
+            Builtin::StringLength => "string:length",
+            Builtin::StringConcat => "string:concat",
+            Builtin::StringLower => "string:lower",
+            Builtin::StringUpper => "string:upper",
+            Builtin::StringTrim => "string:trim",
+            Builtin::ArrayLength => "array:length",
+            Builtin::ArrayAt => "array:at",
+            Builtin::ArrayDrop => "array:drop",
+            Builtin::DictLength => "dict:length",
+            Builtin::DictGet => "dict:get",
+            Builtin::DictKeys => "dict:keys",
+            Builtin::DictEntries => "dict:entries",
+            Builtin::DictWithoutKeys => "dict:without_keys",
+            Builtin::RecordGet => "record:get",
+        }
+    }
+
+    /// What grasp-dbsp calls it, where the two are one call.
+    ///
+    /// `None` where emission is not a rename: `array:drop` and
+    /// `dict:without_keys` become expressions that bind a name, and
+    /// `record:get` becomes a field access. Those have their own arms in
+    /// [`crate::emit`] and never reach the one that reads this.
+    ///
+    /// The two names differ because grasp chose its library rather than
+    /// inheriting one: `float:floor` and `integer:abs` are grasp's names for
+    /// things the target spells `floor` and `abs`, and `string:length`,
+    /// `array:length` and `dict:length` are three functions over one.
+    pub fn target(self) -> Option<&'static str> {
+        match self {
+            Builtin::BooleanNot => Some("not"),
+            Builtin::IntegerAbs => Some("abs"),
+            Builtin::FloatAbs => Some("abs"),
+            Builtin::FloatFloor => Some("floor"),
+            Builtin::FloatCeil => Some("ceil"),
+            Builtin::FloatRound => Some("round"),
+            Builtin::StringLength => Some("length"),
+            Builtin::StringConcat => Some("concat"),
+            Builtin::StringLower => Some("lower"),
+            Builtin::StringUpper => Some("upper"),
+            Builtin::StringTrim => Some("trim"),
+            Builtin::ArrayLength => Some("length"),
+            Builtin::ArrayAt => Some("get"),
+            Builtin::ArrayDrop => None,
+            Builtin::DictLength => Some("length"),
+            Builtin::DictGet => Some("get"),
+            Builtin::DictKeys => Some("keys"),
+            Builtin::DictEntries => Some("entries"),
+            Builtin::DictWithoutKeys => None,
+            Builtin::RecordGet => None,
         }
     }
 }

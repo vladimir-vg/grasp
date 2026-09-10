@@ -273,7 +273,7 @@ promise is one mechanism rather than two.
 | `{k => v, …}` | `{k => v, …}` — identical |
 | `d[k]` lookup | `get(d, k)` → `optional(V)` |
 | `keys(d)` | `keys(d)` → `array(K)` |
-| `length(d)` | `length(d)` |
+| `dict:length(d)` | `length(d)` |
 | `{a:} := d` destructure | `get(d, "a")` per key, guarded by `length(d) = N` |
 | `{a:, **e} := d` remainder | `dict(filter_array(entries(d), function((e) -> e.key != "a")))` |
 | `[x, y] := arr` destructure | `get(arr, 0)` per position, guarded by `length(arr) = N` |

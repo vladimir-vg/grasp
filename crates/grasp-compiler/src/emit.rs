@@ -1212,7 +1212,7 @@ fn call_text(scope: &Scope<'_>, callee: core::Builtin, args: &[core::Expr]) -> S
             format!("get({}, {})", expr_text(dict, None), expr_text(k, None))
         }
         (core::Builtin::BooleanNot, [e]) => format!("(not {})", expr_text(e, None)),
-        (core::Builtin::ArrayGet, [array, index]) => {
+        (core::Builtin::ArrayAt, [array, index]) => {
             format!(
                 "get({}, {})",
                 expr_text(array, None),
@@ -1251,7 +1251,10 @@ fn call_text(scope: &Scope<'_>, callee: core::Builtin, args: &[core::Expr]) -> S
         ),
         _ => {
             let text: Vec<String> = args.iter().map(|a| expr_text(a, None)).collect();
-            format!("{}({})", callee.as_str(), text.join(", "))
+            let name = callee
+                .target()
+                .expect("a builtin with no target name is emitted by an arm above");
+            format!("{name}({})", text.join(", "))
         }
     }
 }

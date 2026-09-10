@@ -75,7 +75,7 @@ reports it rather than defaulting — unless another rule for `edge` settles the
 column instead.
 
 The arguments are **closed expressions** — usually literals, but `1 + 1` and
-`length("abc")` are facts too. They cannot be anything else: a variable there
+`string:length("abc")` are facts too. They cannot be anything else: a variable there
 would be one the head uses and the body does not bind, which
 [safety](#safety) already rejects, and the shorthand `edge(src:)` means
 `edge(src: src)` and is rejected the same way.
@@ -176,7 +176,7 @@ becomes an equality check, which is what
 
 ```grasp
 total := price * quantity
-n     := length(name)
+n     := string:length(name)
 ```
 
 A match binds, so it satisfies [safety](#safety) for the variable on its left.
@@ -192,7 +192,7 @@ it is depends on the tables in [`types.md`](types.md#runtime-filters).
 named(name: n, len: k) <-
     person(name: n)      # n : optional(string)
     n :: string          # drops the absent rows
-    k := length(n)       # n is a string here
+    k := string:length(n)  # n is a string here
 ```
 
 **It narrows for the whole rule, not for what follows it.** A body is a set, so
@@ -372,8 +372,8 @@ to fold).
 
 **Grouping is implicit: the group is the head's non-aggregate columns** — the
 *variables* those columns read, rather than the columns themselves. The
-difference shows: `q(tag: length(d), total: s)` groups by `d`, while binding
-`t := length(d)` first and writing `q(tag: t, …)` groups by `t`, so two
+difference shows: `q(tag: string:length(d), total: s)` groups by `d`, while binding
+`t := string:length(d)` first and writing `q(tag: t, …)` groups by `t`, so two
 departments whose names are the same length give two rows in the first and one
 in the second. Above,
 `dept` — so one row per department. This is what makes aggregation read like the
@@ -420,7 +420,7 @@ not mention it.
   and a second aggregate in the same rule does not see it either.
 - **`count<>` takes no argument** and counts the assignments in the group. Over
   an unnest that means *distinct* elements: `(t) := *["x", "x"]` binds `t` to
-  `"x"`, once, however many elements produced it. `length(arr)` is what counts
+  `"x"`, once, however many elements produced it. `array:length(arr)` is what counts
   elements.
 - **Several aggregates in one rule** share the group: `min<r>` and `max<r>`
   together give one row per group with both.
@@ -502,7 +502,7 @@ before the join graph, so everything downstream sees the smaller core.
 |---|---|
 | `x:` in an atom, a head or a pattern | `x: x` |
 | `x: agg<e>` in a head | `x: x`, and `x := agg<e>` in the body |
-| `a ++ b` | `concat(a, b)` |
+| `a ++ b` | `string:concat(a, b)` |
 | `{a: v}` | `{"a" => v}` |
 | `{"a": v}` | `{"a" => v}` |
 | `s.f` | `record:get(s, "f")` |
@@ -515,10 +515,10 @@ like any other. Written in the shorthand, since that is how they are written.
 
 | written | means |
 |---|---|
-| `[x, y] := arr` | `length(arr) = 2`, `x := array:get(arr, 0)`, `x :: E`, and so on |
-| `[x, y, *] := arr` | `length(arr) >= 2`, then the two bindings |
+| `[x, y] := arr` | `array:length(arr) = 2`, `x := array:get(arr, 0)`, `x :: E`, and so on |
+| `[x, y, *] := arr` | `array:length(arr) >= 2`, then the two bindings |
 | `[x, y, *r] := arr` | as above, and `r` is the elements from position 2 on |
-| `{a:} := d` | `length(d) = 1`, `a := dict:get(d, "a")`, `a :: V` |
+| `{a:} := d` | `dict:length(d) = 1`, `a := dict:get(d, "a")`, `a :: V` |
 | `{a:, **} := d` | `a := dict:get(d, "a")`, `a :: V` — no size check |
 | `{a:, **e} := d` | as above, and `e := dict:without_keys(d, ["a"])` |
 | `record(a:) := s` | `a := record:get(s, "a")`; `s`'s type must have exactly that field |
@@ -584,43 +584,58 @@ name what they take and are one pattern in any order. Its size check is `=` or
 `>=` where a dict's is only `=`, and both are filters: an array's length is data,
 so a row whose array is the wrong length is simply not derived.
 
-## Builtins
+## The standard library
 
-Each of these is here because grasp wants it. That every one also lowers to a
-grasp-dbsp counterpart is a property worth keeping, not the reason for the
-contents — a library chosen by reading the target's is a library nobody chose.
+**Every function is namespaced, and the namespace is the type family it belongs
+to.** `string:length` and `array:length` are two functions, not one asked to
+guess from its argument — so every name is monomorphic, and type-based
+overloading is not something the language has to have.
 
-| builtin | signature |
-|---|---|
-| `abs`, `floor`, `ceil`, `round` | `T → T`, `T` numeric |
-| `length` | `string → i64`, `array(T) → i64`, `dict(K,V) → i64` |
-| `concat` | `string × string → string` (also written `++`) |
-| `lower`, `upper`, `trim` | `string → string` |
-| `if` | `boolean × T × T → T` |
-| `keys` | `json → optional(array(string))`, `dict(K,V) → array(K)` |
-| `entries` | `dict(K,V) → array(record(key: K, value: V))` |
+`integer:` and `float:` do not merge into a `number:`. Float semantics are not
+integer semantics, and `numeric` — arbitrary-precision decimal, when it arrives —
+is a third thing again. `float:floor` exists and `integer:floor` does not, being
+the identity on an `i64`.
 
-Three things grasp-dbsp has are deliberately not here: **a computed dict
-lookup** (`get(d, k)`), **an explicit conversion** (`cast(x, T)`), and **a
-default for an absent value** (`coalesce(x, d)`). They are its builtins, not
-grasp's.
+The library is `docs/grasp/stdlib.grasp`, which is where a signature is looked
+up. What follows is the shape it takes.
 
-Each has a grasp answer that is not a borrowed builtin. A dict is read by the
-`{a: x} := d` pattern, which names its key. A document is read by the
-[runtime filter](types.md#runtime-filters) `v :: T`. And an absent value is
-*dropped* by that same filter rather than defaulted — which is the whole shape
-of [a body having an answer](#a-body-must-have-an-answer), and the reason
-`coalesce` reads as the odd one out here even though it is ordinary below.
+**Access by position is `at`; access by key is `get`.** `array:at(a, index: 2)`,
+`dict:get(d, key: k)`, `record:get(r, field: "f")`.
 
-What is genuinely missing is a *computed* dict key and an arbitrary change of
-type. Both are wanted; neither will arrive by copying grasp-dbsp's, which is how
-`optional` division briefly got in.
+**A partial function derives no row.** `dict:get` on a missing key and
+`array:at` past the end have no answer, and [a rule derives a row only where
+every step of its body has one](#a-body-must-have-an-answer) — the same rule
+division and every destructure obey. Absence is something to ask about,
+`dict:has`, rather than something to unwrap at every call.
 
-The namespaced spellings (`string:length`, `agg:sum`) are reserved for when the
-library outgrows bare names, and for the type-specific namespaces that arrive
-with their types. Some are already in use for what desugaring writes and a
-program cannot: `record:get`, `dict:get` and `boolean:not` appear in the table
-below and nowhere a person types.
+**The subject is positional and everything else is a keyword.**
+`array:slice(a, start: 0, stop: 3)`, `dict:without(d, keys: ks)`. A binary
+operation over one type stays positional: `string:concat(a, b)`.
+
+**Operators are sugar for functions.** `a ++ b` is `string:concat(a, b)`, `not e`
+is `boolean:not(e)`, `r.f` is `record:get(r, field: "f")`, `d[k]` is
+`dict:get(d, key: k)`. A reader who knows the library knows the operators.
+
+**There is no `if`.** A conditional does not belong in a Datalog: a rule that
+holds for some rows and not others is what a rule *is*, so the answer is two
+rules with complementary filters. Nor is there a `json:` family — a document is
+narrowed to what it holds, `d :: dict(string, json)`, and read with `dict:`.
+
+Two things grasp-dbsp has are deliberately not here: **an explicit conversion**
+(`cast(x, T)`) and **a default for an absent value** (`coalesce(x, d)`). A
+document is read by the [runtime filter](types.md#runtime-filters) `v :: T`, and
+an absent value is *dropped* by that same filter rather than defaulted — which is
+the whole shape of [a body having an answer](#a-body-must-have-an-answer), and
+the reason `coalesce` reads as the odd one out even though it is ordinary below.
+What is genuinely missing is an arbitrary change of type. It is wanted; it will
+not arrive by copying grasp-dbsp's, which is how `optional` division briefly got
+in.
+
+The namespaces are held whether or not anything lives in them yet: `string`,
+`array`, `dict`, `record`, `json`, `boolean`, `integer`, `float`, `numeric`,
+`bytes`, `bits`, `temporal`, `crypto`, `agg`. A name under one is a callable and
+never a relation, which is what lets body-statement position tell an atom from a
+filter without a lookahead.
 
 ## Example
 

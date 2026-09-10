@@ -6,7 +6,7 @@
 # record's fields are its type, so the same claim about a record is a compile
 # error and no row is ever dropped for it.
 
-# `{a:, b:} := d` — `length(d) = 2`, then a get and a narrow per key. The
+# `{a:, b:} := d` — `dict:length(d) = 2`, then a get and a narrow per key. The
 # third row has an extra entry, so the pattern is not exact for it and it
 # derives nothing.
 - name: an exact dict pattern checks the size

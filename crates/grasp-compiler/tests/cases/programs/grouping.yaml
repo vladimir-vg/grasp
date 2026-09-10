@@ -6,8 +6,8 @@
 # is refused rather than answered.
 #
 # The group is "the head's non-aggregate columns" — and it is the *variables*
-# those columns read, not the columns. `q(tag: length(d), total: s)` groups by
-# `d`; binding `t := length(d)` first and writing `q(tag: t, …)` groups by `t`.
+# those columns read, not the columns. `q(tag: string:length(d), total: s)` groups by
+# `d`; binding `t := string:length(d)` first and writing `q(tag: t, …)` groups by `t`.
 
 # The case this rule exists for. Read as a group-by-dept with a `having`, it is
 # what a reader means. Answered by widening the group instead, it groups by
@@ -303,7 +303,7 @@
 
     big(dept: d, team: t, label: m, total: s) <-
         s > 150
-        m := concat(d, t)
+        m := string:concat(d, t)
         s := sum<r>
         emp(dept: d, team: t, sal: r)
   equivalent_to: |
@@ -312,6 +312,6 @@
 
     big(dept: d, team: t, label: m, total: s) <-
         emp(dept: d, team: t, sal: r)
-        m := concat(d, t)
+        m := string:concat(d, t)
         s := sum<r>
         s > 150

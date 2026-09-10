@@ -181,8 +181,8 @@ Four rejections, and none of them is about where a line was written:
 > ``variable `r` is not in the group, so it has no value where the aggregate `s` does``
 
 The rule is on variables rather than values, so a binding that happens to be
-constant within the group is refused too — `m := concat(d, "x")` followed by
-`s > length(m)`, where `m` varies with `d` alone. SQL refuses the same thing.
+constant within the group is refused too — `m := string:concat(d, "x")` followed by
+`s > string:length(m)`, where `m` varies with `d` alone. SQL refuses the same thing.
 The way out is always available and mechanical: inline the definition, since it
 reads only group variables.
 

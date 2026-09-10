@@ -12,11 +12,11 @@
     edge(src: 2, dst: 3)
   expected_ok: true
 
-# "usually literals, but `1 + 1` and `length("abc")` are facts too."
+# "usually literals, but `1 + 1` and `string:length("abc")` are facts too."
 - name: a fact argument may be any closed expression
   source: |
     sized :: relation(n: i64, m: i64)
-    sized(n: 1 + 1, m: length("abc"))
+    sized(n: 1 + 1, m: string:length("abc"))
   expected_ok: true
 
 - name: a fact with a compound argument

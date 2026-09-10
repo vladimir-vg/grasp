@@ -288,7 +288,7 @@ fn expr_of(e: &ast::Expr) -> Result<core::Expr, Diagnostic> {
         // `a ++ b` → `concat(a, b)`.
         ast::Expr::Binary { op, lhs, rhs, span } => match op {
             ast::BinOp::Concat => core::Expr::Call {
-                callee: core::Builtin::Concat,
+                callee: core::Builtin::StringConcat,
                 args: vec![expr_of(lhs)?, expr_of(rhs)?],
                 span: *span,
             },

@@ -75,17 +75,25 @@
 
 # "Colon-separated segments qualify a name with a namespace: `string:length`."
 #
-# It lexes and parses as one identifier, which is what this case is for. It then
-# resolves to nothing: `semantics.md` holds the namespaces "for when the library
-# outgrows bare names", so `string:` is reserved and empty. The rejection is the
-# other half of the same fact, and asserting it keeps both.
-- name: a namespace-qualified callable parses, and resolves to nothing
+# It lexes and parses as one identifier, which is what this case is for — and it
+# resolves, every callable in the library being namespaced. A namespace with
+# nothing in it does not: `crypto:` is held for a family that has not arrived.
+- name: a namespace-qualified callable parses and resolves
   source: |
     r :: relation(s: string)
 
     lens(v: n) <-
         r(s: s)
         n := string:length(s)
+  expected_ok: true
+
+- name: an empty namespace resolves to nothing
+  source: |
+    r :: relation(s: string)
+
+    lens(v: n) <-
+        r(s: s)
+        n := crypto:sha256(s)
   expected_diagnostics:
     - severity: error
       pass: desugar

@@ -71,15 +71,14 @@
         s(x: length)
   expected_ok: true
 
-# "A name is either a relation or a callable, never both."
-- name: a relation may not share a builtin's name
+# And so may a relation. Every callable is namespaced, so a bare name is a
+# relation's and cannot collide with one — the rule that used to say "a name is
+# either a relation or a callable" is now the shape of the name.
+- name: a relation may be called length
   source: |
+    length :: relation(x: i64)
     length(x: 1)
-  expected_diagnostics:
-    - severity: error
-      pass: parse
-      message: "cannot be both a relation and a callable"
-      line: 1
+  expected_ok: true
 
 # "User code may not define names under the reserved namespace prefixes."
 - name: a relation may not be defined under a reserved namespace
