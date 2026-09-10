@@ -86,9 +86,15 @@ implicit numeric promotion deleted, both to satisfy the third and fifth.
   grammar at all.
 - The type system described in [`language.md`](language.md) (batch types and
   value types). The value vocabulary is `bool`, `i64`, `f64`, `string`,
-  `optional(T)`, `record(...)`, `array(T)`, `dict(K,V)` and `json`. A dict's
-  entries are sorted and deduplicated by construction, and its keys are the
-  scalars — the ones with a JSON object-key spelling.
+  `date`, `time`, `timestamp`, `interval`, `optional(T)`, `record(...)`,
+  `array(T)`, `dict(K,V)` and `json`. A dict's entries are sorted and
+  deduplicated by construction, and its keys are the scalars — the ones with a
+  JSON object-key spelling.
+
+  There are **no timezones and no months**. A timestamp is always UTC and an
+  interval is microseconds, so a day is exactly 86400 seconds and each of the
+  four is one number — which is what makes them order, key a dict and compare
+  structurally like everything else here.
 - The value model described in [`mapping.md`](mapping.md).
 - Feldera-native JSON input and output, emitting deltas — `weighted` by default
   here because it represents a Z-set delta exactly, `insert_delete` for
