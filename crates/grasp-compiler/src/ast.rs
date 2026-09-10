@@ -576,6 +576,7 @@ impl fmt::Display for Type {
             Type::Date => f.write_str("date"),
             Type::Time => f.write_str("time"),
             Type::Timestamp => f.write_str("timestamp"),
+            Type::Interval => f.write_str("interval"),
             Type::Var(name) => f.write_str(name),
             Type::Optional(t) => write!(f, "optional({t})"),
             Type::Array(t) => write!(f, "array({t})"),
@@ -616,6 +617,9 @@ pub enum Type {
     /// An instant, always UTC. There is no zone-carrying form; see
     /// `overview.md`.
     Timestamp,
+    /// A span of time, in microseconds. Months are not in it — see
+    /// `overview.md`.
+    Interval,
     /// `T` — a type variable, and the one thing here that is not a type.
     ///
     /// Legal in a [function typespec][`FnSpec`] and nowhere else: it says that

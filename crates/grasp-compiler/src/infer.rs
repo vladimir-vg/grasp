@@ -1094,6 +1094,12 @@ impl Cx {
                 if err.is_some() {
                     return (Ty::Error, err);
                 }
+                // Temporal arithmetic is tried before the numeric rule, because
+                // none of its shapes compose: a timestamp and an interval are
+                // two types and the answer is a third.
+                if let Some(t) = temporal_arith(*op, &l, &r) {
+                    return (t, None);
+                }
                 match op {
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => match both {
                         Some(t) if numeric(&t) => (t, None),
@@ -1671,21 +1677,26 @@ impl Cx {
             }
             B::TemporalEpochMicros => one(args, &arity, Ty::Timestamp, Ty::I64, &wrong),
 
-            B::TemporalDaysBetween | B::TemporalMicrosBetween => {
-                if let Some(d) = arity(2) {
+            // Five units in, one span out. Every conversion is exact, which is
+            // what lets one type take all five.
+            B::TemporalInterval => {
+                if let Some(d) = arity(5) {
                     return (Ty::Error, Some(d));
                 }
-                let want = if callee == B::TemporalDaysBetween {
-                    Ty::Date
-                } else {
-                    Ty::Timestamp
-                };
-                if args.iter().all(|t| *t == want || matches!(t, Ty::Unknown)) {
-                    (Ty::I64, None)
+                if args
+                    .iter()
+                    .all(|t| matches!(t, Ty::I64 | Ty::Int | Ty::Unknown))
+                {
+                    (Ty::Interval, None)
                 } else {
                     wrong()
                 }
             }
+            B::TemporalTotalDays
+            | B::TemporalTotalHours
+            | B::TemporalTotalMinutes
+            | B::TemporalTotalSeconds
+            | B::TemporalTotalMicroseconds => one(args, &arity, Ty::Interval, Ty::I64, &wrong),
 
             // Not a signature list: its result depends on *which* field, so it
             // reads the key literal rather than a type.
@@ -1742,6 +1753,33 @@ fn numeric(t: &Ty) -> bool {
     matches!(t, Ty::I64 | Ty::F64 | Ty::Int | Ty::Unknown)
 }
 
+/// The result of `+` or `-` over temporal values, or `None` where the pair is
+/// not one of the shapes and the numeric rule should have it.
+///
+/// **Every one is total**, which is why none of this reaches the narrowing a
+/// partial operation would need. A `date` has no sub-day resolution, so
+/// shifting one truncates to whole days — stated in `types.md` beside the
+/// operator, along with what that costs.
+fn temporal_arith(op: BinOp, left: &Ty, right: &Ty) -> Option<Ty> {
+    if !matches!(op, BinOp::Add | BinOp::Sub) {
+        return None;
+    }
+    Some(match (op, left, right) {
+        // A difference between two of a kind is how far apart they are.
+        (BinOp::Sub, Ty::Date, Ty::Date)
+        | (BinOp::Sub, Ty::Time, Ty::Time)
+        | (BinOp::Sub, Ty::Timestamp, Ty::Timestamp) => Ty::Interval,
+        // Shifting: the operand that is not the span keeps its type.
+        (_, Ty::Timestamp | Ty::Date | Ty::Time, Ty::Interval) => left.clone(),
+        // `iv + ts` reads as well as the other order. Subtraction does not
+        // commute: a moment less a duration is a moment, a duration less a
+        // moment is nothing.
+        (BinOp::Add, Ty::Interval, Ty::Timestamp | Ty::Date | Ty::Time) => right.clone(),
+        (_, Ty::Interval, Ty::Interval) => Ty::Interval,
+        _ => return None,
+    })
+}
+
 /// Whether a type has stopped moving, so a family may be judged on it.
 fn settled(t: &Ty) -> bool {
     !matches!(t, Ty::Unknown | Ty::Int | Ty::Error)
@@ -1762,6 +1800,9 @@ fn scalar(t: &Ty) -> bool {
             | Ty::Date
             | Ty::Time
             | Ty::Timestamp
+            // One integer, so it orders — which is what a type carrying months
+            // beside them could not have done.
+            | Ty::Interval
     )
 }
 

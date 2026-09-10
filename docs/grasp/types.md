@@ -22,6 +22,7 @@ is in [`syntax.md`](syntax.md#grammar).
 | `date` | a calendar date — no time, no zone |
 | `time` | a time of day — no date, no zone |
 | `timestamp` | an instant, always UTC |
+| `interval` | a span of time, in microseconds |
 
 A **type variable** — `T`, `K`, `V` — is not in this table, being not a type but
 a stand-in for one. It is legal in a
@@ -36,22 +37,30 @@ arbitrary-precision `integer` and `numeric`, `bytes`, `bits`, the temporal
 types, general `enum` — is listed under
 [future work](overview.md#future-work), each blocked on a grasp-dbsp value type.
 
-**Scalars** are `boolean`, `i64`, `f64`, `string`, `date`, `time` and
-`timestamp`. The word matters in two rules below: what may key a dict, and what
+**Scalars** are `boolean`, `i64`, `f64`, `string`, `date`, `time`, `timestamp`
+and `interval`. The word matters in two rules below: what may key a dict, and what
 may be compared.
 
 The **temporal** three are scalars because each orders as the instant it names,
 and that one fact is what makes all four uses of the word work at once —
 ordering, `min`/`max`, keying a dict, and `dict:from_entries`. They are **not
-numbers**: `d + 1` is the error `"x" + 1` already is, and there is no arithmetic
-rule to state. What "how far apart" means is an `interval`, which grasp does not
-have; until it does, a difference is a named function that says its unit —
-`temporal:days_between`, `temporal:micros_between`.
+numbers**: `d + 1` is the error `"x" + 1` already is. What they take instead is
+an `interval`, under [Arithmetic](#arithmetic) below.
 
-A `timestamp` is always UTC. There is no `timestamp_with_timezone`, and no
-`interval`; both are [future work](overview.md#future-work). Values are built
-with `temporal:`, never with a literal — grasp has no temporal literal syntax,
-and the library is where a value comes from.
+An **`interval`** is a span of time, in microseconds. One integer, because with
+no timezone a day is exactly 86400 seconds and every unit below a month converts
+exactly — so `temporal:interval(days: 1)` and `temporal:interval(hours: 24)` are
+one value. That is also why it is a scalar where a type carrying months beside
+them could not have been: 1 month against 31 days has no answer, and an order
+over it would have to be invented.
+
+Months are the one quantity that does not convert, and they are **not in this
+type**. A second `month_interval` is [future work](overview.md#future-work), and
+`1 month = 30 days` is not a rule grasp invents to avoid needing one.
+
+A `timestamp` is always UTC; there is no `timestamp_with_timezone`. Values are
+built with `temporal:`, never with a literal — grasp has no temporal literal
+syntax, and the library is where a value comes from.
 
 ## Relation types
 
@@ -225,7 +234,7 @@ same program.
 | `optional(T)` | `T` | the value is absent |
 | `optional(A)` | `optional(B)` | present and not a `B` |
 | `json` | `T` | the document does not hold a `T` |
-| `json` | `date` / `time` / `timestamp` | the document does not hold one, written |
+| `json` | `date` / `time` / `timestamp` / `interval` | the document does not hold one, written |
 | `array(A)` | `array(B)` | any element is not a `B` |
 | `dict(K,A)` | `dict(K,B)` | any value is not a `B` |
 
@@ -261,6 +270,10 @@ pass is a silently empty relation.
 
 ## Arithmetic
 
+Two halves: numbers, and temporal values.
+
+### Numbers
+
 `+`, `-` and `*` take two operands of one numeric type and give that type.
 There is no implicit conversion, so `i64` and `f64` never meet: mixing them is
 an error naming both, and a literal beside a typed operand takes that operand's
@@ -278,6 +291,40 @@ q := a / b          # i64; rows where b is zero are not derived
 an instance of. grasp-dbsp types division `optional(T)` instead, because a
 compilation target says what can be missing rather than dropping it;
 [`mapping.md`](mapping.md#narrowing-and-dropping) is where the two meet.
+
+### Temporal values
+
+`+` and `-` also take a temporal value and a span, and every case is **total** —
+there is no dropped row anywhere in this table.
+
+| | result | |
+|---|---|---|
+| `date - date`, `time - time`, `timestamp - timestamp` | `interval` | how far apart |
+| `timestamp ± interval` | `timestamp` | exact |
+| `time ± interval` | `time` | wraps at midnight |
+| `date ± interval` | `date` | **truncates to whole days** |
+| `interval ± interval` | `interval` | exact |
+
+`interval + x` reads as well as `x + interval` and means the same thing.
+Subtraction does not commute: a moment less a duration is a moment, and a
+duration less a moment is nothing, so only the first order is a program.
+
+`*`, `/` and `%` stay numbers-only. Scaling a span — `iv * 3` — is
+[future work](overview.md#future-work).
+
+**A date has no sub-day resolution**, so a shift truncates toward zero: thirty
+hours moves it a day, one hour leaves it alone, and so does minus one hour. That
+is the one lossy rule in the language, and it is what keeps every case here
+total. Two consequences follow, and they are worth knowing rather than meeting:
+
+```grasp
+half := temporal:interval(hours: 12)
+(d + half) - half        # d — but only because both truncated to nothing
+(d + half) + half        # d, while d + temporal:interval(days: 1) is the next day
+```
+
+It is **not invertible**, and **not associative over addition**. Neither holds
+for `timestamp`, which has the resolution to be exact.
 
 ## Comparison and ordering
 

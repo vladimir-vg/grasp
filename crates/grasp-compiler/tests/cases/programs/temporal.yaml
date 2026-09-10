@@ -277,15 +277,21 @@
     - out:
         - [1, {y: 2024, mo: 2, dy: 29, h: 14, mi: 30, s: 5, us: 123456}]
 
-- name: a difference says its unit
+# -- interval -----------------------------------------------------------------
+#
+# A span of time, in microseconds. It is a **scalar** — one integer, so it
+# orders, `min` folds it, and it keys a dict — which a type carrying months
+# beside them could not have been, 1 month against 31 days having no answer.
+
+- name: a difference between two of a kind is a span
   source: |
     src :: relation(a: date, b: date, x: timestamp, y: timestamp)
     src(a:, b:, x:, y:) <- input
 
     out(days: d, micros: m) <-
         src(a: a, b: b, x: x, y: y)
-        d := temporal:days_between(a, b)
-        m := temporal:micros_between(x, y)
+        d := temporal:total_days(a - b)
+        m := temporal:total_microseconds(x - y)
 
   input:
     - src:
@@ -294,6 +300,134 @@
   expected_exact_output:
     - out:
         - [1, {days: 29, micros: 1000000}]
+
+- name: an instant shifts by a span
+  source: |
+    src :: relation(ts: timestamp)
+    src(ts:) <- input
+
+    out(later: l, earlier: e) <-
+        src(ts: ts)
+        iv := temporal:interval(hours: 1, minutes: 30)
+        l := ts + iv
+        e := ts - iv
+
+  input:
+    - src:
+        - [1, {ts: "2024-01-15 12:00:00"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {later: "2024-01-15 13:30:00", earlier: "2024-01-15 10:30:00"}]
+
+# Every unit converts exactly, so two spellings of one span are one value.
+- name: a day and twenty-four hours are one span
+  source: |
+    src :: relation(x: i64)
+    src(x:) <- input
+
+    out(same: s) <-
+        src(x: x)
+        s := temporal:interval(days: 1) = temporal:interval(hours: 24)
+
+  input:
+    - src:
+        - [1, {x: 1}]
+
+  expected_exact_output:
+    - out:
+        - [1, {same: true}]
+
+# A date has no sub-day resolution, so a shift truncates toward zero. Total —
+# the row is always derived — and the one lossy rule here.
+- name: a date shifts by whole days, truncating
+  source: |
+    src :: relation(d: date)
+    src(d:) <- input
+
+    out(a: a, b: b, c: c) <-
+        src(d: d)
+        a := d + temporal:interval(days: 1)
+        b := d + temporal:interval(hours: 30)
+        c := d + temporal:interval(hours: 1)
+
+  input:
+    - src:
+        - [1, {d: "2024-01-15"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {a: "2024-01-16", b: "2024-01-16", c: "2024-01-15"}]
+
+# The two costs of that being total, as fixtures rather than prose: it is not
+# invertible, and not associative over addition.
+- name: truncation is neither invertible nor associative
+  source: |
+    src :: relation(d: date)
+    src(d:) <- input
+
+    out(round_trip: r, twice: t, once: o) <-
+        src(d: d)
+        half := temporal:interval(hours: 12)
+        r := (d + half) - half
+        t := (d + half) + half
+        o := d + temporal:interval(days: 1)
+
+  input:
+    - src:
+        - [1, {d: "2024-01-15"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {round_trip: "2024-01-15", twice: "2024-01-15", once: "2024-01-16"}]
+
+- name: a time wraps at midnight
+  source: |
+    src :: relation(t: time)
+    src(t:) <- input
+
+    out(later: l) <-
+        src(t: t)
+        l := t + temporal:interval(hours: 1)
+
+  input:
+    - src:
+        - [1, {t: "23:30:00"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {later: "00:30:00"}]
+
+- name: a span orders, so it groups and folds
+  source: |
+    src :: relation(k: i64, a: timestamp, b: timestamp)
+    src(k:, a:, b:) <- input
+
+    gaps(k: k, shortest: min<g>) <-
+        src(k: k, a: a, b: b)
+        g := a - b
+
+  input:
+    - src:
+        - [1, {k: 1, a: "2024-01-01 02:00:00", b: "2024-01-01 00:00:00"}]
+        - [1, {k: 1, a: "2024-01-01 00:30:00", b: "2024-01-01 00:00:00"}]
+
+  expected_exact_output:
+    - gaps:
+        - [1, {k: 1, shortest: "PT30M"}]
+
+- name: a duration less a moment is nothing
+  source: |
+    src :: relation(ts: timestamp)
+    src(ts:) <- input
+
+    out(v: v) <-
+        src(ts: ts)
+        v := temporal:interval(hours: 1) - ts
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "no version of `-` takes `interval` and `timestamp`"
 
 # -- narrowing ----------------------------------------------------------------
 #

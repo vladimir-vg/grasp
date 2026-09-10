@@ -449,10 +449,19 @@ pub enum Builtin {
 
     /// `temporal:epoch_micros(ts)` — the instant as an integer.
     TemporalEpochMicros,
-    /// Difference. Named rather than `-`, because the answer to "how far apart"
-    /// is an `interval`, which grasp does not have yet — so each says its unit.
-    TemporalDaysBetween,
-    TemporalMicrosBetween,
+
+    /// `temporal:interval(days:, hours:, minutes:, seconds:, microseconds:)` —
+    /// a span of time. Every unit converts into microseconds exactly, which is
+    /// what lets one type hold all five.
+    TemporalInterval,
+    /// The span in whole units of one size. Named apart from the components
+    /// because they answer a different question: `temporal:minutes(14:30)` is
+    /// 30, and `temporal:total_minutes` of a hundred hours is 6000.
+    TemporalTotalDays,
+    TemporalTotalHours,
+    TemporalTotalMinutes,
+    TemporalTotalSeconds,
+    TemporalTotalMicroseconds,
 
     /// `record:get(r, field: "f")` — what `r.f` desugars to.
     ///
@@ -506,8 +515,12 @@ impl Builtin {
             "temporal:seconds" => Builtin::TemporalSecond,
             "temporal:microseconds" => Builtin::TemporalMicrosecond,
             "temporal:epoch_micros" => Builtin::TemporalEpochMicros,
-            "temporal:days_between" => Builtin::TemporalDaysBetween,
-            "temporal:micros_between" => Builtin::TemporalMicrosBetween,
+            "temporal:interval" => Builtin::TemporalInterval,
+            "temporal:total_days" => Builtin::TemporalTotalDays,
+            "temporal:total_hours" => Builtin::TemporalTotalHours,
+            "temporal:total_minutes" => Builtin::TemporalTotalMinutes,
+            "temporal:total_seconds" => Builtin::TemporalTotalSeconds,
+            "temporal:total_microseconds" => Builtin::TemporalTotalMicroseconds,
             _ => return None,
         })
     }
@@ -560,8 +573,12 @@ impl Builtin {
         Builtin::TemporalSecond,
         Builtin::TemporalMicrosecond,
         Builtin::TemporalEpochMicros,
-        Builtin::TemporalDaysBetween,
-        Builtin::TemporalMicrosBetween,
+        Builtin::TemporalInterval,
+        Builtin::TemporalTotalDays,
+        Builtin::TemporalTotalHours,
+        Builtin::TemporalTotalMinutes,
+        Builtin::TemporalTotalSeconds,
+        Builtin::TemporalTotalMicroseconds,
         Builtin::RecordGet,
     ];
 
@@ -782,7 +799,39 @@ impl Builtin {
             | Builtin::TemporalSecond
             | Builtin::TemporalMicrosecond
             | Builtin::TemporalEpochMicros => UNARY,
-            Builtin::TemporalDaysBetween | Builtin::TemporalMicrosBetween => BINARY,
+            Builtin::TemporalTotalDays
+            | Builtin::TemporalTotalHours
+            | Builtin::TemporalTotalMinutes
+            | Builtin::TemporalTotalSeconds
+            | Builtin::TemporalTotalMicroseconds => UNARY,
+            // Five optional keywords, so thirty-two ways to call it — one line
+            // in `stdlib.grasp`, since a typespec can say a default.
+            Builtin::TemporalInterval => &[Signature {
+                positional: 0,
+                keyword: &[
+                    Param {
+                        name: "days",
+                        default: Some(Omitted::Int(0)),
+                    },
+                    Param {
+                        name: "hours",
+                        default: Some(Omitted::Int(0)),
+                    },
+                    Param {
+                        name: "minutes",
+                        default: Some(Omitted::Int(0)),
+                    },
+                    Param {
+                        name: "seconds",
+                        default: Some(Omitted::Int(0)),
+                    },
+                    Param {
+                        name: "microseconds",
+                        default: Some(Omitted::Int(0)),
+                    },
+                ],
+                selects: None,
+            }],
 
             // What a family resolves to. A program reaches these through the
             // head, so their own shape is the one the head's row already
@@ -935,8 +984,12 @@ impl Builtin {
             Builtin::TemporalSecond => "temporal:seconds",
             Builtin::TemporalMicrosecond => "temporal:microseconds",
             Builtin::TemporalEpochMicros => "temporal:epoch_micros",
-            Builtin::TemporalDaysBetween => "temporal:days_between",
-            Builtin::TemporalMicrosBetween => "temporal:micros_between",
+            Builtin::TemporalInterval => "temporal:interval",
+            Builtin::TemporalTotalDays => "temporal:total_days",
+            Builtin::TemporalTotalHours => "temporal:total_hours",
+            Builtin::TemporalTotalMinutes => "temporal:total_minutes",
+            Builtin::TemporalTotalSeconds => "temporal:total_seconds",
+            Builtin::TemporalTotalMicroseconds => "temporal:total_microseconds",
             Builtin::RecordGet => "record:get",
         }
     }
@@ -1000,9 +1053,14 @@ impl Builtin {
             Builtin::TemporalSecond => Some("second"),
             Builtin::TemporalMicrosecond => Some("microsecond"),
             Builtin::TemporalEpochMicros => Some("epoch_micros"),
-            // A difference is a subtraction of two epochs, so it becomes an
-            // expression rather than another call.
-            Builtin::TemporalDaysBetween | Builtin::TemporalMicrosBetween => None,
+            // The five components are summed into microseconds, so this becomes
+            // an expression rather than another call.
+            Builtin::TemporalInterval => None,
+            Builtin::TemporalTotalDays => Some("total_days"),
+            Builtin::TemporalTotalHours => Some("total_hours"),
+            Builtin::TemporalTotalMinutes => Some("total_minutes"),
+            Builtin::TemporalTotalSeconds => Some("total_seconds"),
+            Builtin::TemporalTotalMicroseconds => Some("total_microseconds"),
             Builtin::RecordGet => None,
         }
     }

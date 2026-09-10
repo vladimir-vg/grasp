@@ -664,6 +664,12 @@ desugaring — the same reason a dict destructure is — and it is why there is 
 row for it in the table above. Both of *those* are ordinary library functions: a
 key and an index are values.
 
+**Temporal values take a span, not a number.** `ts + temporal:interval(hours: 1)`
+rather than `ts + 3600`, and `a - b` between two of a kind is how far apart they
+are. [`types.md`](types.md#temporal-values) has the table, and the one lossy
+rule in it: a `date` has no sub-day resolution, so a shift truncates to whole
+days.
+
 **There is no `if`.** A conditional does not belong in a Datalog: a rule that
 holds for some rows and not others is what a rule *is*, so the answer is two
 rules with complementary filters. Nor is there a `json:` family — a document is

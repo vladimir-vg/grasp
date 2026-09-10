@@ -272,8 +272,34 @@ temporal:microseconds :: function
 temporal:epoch_micros :: function
     (timestamp) -> i64
 
-temporal:days_between :: function
-    (date, date) -> i64
+# A span of time, in microseconds. Every unit below a month converts into
+# microseconds exactly — with no timezone a day is 86400 seconds — which is what
+# lets one type hold all five. Months are the one that does not, and they are
+# not here: a `month_interval` beside this is future work.
+#
+# `+` and `-` do the rest: `ts - ts` is how far apart two instants are, and
+# `ts + iv` shifts one. A date has no sub-day resolution, so shifting one
+# truncates to whole days.
 
-temporal:micros_between :: function
-    (timestamp, timestamp) -> i64
+temporal:interval :: function
+    (days: i64 = 0, hours: i64 = 0, minutes: i64 = 0,
+     seconds: i64 = 0, microseconds: i64 = 0) -> interval
+
+# The span in whole units of one size, named apart from the components because
+# they answer a different question: `temporal:minutes(14:30)` is 30, and
+# `temporal:total_minutes` of a hundred hours is 6000.
+
+temporal:total_days :: function
+    (interval) -> i64
+
+temporal:total_hours :: function
+    (interval) -> i64
+
+temporal:total_minutes :: function
+    (interval) -> i64
+
+temporal:total_seconds :: function
+    (interval) -> i64
+
+temporal:total_microseconds :: function
+    (interval) -> i64

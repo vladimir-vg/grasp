@@ -738,6 +738,7 @@ impl<'a> Parser<'a> {
             "date" => Ok(Type::Date),
             "time" => Ok(Type::Time),
             "timestamp" => Ok(Type::Timestamp),
+            "interval" => Ok(Type::Interval),
             "optional" => {
                 self.expect(&Tok::LParen, "`(`")?;
                 let inner = self.ty_of(vars)?;

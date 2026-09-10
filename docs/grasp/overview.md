@@ -101,16 +101,28 @@ design comes from. What is missing is missing on purpose.
   encodings, and general `enum(...)` beyond the `boolean` case. Each needs a
   grasp-dbsp value type underneath before grasp can offer it.
 
-  The temporal family has begun — `date`, `time` and `timestamp` — and what is
-  left of it is **`interval`** and **`timestamp_with_timezone`**. Neither is
-  merely more of the same. An `interval` is three independent components in the
-  design this is ported from and two separate types in Feldera's, so it needs a
-  value type of grasp-dbsp's own, a folding rule for the components a target
-  cannot consume, and an ordering over values that do not convert. A
-  zone-carrying instant needs IANA tzdata and DST-overlap semantics. With
-  `interval` come `+` and `-` on temporal values, which is why there is no
-  arithmetic on them today. The PostgreSQL special values `infinity`,
-  `-infinity` and `epoch` are left out with them.
+  The temporal family is `date`, `time`, `timestamp` and `interval`. What is
+  left of it is **`month_interval`** and **`timestamp_with_timezone`**, and
+  neither is merely more of the same.
+
+  A **`month_interval`** is the quantity `interval` deliberately excludes: a
+  month has no length until it lands on a calendar, so it cannot share a type
+  with microseconds without a folding rule — `1 month = 30 days` — that decides
+  silently. As its own type it needs none: it is one integer, it orders, and it
+  maps onto Feldera's `LongInterval`, whose calendar arithmetic is written. What
+  it brings is month-end clamping, which is where a bug would hide, and the
+  question of whether `month_interval` and `interval` may be added to each
+  other, which they cannot.
+
+  A **`timestamp_with_timezone`** needs IANA tzdata and DST-overlap semantics.
+  It would also cost something already relied on: `interval` is one integer
+  *because* a day is exactly 86400 seconds here, which stops being true once
+  zones exist. Adding one means revisiting whether days belong with microseconds
+  at all.
+
+  Also left out: the PostgreSQL special values `infinity`, `-infinity` and
+  `epoch`; scaling a span, `iv * 3`; and unary `-iv`, which a negative component
+  in the constructor covers.
 
   The **bitwise and shift operators** arrive with `bits` and are part of that
   entry rather than a separate one: they have no meaning without the type, and

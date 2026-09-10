@@ -245,6 +245,7 @@ rather than another call:
 | `temporal:date(s)` | `cast(s, optional(date))`, then the narrowing |
 | `temporal:date(ts)` | `cast(ts, date)` |
 | `temporal:hours(x)` | `hour(x)`, for a `time` or a `timestamp` alike |
+| `temporal:interval(hours: 2)` | `make_interval((0 * 86400000000) + (2 * 3600000000) + …)` |
 | `temporal:days_between(a, b)` | `(epoch_days(a) - epoch_days(b))` |
 | `dict:has(d, key: k)` | `(get(d, k) != NONE)` |
 | `dict:values(d)` | `map_array(dict_entries(d), function((e) -> e.value))` |
