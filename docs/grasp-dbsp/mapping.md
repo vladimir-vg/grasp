@@ -749,6 +749,88 @@ runner then reads `concat().consolidate()`, which is the read-side merge over
 the whole transaction. A transaction spanning many steps is now ordinary rather
 than a thing to revisit.
 
+## Storage
+
+Operator state that outgrows memory lives in a file. This costs the lowering
+nothing, because the batch types it already builds are the ones that can go
+either way: `dbsp` aliases `FallbackWSet` as `OrdWSet`
+(`dbsp/src/trace/ord.rs:20-23`), and a `FallbackWSet` is an `enum { Vec, File }`
+that decides per batch. Setting storage changes which arm a batch is built in
+and nothing else — the same rows, the same order, the same answer, which is what
+[`tests/storage.rs`](../../crates/grasp-dbsp-runner/tests/storage.rs) exists to
+hold up.
+
+It is configured, not inferred: `RunnerConfig::storage` is `dbsp`'s own
+`CircuitStorageConfig`, built by the caller and passed through onto
+`CircuitConfig`. The reason for `dbsp`'s type rather than an `enum Storage { On,
+Off }` is that there is no single "on". Three thresholds decide three different
+things, and a wrapper would have hidden which one a caller was reaching for
+(`dbsp/src/circuit/runtime.rs:1155-1243`):
+
+| Threshold | What it governs | Default | Under pressure |
+|---|---|---|---|
+| `min_storage_bytes` | the output of a merge | 10 MiB | `0` at Moderate |
+| `min_step_storage_bytes` | a batch built during one step | `usize::MAX`, never | `0` at Critical |
+| *(no option of its own)* | a batch entering a spine | `usize::MAX`, never | `min_storage_bytes` at Moderate, `0` at High |
+
+The third is why "turn storage on" is not one setting: nothing a caller writes
+moves it while memory pressure is Low. It exists because the merger is expected
+to do this work eventually, and a foreground worker spilling on insert is the
+behaviour of a circuit already under pressure.
+
+**Pressure is what makes spilling adapt.** `RunnerConfig::max_rss_bytes` is a
+budget for the whole *process*; `dbsp` compares the resident set against it and
+crosses into Moderate, High and Critical at 0.85, 0.90 and 0.95 of it
+(`feldera-types/src/memory_pressure.rs:6-8`,
+`dbsp/src/circuit/runtime.rs:571-591`). Left unset, the level is permanently Low
+and only the static thresholds above apply. Per process rather than per runner,
+so two runners in one process are measured against each other's allocations as
+well as their own.
+
+Every one of those thresholds is counted in bytes that `SizeOf`
+[reported](#what-dynvalue-must-implement), which is what makes that impl part of
+this machinery rather than bookkeeping beside it.
+
+**The directory is exclusive.** `dbsp` takes `<path>/feldera.pidlock`, waits
+sixty seconds for it, and a process-local table refuses a second circuit in the
+same directory outright (`dbsp/src/storage/dirlock.rs:95-200`). Two live runners
+need two directories; `dbsp::storage::backend::tempdir_for_thread` is not a way
+around it, being per *thread* rather than per circuit.
+
+**A configuration naming `init_checkpoint` is refused** with a diagnostic rather
+than honoured. The field rides along on the type this crate passes through, but
+restoring is not what this runner does — a checkpoint pins the worker count it
+was written at and freezes `DynValue`'s archived variant order for good, neither
+of which is decided here. See [below](#checkpointing-and-parallelism).
+
+### What holds it up
+
+`tests/storage.rs` runs a program twice — once in memory, once with both
+settable thresholds at zero — and requires the two to agree delta for delta: a
+join and a distinct, three aggregates, a fixpoint, and every value type through
+a file. Zero rather than a realistic threshold because `BuildTo::for_capacity`
+short-circuits before it consults a size at all
+(`dbsp/src/trace/ord/fallback/utils.rs:41-71`), so the tests do not depend on
+how much memory the machine has or on when a background merger runs.
+
+Agreement alone would pass just as well if storage had quietly failed to turn
+on, so each case also reads the backend's own byte count and counts the files
+written. The bytes have to be sampled **after each step** rather than at the
+end: a batch built during a step is dropped at the end of it and its file with
+it, so only a stateful operator leaves anything to read across a step boundary.
+
+One test ties spilling to `SizeOf` rather than to the zero shortcut. It leaves
+the threshold at a megabyte, where the builder's capacity guess of thirty-two
+bytes a row falls under it and the builder accumulates real per-row sizes
+instead: two hundred rows holding an eight-kilobyte string spill, and the same
+two hundred rows holding one character do not. That batch is built, spilled and
+dropped inside a single step, so the file count is the only evidence it leaves
+— the backend's byte gauge is back to zero before a caller could read it.
+
+Not covered: spilling under real memory pressure, which needs `max_rss_bytes`
+and a resident set a test cannot control, and performance, which these
+thresholds deliberately ruin.
+
 ## Checkpointing and parallelism
 
 **Persistent ids.** Every stateful operator carries one, and it is the node's

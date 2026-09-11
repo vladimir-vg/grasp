@@ -120,11 +120,26 @@ workers by key hash, so it rests on the hashing invariants in
 needs its input placed shards it itself. What holds it up is `tests/workers.rs`,
 which runs a program at one worker and at three and requires the two to agree.
 
+Nor is **storage**, on the same terms. A runner can be given a directory and a
+set of thresholds, and operator state larger than memory then lives in a file
+rather than in the heap — the batch types the lowering already builds are the
+ones that decide this per batch, so nothing about a program changes when it is
+set. It rests on `SizeOf` reporting what a value owns, since a threshold is
+counted in the bytes that impl reports, and on the archived form ordering as the
+value does; both are invariants in [`mapping.md`](mapping.md). What holds it up
+is `tests/storage.rs`, which runs a program in memory and again with everything
+forced to disk and requires the two to agree, while checking that it really did
+spill.
+
 ## Future work
 
 - **Checkpoint and restore.** The ids are in place — every operator carries its
   node's content id as a `persistent_id` — but nothing takes or restores a
-  checkpoint yet. See [`mapping.md`](mapping.md).
+  checkpoint yet. Storage landing does not change this: a spill directory holds
+  batches for a running circuit and is emptied when it stops, which is why a
+  storage configuration naming an `init_checkpoint` is refused rather than
+  half-honoured. Restoring one would pin the worker count it was written at and
+  freeze `DynValue`'s variant order for good. See [`mapping.md`](mapping.md).
 - **`left_join` is *not* planned.** `dbsp` has one, but its right-hand input is
   `OrdIndexedZSet<K, Option<V2>>` — a second Rust batch type, in a design whose
   leverage is that there is exactly one. It is not needed: a left join is
@@ -157,9 +172,12 @@ which runs a program at one worker and at three and requires the two to agree.
   order to be the value order. Inexact arithmetic here is `f64`.
 
   Adding a variant shifts `DynValue`'s archived discriminant, which is a
-  persisted storage format. Nothing is persisted yet, so the variant order is
-  still free to settle — which stops being true after the first stored batch.
-  That freedom is what let `SqlString` be removed rather than deprecated.
+  persisted storage format. A spilled batch is written in that form, but it is
+  read back by the process that wrote it and deleted with the directory, so the
+  discriminant has to be stable only within a run and the variant order is still
+  free to settle. That stops being true of the first batch expected to outlive
+  the process — a checkpoint, which is future work below. The freedom is what
+  let `SqlString` be removed rather than deprecated.
 
 - **Document odds and ends.** A `shape(doc)` builtin — a program that must
   branch on what a document holds attempts casts in order today, which works and
