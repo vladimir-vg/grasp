@@ -559,6 +559,34 @@ impl Expr {
     }
 }
 
+impl Type {
+    /// Whether this may key a dict — `syntax.md`'s `key_type`.
+    ///
+    /// The scalars, because a dict is an object on the wire and an object's
+    /// keys are strings, so a key type needs one string spelling its own type
+    /// reads back. The same rule the target states as
+    /// `TypeDesc::is_dict_key`.
+    ///
+    /// A [type variable][`Type::Var`] passes: it stands for a type a typespec
+    /// has not named, so whether it is a key cannot be decided here, and
+    /// `dict(K, V)` is how the library writes `dict:get`.
+    pub fn is_dict_key(&self) -> bool {
+        matches!(
+            self,
+            Type::Boolean
+                | Type::I64
+                | Type::F64
+                | Type::String
+                | Type::Bytes
+                | Type::Date
+                | Type::Time
+                | Type::Timestamp
+                | Type::Interval
+                | Type::Var(_)
+        )
+    }
+}
+
 impl fmt::Display for Type {
     /// The canonical spelling of a type, which is what a diagnostic quotes.
     ///

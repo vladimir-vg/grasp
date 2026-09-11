@@ -39,9 +39,11 @@ pub const TYPE_NAMES: &[&str] = &[
     "record",
     "array",
     "dict",
+    "bytes",
     "date",
     "time",
     "timestamp",
+    "interval",
 ];
 
 /// The word after `::` that says what kind of thing is being declared. Neither
@@ -754,7 +756,23 @@ impl<'a> Parser<'a> {
             }
             "dict" => {
                 self.expect(&Tok::LParen, "`(`")?;
+                let key_span = self.here();
                 let key = self.ty_of(vars)?;
+                // `syntax.md`'s grammar has said `dict "(" key_type ...` all
+                // along; this is where it starts being true. Without it a
+                // `dict(record(…), i64)` written anywhere — a spec, a column,
+                // an assertion — reaches the target, which refuses it against
+                // text the program never wrote.
+                if !key.is_dict_key() {
+                    return Err(self.error(
+                        key_span,
+                        format!(
+                            "`{key}` cannot be a dict key: a key is a scalar — `boolean`, \
+                             `i64`, `f64`, `string`, `bytes`, `date`, `time`, `timestamp` \
+                             or `interval`"
+                        ),
+                    ));
+                }
                 self.expect(&Tok::Comma, "`,`")?;
                 let value = self.ty_of(vars)?;
                 self.expect(&Tok::RParen, "`)`")?;

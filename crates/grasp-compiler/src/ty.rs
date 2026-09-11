@@ -451,6 +451,9 @@ fn under(inner: Narrowing, cast: bool, shape: Shape) -> Narrowing {
 /// already performs. The target says the same, in `extractable`, and the two
 /// lists agree entry for entry — `json` is absent here only because
 /// `json :: json` is [`assignable`] and settles before [`narrows`] is reached.
+///
+/// The key needs no check: a written `dict(K,V)` is rejected at parse unless
+/// `K` is a scalar, and an inferred one comes from a literal `infer` checks.
 fn holdable(t: &Ty) -> bool {
     matches!(
         t,
@@ -468,28 +471,7 @@ fn holdable(t: &Ty) -> bool {
             | Ty::Timestamp
             | Ty::Interval
             | Ty::Bytes
-    ) || matches!(t, Ty::Dict(k, _) if scalar_key(k))
-}
-
-/// Whether a type may key a dict, for the one place [`holdable`] needs to know.
-///
-/// The written type `dict(K,V)` is **not** checked for a scalar key when it is
-/// parsed — only a dict *literal* is, in `infer` — so without this a
-/// `dict(record(…), i64)` annotation would narrow, emit a `cast` the target
-/// refuses, and report against text the program never wrote. It mirrors
-/// `TypeDesc::is_dict_key` on the other side.
-fn scalar_key(t: &Ty) -> bool {
-    matches!(
-        t,
-        Ty::Boolean
-            | Ty::I64
-            | Ty::F64
-            | Ty::String
-            | Ty::Bytes
-            | Ty::Date
-            | Ty::Time
-            | Ty::Timestamp
-            | Ty::Interval
+            | Ty::Dict(..)
     )
 }
 

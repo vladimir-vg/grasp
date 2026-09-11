@@ -31,6 +31,75 @@
     nest :: relation(v: array(record(k: string, vs: dict(i64, array(f64)))))
   expected_ok: true
 
+# `dict "(" key_type "," type ")"` — a key is a scalar, because a dict is an
+# object on the wire and an object's keys are strings, so a key type needs one
+# string spelling its own type reads back.
+- name: every scalar may key a dict
+  source: |
+    keyed :: relation(
+        b: dict(boolean, i64),
+        i: dict(i64, i64),
+        f: dict(f64, i64),
+        s: dict(string, i64),
+        y: dict(bytes, i64),
+        d: dict(date, i64),
+        t: dict(time, i64),
+        ts: dict(timestamp, i64),
+        iv: dict(interval, i64),
+    )
+  expected_ok: true
+
+- name: a record cannot key a dict
+  source: |
+    keyed :: relation(d: dict(record(a: i64), i64))
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "`record(a: i64)` cannot be a dict key: a key is a scalar"
+
+# A document is not a scalar, and neither is a container. Caught wherever the
+# type is written — nested in a column type as readily as at the top.
+- name: nor a document, however deeply nested
+  source: |
+    keyed :: relation(d: array(dict(json, i64)))
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "`json` cannot be a dict key: a key is a scalar"
+
+- name: nor an optional
+  source: |
+    keyed :: relation(d: dict(optional(string), i64))
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "`optional(string)` cannot be a dict key: a key is a scalar"
+
+# Including in a type assertion, which is how this was first found: it used to
+# reach the target and be refused there, against text the program never wrote.
+- name: and in an assertion
+  source: |
+    src :: relation(doc: json)
+    src(doc:) <- input
+
+    out(v: v) <-
+        src(doc: doc)
+        v := doc
+        v :: dict(record(a: i64), i64)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "`record(a: i64)` cannot be a dict key: a key is a scalar"
+
+# A type variable passes: it stands for a type the typespec has not named, so
+# whether it is a key cannot be decided here — and `dict(K, V)` is how the
+# library writes `dict:get`.
+- name: a type variable may key a dict
+  source: |
+    dict:get :: function
+        (dict(K, V), key: K) -> V
+  expected_ok: true
+
 # fact ::= relation_name "(" [kv_args] ")"
 - name: facts
   source: |

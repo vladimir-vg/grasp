@@ -423,23 +423,6 @@
     - out:
         - [1, {n: 2}]
 
-# An object's keys are strings, so a dict a document could hold is keyed by one
-# of the types that parses from a string. grasp says so itself rather than
-# emitting a cast the target would refuse.
-- name: a document is not read as a dict keyed by a record
-  source: |
-    src :: relation(doc: json)
-    src(doc:) <- input
-
-    out(d: d) <-
-        src(doc: doc)
-        d := doc
-        d :: dict(record(a: i64), i64)
-  expected_diagnostics:
-    - severity: error
-      pass: infer
-      message: "a document is not read as a `dict(record(a: i64), i64)`"
-
 # The other kind of refusal, and the message says which: no `i64` is a `string`,
 # where a document merely is not *read* as one shape or another.
 - name: a narrowing no value could satisfy still says so
