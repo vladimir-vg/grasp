@@ -960,3 +960,25 @@
   expected_diagnostics:
     - pass: typecheck
       message: "array(record(key: K, value: V))"
+
+# The two diagnostics an *excerpt* earns by being one, pinned because
+# `tests/docs.rs` reads them: a documented example may name streams it does not
+# declare, and only those two messages are forgiven there. A change to either
+# wording has to pass through here.
+- name: a stream nothing defines
+  source: |
+    out := map(rows, function((r) -> r))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "unknown stream `rows`"
+
+- name: a typespec for a stream nothing defines
+  source: |
+    a := input("a")
+    a :: zset(record(id: i64))
+    b :: zset(record(id: i64))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "typespec for `b`, which is not declared"

@@ -61,7 +61,7 @@ edge :: relation(src: i64, dst: i64)
 edge(src:, dst:) <- input
 ```
 
-```
+```grasp-dbsp
 edge_1 :: zset(record(src: i64, dst: i64))
 edge_1 := input("edge")
 edge   := distinct(edge_1)
@@ -89,7 +89,7 @@ A relation with a typespec and **no producer** — no rule, no fact, no `<- inpu
 s :: relation(x: i64)
 ```
 
-```
+```grasp-dbsp
 s :: zset(record(x: i64))
 s := empty()
 ```
@@ -111,7 +111,7 @@ edge(src: 1, dst: 2)
 edge(src: 2, dst: 3)
 ```
 
-```
+```grasp-dbsp
 edge_1 :: zset(record(src: i64, dst: i64))
 edge_1 := constant([record(src: 1, dst: 2), record(src: 2, dst: 3)])
 edge   := distinct(edge_1)
@@ -146,7 +146,7 @@ answer(v: n) <-
     n := 6 * 7
 ```
 
-```
+```grasp-dbsp
 answer_g :: zset(record())
 answer_g := constant([record()])
 answer_1 := map(answer_g, function((r) -> record(n: 6 * 7)))
@@ -379,7 +379,7 @@ tagged(name: n, tag: k) <-
     (k, _v) := **d
 ```
 
-```
+```grasp-dbsp
 tagged := flat_map(rows, function((row) ->
     map_array(dict_entries(row.d), function((e) -> record(n: row.n, k: e.key)))))
 ```
@@ -470,7 +470,7 @@ pair(x: x, y: y) <-
     b(y: y)
 ```
 
-```
+```grasp-dbsp
 pair_a := map_index(a, function((r) -> record(key: record(), value: r)))
 pair_b := map_index(b, function((r) -> record(key: record(), value: r)))
 pair   := distinct(join(pair_a, pair_b, function((k, l, r) -> record(x: l.x, y: r.y))))
@@ -515,7 +515,7 @@ either output ends in a `map`, is not inferable — and that is the ordinary sha
 of a Datalog rule. The emitter knows the relation's type from typechecking, so it
 writes it:
 
-```
+```grasp-dbsp
 path :: zset(record(src: i64, dst: i64))
 ```
 
@@ -555,7 +555,7 @@ leaf(name: n) <-
     not parent(child: n, parent: _)
 ```
 
-```
+```grasp-dbsp
 n_idx := map_index(node,   function((r) -> record(key: r.name,  value: record(name: r.name))))
 p_idx := map_index(parent, function((r) -> record(key: r.child, value: record(child: r.child))))
 leaf  := distinct(map(antijoin(n_idx, p_idx), function((k, v) -> record(name: v.name))))
@@ -575,7 +575,7 @@ payroll(dept: d, total: s) <-
     s := sum<r>
 ```
 
-```
+```grasp-dbsp
 rows    := distinct(map(emp, function((r) -> record(dept: r.dept, sal: r.sal))))
 by_dept := map_index(rows, function((r) -> record(key: record(dept: r.dept), value: record(sal: r.sal))))
 totals  := aggregate(by_dept, sum, function((v) -> v.sal))
@@ -624,7 +624,7 @@ path(src: x, dst: y) <-
 `edge` is an input table; `{path}` is one recursive component, so one `circuit`
 and one `fixpoint`:
 
-```
+```grasp-dbsp
 edge_1 :: zset(record(src: i64, dst: i64))
 edge_1 := input("edge")
 edge   := distinct(edge_1)

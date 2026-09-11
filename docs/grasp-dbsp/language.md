@@ -178,7 +178,7 @@ quote a name that is not a valid identifier (`record("total count": i64)`).
 Note that `record` is spelled the same way in type position and in expression
 position — the type names the fields, and the literal fills them:
 
-```
+```grasp-dbsp
 r :: zset(record(id: i64, name: string))                        # the type
 map(s, function((row) -> record(id: row.id, name: row.name)))   # a value
 ```
@@ -214,7 +214,7 @@ all: what it carries is the *text*, and `cast(d, optional(date))` on a `json` is
 a type error naming the two steps that do it. A dynamic holds the date itself,
 tag and all, so it reads back as a `date` and as nothing else.
 
-```
+```grasp-dbsp
 cast(x, dynamic)              # total: every value is one
 cast(d, optional(date))       # fallible: it holds some type, not necessarily that one
 ```
@@ -323,7 +323,7 @@ route out of an indexed shape other than a join. It is what makes an outer join
 expressible: `antijoin` yields an indexed stream whose rows would otherwise be
 stuck there. There is no `left_join` operator, because there need not be one:
 
-```
+```grasp-dbsp
 matched   := join(emp_idx, dept_idx, function((k, e, d) ->
                  record(name: e.name, dname: cast(d.dname, optional(string)))))
 unmatched := antijoin(emp_idx, dept_idx)
@@ -368,7 +368,7 @@ There is no `output` operator. Outputs are named when the runner starts.
 `aggregate(s, agg, f)` takes an aggregator name and a projection `f : V → A`
 applied to each value in the group. Aggregators are bare names:
 
-```
+```grasp-dbsp
 aggregate(idx, max, function((v) -> v.salary))
 ```
 
@@ -452,7 +452,7 @@ The parameter list binds the row(s) the operator feeds the function. `map`,
 `join_index` take three (key, left value, right value); `aggregate`'s function
 takes one value.
 
-```
+```grasp-dbsp
 function((row) -> row)
 function((row) -> row.id)
 function((row) -> record(id: row.id, name: row.name))
@@ -468,7 +468,7 @@ its entries in the source, and `dict(a)` takes however many an
 `array(record(key: K, value: V))` carries. `dict_entries` is the inverse of the
 second.
 
-```
+```grasp-dbsp
 d := {"a" => 1, "b" => row.n}
 d := dict(row.pairs)                 # pairs : array(record(key:, value:))
 ```
@@ -489,7 +489,7 @@ Three things can supply the type, and the first that applies wins:
 - **The node's typespec.** A `::` annotation says what the operator's function
   must return, and that flows into the body:
 
-  ```
+  ```grasp-dbsp
   out :: zset(record(tags: dict(string, i64)))
   out := map(t, function((r) -> record(tags: {})))
   ```
@@ -513,7 +513,7 @@ error, which is what keeps the annotation a check.
 A `function` declaration names a body that can be called from an expression or
 passed straight to an operator:
 
-```
+```grasp-dbsp
 function scale(x)    { return x * 2 + 1 }
 function positive(r) { return r.v > 0 }
 
@@ -524,7 +524,7 @@ scaled := map(a, function((r) -> scale(r.v)))
 **Parameters carry no types.** The body is checked afresh against the types at
 each call site, so one definition serves every type it happens to work at:
 
-```
+```grasp-dbsp
 ints   := map(a, function((r) -> scale(r.i)))   # i64 arithmetic
 floats := map(a, function((r) -> scale(r.f)))   # f64 arithmetic
 ```
@@ -556,7 +556,7 @@ A name means one thing — a function and a node may not share one.
 `map_index`, `join_index` and `flat_map_index` produce a keyed stream, so their
 function returns a two-field record naming the halves:
 
-```
+```grasp-dbsp
 map_index(s, function((r) -> record(key: r.dept_id, value: r)))
 ```
 
@@ -580,7 +580,7 @@ compose; it would have to know where it is before knowing what it may write.
 The payoff shows in `flat_map`, whose function returns an `array(T)`: it emits
 one row per element, so **fan-out follows the data** rather than the source text.
 
-```
+```grasp-dbsp
 posts :: zset(record(id: i64, tags: array(string)))
 tags  := flat_map(posts, function((r) -> r.tags))
 ```
@@ -600,7 +600,7 @@ the array its function returns, so the output row *is* the element — and a row
 other columns cannot survive the fan-out unless the function can build an array
 of whole rows. Nothing else could build one:
 
-```
+```grasp-dbsp
 person :: zset(record(name: string, tags: array(string)))
 tagged := flat_map(person, function((r) ->
     map_array(r.tags, function((e) -> record(name: r.name, tag: e)))))
@@ -621,9 +621,9 @@ With `dict_entries` and `dict` around it, it is how keys are subtracted from a
 dict — including by a set of keys the data supplies, which is what `contains`
 buys:
 
-```
-less := dict(filter_array(dict_entries(r.d), function((e) -> e.key != "b")))
-fewer := dict(filter_array(dict_entries(r.d), function((e) -> not contains(r.ks, e.key))))
+```grasp-dbsp
+dict(filter_array(dict_entries(r.d), function((e) -> e.key != "b")))
+dict(filter_array(dict_entries(r.d), function((e) -> not contains(r.ks, e.key))))
 ```
 
 It can also take a run of elements by index, but only forwards: `slice` is what
@@ -766,7 +766,7 @@ builtin.
 cannot hold, that is an error naming the fix rather than a silently optional
 result:
 
-```
+```grasp-dbsp
 cast(r.x, i64)             # error: can fail (NaN, infinity, or out of range)
 cast(r.x, optional(i64))   # optional(i64)
 ```
@@ -795,7 +795,7 @@ every other parse here follows.
 the last two rows: JSON has no date and no payload, so a `json` neither takes
 one nor gives one back. The encoding is the program's to choose and to name —
 
-```
+```grasp-dbsp
 cast(cast(d, string), json)                        # a date into a document
 cast(cast(x, optional(string)), optional(date))    # and back out of one
 cast(to_base64(b), json)                           # a payload into one
@@ -839,7 +839,7 @@ there are two operations and no third:
   document that is not a container yields `NONE`, and `get` accepts what it
   returns — so a chain needs no guard at any level:
 
-  ```
+  ```grasp-dbsp
   cast(get(get(r.payload, "user"), "id"), optional(i64))
   ```
 
@@ -852,7 +852,7 @@ there are two operations and no third:
   target extracts the fields it names, converts each and ignores the rest;
   it fails as a whole if a named field is missing or holds the wrong shape:
 
-  ```
+  ```grasp-dbsp
   cast(r.payload, optional(record(id: i64, name: string)))
   ```
 
@@ -910,7 +910,7 @@ an optional operand instead, because propagating silently is the thing `NONE`
 exists to avoid — see [Absence](#absence). A frontend that wants SQL's behaviour
 writes it out, once:
 
-```
+```grasp-dbsp
 function add_null(a, b) {
     return if(a == NONE or b == NONE, NONE, coalesce(a, 0) + coalesce(b, 0))
 }
@@ -925,7 +925,7 @@ coalesced against — which is the case named functions exist for.
 beside it.** An integer literal inhabits any numeric type, a float literal any
 floating one. Standing alone, they settle to `i64` and `f64`.
 
-```
+```grasp-dbsp
 r.i * 2       # i64, and `2` is an i64
 r.f * 2       # f64, and the same `2` is an f64
 2             # i64, since nothing else decides
@@ -938,7 +938,7 @@ usable at several numeric types without being written twice.
 **There is no implicit conversion.** Arithmetic and comparison need operands of
 one type; `i64` and `f64` do not meet:
 
-```
+```grasp-dbsp
 r.i + r.f     # error: no implicit conversion
 r.i + 1.5     # error: a float literal has no `i64` value
 ```
@@ -963,7 +963,7 @@ all, while NaN is one that JSON has no syntax for.
 **Division is the one arithmetic that can be absent.** A zero divisor has no
 value to return, so `/` and `%` have type `optional(T)` at every numeric type:
 
-```
+```grasp-dbsp
 r.a / r.b                    # optional(i64)
 coalesce(r.a / r.b, 0)       # i64
 ```
@@ -1016,7 +1016,7 @@ A `circuit` is a named, parameterised block of declarations. It is expanded at
 the call site: the body becomes ordinary nodes, reachable as
 `<instance>.<node>`.
 
-```
+```grasp-dbsp
 circuit normalize(src: s) {
     big     := filter(s, function((r) -> r.v > 1))
     doubled := map(big, function((r) -> record(v: r.v * 2)))
@@ -1054,7 +1054,7 @@ entirely.
 **self-referential** when a body node shares its label; inside the body its
 internal name is the *previous round's* value.
 
-```
+```grasp-dbsp
 circuit tc(base: b, fwd: f, path: p) {
     step := join_index(p, f, function((k, a, e) -> record(key: e.dst, value: record(src: a.src))))
     path := plus(b, step)
@@ -1091,7 +1091,7 @@ closure := fp.path
 
 `constant([r₁, r₂, …])` is a relation that is constantly those rows.
 
-```
+```grasp-dbsp
 edge :: zset(record(src: i64, dst: i64))
 edge := constant([record(src: 1, dst: 2), record(src: 2, dst: 3)])
 ```
@@ -1170,7 +1170,7 @@ quoted.
 
 ## Example
 
-```
+```grasp-dbsp
 emp := input("emp")
 emp :: zset(record(id: i64, name: string, dept_id: i64, salary: i64))
 

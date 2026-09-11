@@ -386,6 +386,8 @@ synthetic relation each would have to remember to ignore. It is one node of a
 kind the graph already has.
 
 ```grasp
+answer :: relation(v: i64)
+
 answer(v: n) <-
     n := 6 * 7
 ```

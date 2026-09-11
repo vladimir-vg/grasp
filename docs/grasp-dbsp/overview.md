@@ -45,7 +45,9 @@ trade-offs below, so it is worth stating what it wants.
 - **The docs are the spec.** They are what an emitting agent is given, so a doc
   that disagrees with the implementation produces wrong programs
   deterministically. Every documented rule is pinned by a fixture in
-  `tests/cases/`.
+  `tests/cases/`, and every ```` ```grasp-dbsp ```` block in these documents is
+  run through the compiler by `tests/docs.rs` — a whole program has to compile,
+  and an excerpt has to parse and name only operators and builtins that exist.
 - **Exactly one way to write each thing**, and no implicit conversion. A
   redundancy is a decision an emitter must make with no information.
 - **Every construct is a value in every position.** A construct legal only in

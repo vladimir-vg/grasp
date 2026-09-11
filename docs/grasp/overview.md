@@ -60,6 +60,10 @@ premise, and several of the principles invert with it.
   boundary is a translation step waiting to be got wrong.
 - **Types are erased.** Checking happens in the compiler. The emitted grasp-dbsp
   carries no grasp type metadata, and nothing at runtime knows grasp exists.
+- **The documents are the specification**, so every ```` ```grasp ```` block in
+  them is put through the compiler by `tests/docs.rs`: a whole program has to
+  typecheck, save for a relation an excerpt does not declare, and a fragment has
+  to parse and call functions that exist with the shapes they take.
 
 ## Scope
 

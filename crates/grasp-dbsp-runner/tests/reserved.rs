@@ -176,38 +176,3 @@ fn every_construct_appears_in_a_fixture() {
         missing.join(", ")
     );
 }
-
-/// The worked example in `language.md` compiles.
-///
-/// The documents are the specification an emitter is given, so an example that
-/// does not compile teaches a program that does not compile. This extracts the
-/// one whole program in `language.md` rather than duplicating it, so the two
-/// cannot drift.
-#[test]
-fn the_language_example_compiles() {
-    // The design documents live at the workspace root, not in this crate: the
-    // language is the contract between the runner and the compiler frontend.
-    let doc =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/grasp-dbsp/language.md");
-    let doc = std::fs::read_to_string(&doc).expect("language.md");
-    // Splitting on the fence gives prose at even indices and code at odd ones;
-    // the prose around the example mentions the same names, so parity is what
-    // distinguishes them.
-    let block = doc
-        .split("```")
-        .enumerate()
-        .filter(|(i, _)| i % 2 == 1)
-        .map(|(_, b)| b)
-        .find(|b| b.contains("input(\"emp\")") && b.contains("aggregate("))
-        .expect("the worked example");
-    if let Err(diags) = grasp_dbsp_runner::compile(block.trim_start_matches('\n')) {
-        panic!(
-            "the example in language.md does not compile: {}",
-            diags
-                .iter()
-                .map(|d| d.message.as_str())
-                .collect::<Vec<_>>()
-                .join("; ")
-        );
-    }
-}
