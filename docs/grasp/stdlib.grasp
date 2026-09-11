@@ -21,7 +21,9 @@
 # for the same reason; `slice` is not, clamping the way Python's does.
 #
 # What each function *means* is `semantics.md`; this is what it takes and what
-# it gives back.
+# it gives back — and both halves are checked against the compiler rather than
+# read alongside it: the shapes against `core::Builtin`'s signatures, the types
+# by calling each variant at them and reading back what inference gives.
 
 # -- boolean ------------------------------------------------------------------
 

@@ -607,6 +607,14 @@ than "there is no callable": the language has the function, and what is left of
 it is a row of the test suite's burn-down rather than a promise in a document
 nobody counts.
 
+It is held to the compiler in three ways, because a declaration is three claims.
+Its **shapes** are compared against `core::Builtin`'s signatures. Its **types**
+are checked by calling each variant at the types it declares and reading back
+what inference settles on — the compiler has no type table to compare against, a
+builtin's types being written into `infer::apply`, so the only way to ask is to
+run it. And every implemented callable is **called by a case that runs**, so a
+function cannot be declared, implemented, and never exercised.
+
 What follows is the shape the library takes.
 
 **Access by position is `at`; access by key is `get`.** `array:at(a, index: 2)`,

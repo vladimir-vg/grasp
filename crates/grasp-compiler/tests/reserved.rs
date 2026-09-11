@@ -115,6 +115,11 @@ fn the_reserved_namespaces_match_syntax_md() {
 /// to `core::Builtin`'s signatures, so a builtin whose shape drifted from the
 /// declared one is a failure here rather than a surprise at a call site.
 ///
+/// **Shapes only** — arity and keyword names — which is all a `Signature`
+/// carries. The types the file writes are checked by
+/// [`the_library_types_are_the_compilers`], which has to call the function to
+/// find out what they are.
+///
 /// Three claims, and each has a way of failing:
 ///
 /// - every implemented callable is declared, with the same shapes — so a
@@ -256,5 +261,187 @@ fn every_reserved_word_is_rejected_as_a_relation_name() {
             grasp_compiler::parse::parse(&source).is_err(),
             "`{word}` is reserved but was accepted as a relation name"
         );
+    }
+}
+
+/// The **types** in `stdlib.grasp` are the types the compiler gives.
+///
+/// [`the_library_is_stdlib_grasp`] compares shapes — arity and keyword names —
+/// and shapes are all it *can* compare: a `core::Signature` carries parameter
+/// names and defaults, not types, because a builtin's types are written into
+/// `infer::apply`'s arms rather than into a table. So the file could have
+/// declared `string:length` returning an `f64` and nothing would have said so.
+///
+/// This asks the compiler rather than reading it. Each variant becomes a
+/// program that calls the function at the argument types the file declares, and
+/// the type inference settles on must be the result type it declares. A
+/// disagreement shows up as one of two failures, and both are the point: the
+/// call does not typecheck at the declared argument types, or it does and
+/// yields something else.
+///
+/// **Type variables are instantiated, twice.** `T`, `K` and `V` stand for any
+/// type, and the type language has no way to write the constraint that makes a
+/// dict key a scalar or an `array:min` orderable — so this checks two readings
+/// of each variable rather than pretending to check every one. Two rather than
+/// one because a builtin that hard-codes `i64` while declaring `T` passes the
+/// first and fails the second.
+#[test]
+fn the_library_types_are_the_compilers() {
+    use grasp_compiler::ast::{Decl, Type, Variant};
+    use grasp_compiler::core::Builtin;
+
+    let text = doc("stdlib.grasp");
+    let program = grasp_compiler::parse::parse(&text).expect("stdlib.grasp parses");
+
+    for (t, k, v) in [
+        (Type::I64, Type::String, Type::I64),
+        (Type::String, Type::I64, Type::String),
+    ] {
+        let at = |name: &str| -> Type {
+            match name {
+                "T" => t.clone(),
+                "K" => k.clone(),
+                "V" => v.clone(),
+                other => panic!(
+                    "`stdlib.grasp` uses the type variable `{other}`, which this test has \
+                     no instantiation for; give it one"
+                ),
+            }
+        };
+        let mut checked: BTreeSet<&str> = BTreeSet::new();
+        for decl in &program {
+            let Decl::Function(spec) = decl else { continue };
+            // A designed name has no implementation to disagree with, and
+            // `the_library_is_stdlib_grasp` already holds it to `core::DESIGNED`.
+            if Builtin::from_name(&spec.name).is_none() {
+                continue;
+            }
+            checked.insert(spec.name.as_str());
+            for variant in &spec.variants {
+                check_variant(&spec.name, variant, &at);
+            }
+        }
+
+        // A loop that silently checked nothing would pass, so the names it
+        // reached are held to the ones a program may write — the enum, not a
+        // list written here.
+        let writable: BTreeSet<&str> = Builtin::ALL
+            .iter()
+            .filter(|b| b.callable())
+            .map(|b| b.as_str())
+            .collect();
+        assert_eq!(
+            checked, writable,
+            "the variants checked are not the callables the compiler has"
+        );
+    }
+
+    /// One variant, as a program that calls it.
+    fn check_variant(name: &str, variant: &Variant, at: &dyn Fn(&str) -> Type) {
+        let params: Vec<(Option<&str>, Type)> = variant
+            .positional
+            .iter()
+            .map(|t| (None, instantiate(t, at)))
+            .chain(
+                variant
+                    .keyword
+                    .iter()
+                    .map(|p| (Some(p.name.as_str()), instantiate(&p.ty, at))),
+            )
+            .collect();
+
+        // A column per parameter, and a call that fills each from its column.
+        // Every parameter is given, defaults included: which shapes a variant
+        // covers is the other test's question, and this one is about types.
+        let columns: Vec<String> = params
+            .iter()
+            .enumerate()
+            .map(|(i, (_, ty))| format!("p{i}: {ty}"))
+            .collect();
+        let args: Vec<String> = params
+            .iter()
+            .enumerate()
+            .map(|(i, (label, _))| match label {
+                Some(label) => format!("{label}: p{i}"),
+                None => format!("p{i}"),
+            })
+            .collect();
+        let binds: Vec<String> = (0..params.len()).map(|i| format!("p{i}: p{i}")).collect();
+
+        let source = format!(
+            "src :: relation({})\nsrc({}) <- input\n\nout(v: v) <-\n    src({})\n    v := {}({})\n",
+            columns.join(", "),
+            binds.join(", "),
+            binds.join(", "),
+            name,
+            args.join(", "),
+        );
+
+        let want = instantiate(&variant.result, at);
+        let typed = match grasp_compiler::check(&source) {
+            Ok(typed) => typed,
+            Err(diags) => panic!(
+                "the library declares `{name}` callable as `{}`, and a call at those \
+                 types does not typecheck:\n{}\n{source}",
+                render_variant(variant, at),
+                grasp_compiler::diag::render(&diags)
+            ),
+        };
+        let rule = typed
+            .decls
+            .iter()
+            .find_map(|d| match d {
+                grasp_compiler::infer::Decl::Rule(r) if r.rule.head.relation == "out" => Some(r),
+                _ => None,
+            })
+            .expect("the rule this test wrote");
+        let got = rule.vars.get("v").expect("the call's result");
+        assert_eq!(
+            got,
+            &want,
+            "the library declares `{name}` as `{}`, but the compiler gives `{got}`",
+            render_variant(variant, at)
+        );
+    }
+
+    /// A declared type with its variables replaced.
+    fn instantiate(ty: &Type, at: &dyn Fn(&str) -> Type) -> Type {
+        match ty {
+            Type::Var(name) => at(name),
+            Type::Optional(inner) => Type::Optional(Box::new(instantiate(inner, at))),
+            Type::Array(elem) => Type::Array(Box::new(instantiate(elem, at))),
+            Type::Dict(key, value) => Type::Dict(
+                Box::new(instantiate(key, at)),
+                Box::new(instantiate(value, at)),
+            ),
+            Type::Record(fields) => Type::Record(
+                fields
+                    .iter()
+                    .map(|(n, t)| (n.clone(), instantiate(t, at)))
+                    .collect(),
+            ),
+            settled => settled.clone(),
+        }
+    }
+
+    /// The variant as the file writes it, instantiated — so a failure quotes
+    /// the types the call actually used.
+    fn render_variant(variant: &Variant, at: &dyn Fn(&str) -> Type) -> String {
+        let params: Vec<String> = variant
+            .positional
+            .iter()
+            .map(|t| instantiate(t, at).to_string())
+            .chain(
+                variant
+                    .keyword
+                    .iter()
+                    .map(|p| format!("{}: {}", p.name, instantiate(&p.ty, at))),
+            )
+            .collect();
+        format!(
+            "({}) -> {}",
+            params.join(", "),
+            instantiate(&variant.result, at)
+        )
     }
 }
