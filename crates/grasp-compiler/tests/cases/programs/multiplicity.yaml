@@ -247,9 +247,7 @@
 - name: a group whose every row divides by zero produces no row
   source: |
     r :: relation(g: string, a: i64, b: i64)
-    src :: relation(v: i64)
     r(g:, a:, b:) <- input
-    src(v:) <- input
 
     q :: relation(g: string, t: i64)
     q(g: g, t: t) <-
@@ -259,12 +257,11 @@
   input:
     - r:
         - [1, {g: "x", a: 10, b: 0}]
-      src:
-        - [1, {v: 1}]
 
-  expected_output:
-    - src:
-        - [1, {v: 1}]
+  expected_exact_output:
+    - r:
+        - [1, {g: "x", a: 10, b: 0}]
+      q: []
 
 # An aggregate may sit in a rule of a recursive component so long as it reads a
 # strictly lower stratum — so the aggregate, and now its deduplication, are

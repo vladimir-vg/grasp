@@ -188,11 +188,11 @@ pub enum DynValue {
     /// **Appended, and new variants must be too**: the variant order is the
     /// archived discriminant, which is a storage format.
     ///
-    /// The same payload as [`DynValue::Json`], under a different contract. A
-    /// document holds a date as *text*, so it narrows to `string` and to `date`
-    /// alike — extracting from one is a guess that happens to succeed. A
-    /// dynamic holds the `Variant::Date` tag, so it narrows to `date` and to
-    /// nothing else.
+    /// A wider payload than [`DynValue::Json`], under a different contract.
+    /// JSON has no date, so a document cannot hold one at all — it holds the
+    /// *text*, and the parse that reads it back says which convention that was.
+    /// A dynamic holds the `Variant::Date` tag itself, so it narrows to `date`
+    /// and to nothing else.
     ///
     /// Exact for every scalar, and for an array, whose elements carry their own
     /// tags. **Not** for a record against a dict: both are `Variant::Map`, and

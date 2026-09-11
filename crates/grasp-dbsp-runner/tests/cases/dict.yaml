@@ -218,7 +218,7 @@
         - [-1, {d: {b: 2, a: 1}}]
 
   expected_exact_output:
-    - {}
+    - out: []
 
 - name: an empty dict takes its type from the node's typespec
   source: |
@@ -315,4 +315,4 @@
         - [-1, {m: {}}]
 
   expected_exact_output:
-    - {}
+    - out: []

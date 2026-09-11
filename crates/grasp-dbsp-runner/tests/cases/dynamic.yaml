@@ -1,9 +1,9 @@
 # `dynamic` — any value, carrying what it is.
 #
-# The same payload as `json`, under a different contract. A document holds a
-# date as *text*, so it reads back as a `string` and as a `date` alike —
-# extracting from one is a guess that happens to succeed. A dynamic holds the
-# tag, so it reads back as a `date` and as nothing else.
+# A wider payload than `json`, under a different contract. JSON has no date, so
+# a document cannot hold one at all — it holds the *text*, and the parse that
+# reads it back says which convention that was. A dynamic holds the tag, so it
+# reads back as a `date` and as nothing else.
 #
 # On the wire it is a single-key object naming the type, which is `bytes`'s
 # convention generalised. Never bare: a bare form would be ambiguous the moment

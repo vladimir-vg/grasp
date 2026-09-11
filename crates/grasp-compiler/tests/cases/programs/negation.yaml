@@ -79,9 +79,10 @@
       account:
         - [1, {id: 1}]
 
-  expected_output:
+  expected_exact_output:
     - paused:
         - [1, {}]
+      active: []
 
 - name: a negated proposition that fails removes nothing
   source: |

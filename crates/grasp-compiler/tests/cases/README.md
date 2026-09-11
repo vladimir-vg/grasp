@@ -301,14 +301,24 @@ Two things it is not for:
 `input` is a list with one entry per transaction; `expected_*_output` is a list
 of the same length. Both are keyed by **grasp relation name** — an external
 relation emits as `r := input("r")` and a derived one as a node named `r`, so
-there is nothing else it could be. Use `{}` for a transaction that produces
-nothing.
+there is nothing else it could be. Use `{}` for a transaction in which every
+relation the case names produces nothing.
 
-**A relation is observed only where an epoch names it**, so a case whose every
-epoch is `{}` asserts nothing at all and the harness rejects it. A body that
-[derives no row](../../../../docs/grasp/semantics.md#a-body-must-have-an-answer) is written with an input
-that *does* derive beside the one that does not — the row that comes out is what
-makes the missing row an assertion.
+**A relation is observed only where an epoch names it.** A case whose every
+epoch is `{}` therefore asserts nothing at all, whatever the program does, and
+the harness rejects it.
+
+**A relation expected to stay empty is named with an empty row list**, `out: []`
+— under `expected_exact_output`, which is what makes it an assertion. That is
+how a case says a body [derives no
+row](../../../../docs/grasp/semantics.md#a-body-must-have-an-answer), a negated
+proposition removes every row, or a recursion with no base case stays empty.
+Writing it under `expected_output` is rejected: a subset of no rows is satisfied
+by any output whatever.
+
+The alternative — an input that *does* derive beside the one that does not — is
+the stronger form where both halves are worth showing, since the row that comes
+out shows the mechanism works at all.
 
 A row is `[weight, value]`. A grasp relation is always a flat
 `zset(record(...))` — indexed streams never correspond to one — so there is none

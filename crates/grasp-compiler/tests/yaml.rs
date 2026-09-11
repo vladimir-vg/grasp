@@ -821,8 +821,22 @@ fn check_output(case: &Case, expected: &[Epoch], exact: bool, where_: &str) -> R
     if outputs.is_empty() {
         return Err(format!(
             "{where_}: no epoch names a relation, so this case observes nothing and \
-             asserts nothing; name the relation it is about — a case for a body that \
-             derives no row gives an input that does derive beside the one that does not"
+             asserts nothing; name the relation it is about — a relation expected to \
+             derive nothing is written with an empty row list (`out: []`)"
+        ));
+    }
+    // In subset mode an empty list is vacuous — every row of none is present in
+    // anything — so the claim has to be written as `expected_exact_output`.
+    if !exact
+        && let Some(name) = expected
+            .iter()
+            .flat_map(|e| e.iter())
+            .find_map(|(n, rows)| rows.is_empty().then_some(n))
+    {
+        return Err(format!(
+            "{where_}: `{name}` is expected to be empty, which `expected_output` \
+             cannot assert — a subset of no rows is any output at all; write \
+             `expected_exact_output`"
         ));
     }
 
@@ -922,12 +936,18 @@ fn check_output(case: &Case, expected: &[Epoch], exact: bool, where_: &str) -> R
             }
         }
 
-        // An expectation naming a relation that produced nothing this epoch.
+        // A tripwire rather than a check a fixture can trip: `step` yields an
+        // entry for every selected output, empty deltas included, so a named
+        // relation is always compared above — including against the empty list
+        // that says it derives nothing. If that contract ever changed, the
+        // comparison would silently skip the relation instead, and every
+        // expectation about it would become vacuous.
         for name in want.keys() {
             if !produced.iter().any(|(n, _)| n == name) {
                 return Err(format!(
-                    "{where_}, epoch {epoch_idx}: expected relation `{name}` \
-                     produced nothing\n  emitted:\n{}",
+                    "{where_}, epoch {epoch_idx}: relation `{name}` was selected as an \
+                     output but not reported, so nothing about it was checked\n  \
+                     emitted:\n{}",
                     emitted()
                 ));
             }

@@ -241,6 +241,7 @@
     - edge:
         - [1, {src: 1, dst: 2}]
 
-  expected_output:
+  expected_exact_output:
     - edge:
         - [1, {src: 1, dst: 2}]
+      lonely: []

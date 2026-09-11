@@ -29,10 +29,18 @@ convention: if it asserts something, it is called `expected_something`.
 `input` is a list with one entry per transaction, keyed by **table** name — the
 string inside `input("...")`, which need not match the node's name.
 `expected_*_output` is a list of the same length, keyed by **node** name. Use
-`{}` for a transaction that produces nothing.
+`{}` for a transaction in which every node the case names produces nothing.
 
 Which nodes are observed is derived from the keys you mention; there is no
 separate declaration, because the runner selects outputs by node name anyway.
+
+That has a consequence worth stating: **a node no epoch names is never
+observed**, so a case whose every epoch is `{}` asserts nothing whatever the
+circuit does, and the harness rejects it. A node expected to produce nothing is
+named with an empty row list, `out: []`, under `expected_exact_output` — which
+is a real assertion, because `step` reports every selected output, empty or not.
+Under `expected_output` it is rejected, a subset of no rows being satisfied by
+any output at all.
 
 A row is `[weight, value]` for a flat stream and `[weight, key, value]` for an
 indexed one — `aggregate` and `weighted_count` produce indexed streams. The

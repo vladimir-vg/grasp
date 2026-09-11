@@ -280,6 +280,31 @@ fn check_output(case: &Case, expected: &[Epoch], exact: bool, where_: &str) -> R
         .into_iter()
         .collect();
     outputs.sort();
+    // Only a named node is observed, so a case whose every epoch is `{}` asserts
+    // nothing whatever the circuit does. A case that expects nothing writes the
+    // node with an empty row list — `out: []` — which is a real assertion,
+    // because `step` yields an entry for every selected output.
+    if outputs.is_empty() {
+        return Err(format!(
+            "{where_}: no epoch names an output, so this case observes nothing and \
+             asserts nothing; write the node with an empty row list (`out: []`) to \
+             say it produces nothing"
+        ));
+    }
+    // In subset mode an empty list is vacuous — every row of none is present in
+    // anything — so the claim has to be written as `expected_exact_output`.
+    if !exact
+        && let Some(name) = expected
+            .iter()
+            .flat_map(|e| e.iter())
+            .find_map(|(n, rows)| rows.is_empty().then_some(n))
+    {
+        return Err(format!(
+            "{where_}: `{name}` is expected to be empty, which `expected_output` \
+             cannot assert — a subset of no rows is any output at all; write \
+             `expected_exact_output`"
+        ));
+    }
 
     let mut runner = Runner::build(&plan, &outputs).map_err(|d| {
         format!(
@@ -377,11 +402,17 @@ fn check_output(case: &Case, expected: &[Epoch], exact: bool, where_: &str) -> R
             }
         }
 
-        // An expectation naming an output that produced nothing this epoch.
+        // A tripwire rather than a check a fixture can trip: `step` yields an
+        // entry for every selected output, empty deltas included, so a named
+        // node is always compared above — including against the empty list that
+        // says it produces nothing. If that contract ever changed, the
+        // comparison would silently skip the node instead, and every
+        // expectation about it would become vacuous.
         for name in want.keys() {
             if !produced.iter().any(|(n, _)| n == name) {
                 return Err(format!(
-                    "{where_}, epoch {epoch_idx}: expected output `{name}` was not produced"
+                    "{where_}, epoch {epoch_idx}: output `{name}` was selected but not \
+                     reported, so nothing about it was checked"
                 ));
             }
         }

@@ -172,6 +172,9 @@
         - [1, {id: 7}]
         - [1, {id: 8}]
 
+# Both halves are named, and both are empty: the proposition does not hold, and
+# nothing the rule guards is derived. Naming `active` is what makes the second
+# half an assertion — a relation no epoch names is never observed.
 - name: an unsatisfied proposition admits nothing
   source: |
     config :: relation(mode: string)
@@ -193,6 +196,6 @@
       account:
         - [1, {id: 7}]
 
-  expected_output:
-    - config:
-        - [1, {mode: "off"}]
+  expected_exact_output:
+    - ready: []
+      active: []

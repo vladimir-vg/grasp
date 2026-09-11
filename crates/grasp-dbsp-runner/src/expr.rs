@@ -881,10 +881,10 @@ fn to_json(v: &DynValue, ty: &TypeDesc) -> FlatVariant {
 
 /// Into a `dynamic` — the same payload a document uses, with the tag kept.
 ///
-/// Where [`to_variant`] writes a date as *text*, because JSON has no date, this
-/// writes `Variant::Date`. That one difference is the whole of what separates
-/// the two types: a document says what a value looks like, a dynamic says what
-/// it is.
+/// Where [`to_variant`] has no date arm at all, because JSON has no date and a
+/// document holds what JSON holds, this writes `Variant::Date`. That is the
+/// whole of what separates the two types: a document says what a value looks
+/// like once encoded, a dynamic says what it is.
 fn to_dynamic(v: &DynValue, ty: &TypeDesc) -> FlatVariant {
     FlatVariant::from(to_tagged(v, ty))
 }
