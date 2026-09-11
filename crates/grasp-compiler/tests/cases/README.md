@@ -296,6 +296,13 @@ Two things it is not for:
   parser: a declared relation is never widened by its rules, so those columns are
   the spec read back. Pin the rules, or a relation that has no spec.
 
+**Every callable is called by a case that runs.** `coverage::every_callable_is_exercised`
+is a trial of its own: a `core::Builtin` a program may write, and no case with an
+output expectation calls, is a failure. `reserved.rs` holds the library to
+`docs/grasp/stdlib.grasp`, which catches a function that is undeclared; this
+catches one that is declared, implemented, and never run. Only a case that
+compiles counts — a pending one never reaches the builtin it names.
+
 ## Output cases
 
 `input` is a list with one entry per transaction; `expected_*_output` is a list

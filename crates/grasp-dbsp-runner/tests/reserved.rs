@@ -95,7 +95,7 @@ fn the_reserved_set_has_the_right_shape() {
     }
 }
 
-/// Every operator, aggregator and builtin is exercised by at least one fixture.
+/// Every operator, aggregator and builtin is exercised by a fixture that runs.
 ///
 /// The design documents are the specification — they are what a compiler
 /// frontend or an emitting agent is given — so a rule stated there and not
@@ -103,14 +103,37 @@ fn the_reserved_set_has_the_right_shape() {
 /// This is the coverage half of that: it does not check that a fixture asserts
 /// the *right* thing, but it does stop a construct from being documented and
 /// then never run.
+///
+/// **The corpus is the cases, not the files.** Searching the text would count a
+/// name that appears only in a comment, or only in a case that is expected not
+/// to compile — coverage claimed by a line that never executes. So the YAML is
+/// parsed, only cases asserting output are kept, and only those that compile.
 #[test]
 fn every_construct_appears_in_a_fixture() {
+    #[derive(serde::Deserialize)]
+    struct Case {
+        source: String,
+        #[serde(default)]
+        expected_output: Option<serde_yaml::Value>,
+        #[serde(default)]
+        expected_exact_output: Option<serde_yaml::Value>,
+    }
+
     let mut corpus = String::new();
     let cases = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/cases");
     for entry in std::fs::read_dir(&cases).expect("tests/cases") {
         let path = entry.expect("entry").path();
         if path.extension().is_some_and(|e| e == "yaml") {
-            corpus.push_str(&std::fs::read_to_string(&path).expect("read"));
+            let text = std::fs::read_to_string(&path).expect("read");
+            let parsed: Vec<Case> =
+                serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            for case in parsed {
+                let runs = case.expected_output.is_some() || case.expected_exact_output.is_some();
+                if runs && grasp_dbsp_runner::compile(&case.source).is_ok() {
+                    corpus.push_str(&case.source);
+                    corpus.push('\n');
+                }
+            }
         }
     }
     assert!(!corpus.is_empty(), "no fixtures found");

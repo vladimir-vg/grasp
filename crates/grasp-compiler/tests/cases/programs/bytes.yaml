@@ -46,6 +46,26 @@
     - out:
         - [1, {b64: "SGVsbG8=", hex: "48656c6c6f", back: "Hello"}]
 
+# And hex reads back too, which is the other half of the pair above — the
+# reading is partial, like `from_base64`, because not every string is one.
+- name: hex reads back what to_hex wrote
+  source: |
+    src :: relation(s: string)
+    src(s:) <- input
+
+    out(text: r) <-
+        src(s: s)
+        h := bytes:to_hex(bytes:from_string(s))
+        r := bytes:to_string(bytes:from_hex(h))
+
+  input:
+    - src:
+        - [1, {s: "Hello"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {text: "Hello"}]
+
 # Partial, so a string that is not a reading derives no row — the rule
 # `dict:get`, `/`, parsing and `make_date` all follow.
 - name: a string that is not base64 derives no row

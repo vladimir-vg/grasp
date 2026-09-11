@@ -215,6 +215,9 @@ fn collect_trials() -> Result<Vec<Trial>, String> {
     assert_every_directory_was_walked(&dir, &files);
 
     let mut trials = Vec::new();
+    // The sources of the cases that actually run something, for the coverage
+    // trial below.
+    let mut executed: Vec<String> = Vec::new();
     for path in files {
         let stem = label(&dir, &path);
         let text =
@@ -226,6 +229,10 @@ fn collect_trials() -> Result<Vec<Trial>, String> {
             let name = format!("{stem}::{i}_{}", slug(&case.name));
             let where_ = format!("{}, case {i} ({})", path.display(), case.name);
             let skipped = case.skip.is_some();
+            if !skipped && (case.expected_output.is_some() || case.expected_exact_output.is_some())
+            {
+                executed.push(case.source.clone());
+            }
             trials.push(
                 Trial::test(name.clone(), move || {
                     run_trial(&case, &name, &where_).map_err(Failed::from)
@@ -236,7 +243,56 @@ fn collect_trials() -> Result<Vec<Trial>, String> {
             );
         }
     }
+    trials.push(Trial::test(
+        "coverage::every_callable_is_exercised",
+        move || every_callable_is_exercised(&executed).map_err(Failed::from),
+    ));
     Ok(trials)
+}
+
+/// Every callable the compiler has is *run* by some case.
+///
+/// `reserved.rs` already holds the library to `stdlib.grasp`, so a function
+/// without an entry fails there. This is the other half, and it is the half
+/// that was missing: fourteen functions were implemented, declared, and never
+/// called by a case that runs — so `float:ceil` emitting a name the target does
+/// not have would have compiled, and nothing would have said so.
+///
+/// **Only a case that compiles counts.** A pending one never reaches the
+/// builtin it names, so counting it would report coverage the run does not
+/// have — which is the same mistake as counting a mention in a comment.
+fn every_callable_is_exercised(sources: &[String]) -> Result<(), String> {
+    use grasp_compiler::core::Builtin;
+
+    let live: Vec<&String> = sources
+        .iter()
+        .filter(|s| grasp_compiler::compile(s).is_ok())
+        .collect();
+
+    let mut missing: Vec<&'static str> = Vec::new();
+    for b in Builtin::ALL {
+        // Written by desugaring and never by a program — `r.f`, `*r` and `**r`
+        // are the syntax, and the fixtures for those cover them. A family's
+        // members are not callable either: the head's name is what a program
+        // writes, and it is checked here.
+        if !b.callable() {
+            continue;
+        }
+        let name = b.as_str();
+        if !missing.contains(&name) && !live.iter().any(|s| s.contains(&format!("{name}("))) {
+            missing.push(name);
+        }
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "not called by any case that runs: {}\n  \
+         a function nothing calls is a function nothing checks — give it a case \
+         with an `expected_exact_output`, beside its family in \
+         `tests/cases/programs/`",
+        missing.join(", ")
+    ))
 }
 
 fn slug(s: &str) -> String {

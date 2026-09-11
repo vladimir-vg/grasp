@@ -7,6 +7,7 @@
 use grasp_dbsp_runner::json::{decode_value, encode_value};
 use grasp_dbsp_runner::value::{DynValue, TypeDesc};
 use proptest::prelude::*;
+use proptest::strategy::ValueTree;
 use rkyv::Deserialize;
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
@@ -33,6 +34,16 @@ fn hash_of(v: &DynValue) -> u64 {
 /// mix. `Json` is here for the opposite reason: `FlatVariant` is supposed to
 /// satisfy these by construction, so a failure would mean it does not.
 ///
+/// **Every variant, and that is the point.** These properties are what the
+/// append-only discipline in `mapping.md` is *for*: the variant order is the
+/// archived discriminant, so a variant this strategy never draws is a variant
+/// whose archived order has never been compared with its in-memory one. The
+/// six appended after the containers each carry a foreign payload —
+/// `ByteArray`, `ShortInterval`, `FlatVariant` and the three temporal
+/// newtypes — so agreement there is borrowed rather than derived, which is
+/// exactly the case worth drawing. [`every_variant_is_generated`] holds this
+/// to it, and its match stops compiling when a variant is appended.
+///
 /// `Dict` keys here are arbitrary values, not the scalars the *type system*
 /// admits: `DynValue` can hold a composite key structurally, and ordering
 /// safety should be exercised over everything the representation can hold
@@ -47,6 +58,12 @@ fn any_value() -> impl Strategy<Value = DynValue> {
             .prop_map(|f| DynValue::F64(dbsp::algebra::F64::new(f))),
         ".{0,8}".prop_map(DynValue::String),
         any_json().prop_map(json_value),
+        any_date(),
+        any_time(),
+        any_timestamp(),
+        any_interval(),
+        any_bytes(),
+        any_dynamic(),
     ];
     leaf.prop_recursive(3, 16, 4, |inner| {
         prop_oneof![
@@ -107,31 +124,115 @@ fn signed_zero_hashes_consistently() {
     }
 }
 
-/// A round trip through the archived form must preserve the value, or a batch
-/// spilled to storage comes back as something else.
-#[test]
-fn archived_round_trip_preserves_values() {
-    let cases = vec![
-        DynValue::None,
-        DynValue::Bool(true),
-        DynValue::I64(-7),
-        DynValue::F64(dbsp::algebra::F64::new(1.5)),
-        DynValue::String("hello".into()),
-        DynValue::str("world"),
-        DynValue::record([DynValue::I64(1), DynValue::str("x"), DynValue::None]),
-        // Nested records exercise the `#[omit_bounds]` recursion.
-        DynValue::record([DynValue::record([DynValue::I64(2)]), DynValue::Bool(false)]),
-    ];
-    for v in cases {
+proptest! {
+    /// A round trip through the archived form must preserve the value, or a
+    /// batch spilled to storage comes back as something else.
+    ///
+    /// Over the generator rather than a hand-written list, which is how this
+    /// reaches the variants a list forgets — it held eight values, none of them
+    /// a `Dict` and none of the six appended after it. Nesting comes with it,
+    /// and nesting is what exercises the `#[omit_bounds]` recursion.
+    ///
+    /// **Read back with `dbsp`'s own deserializer**, not `rkyv::Infallible`.
+    /// That is not a detail: `ShortInterval`'s hand-written `Deserialize`
+    /// downcasts to `dbsp::storage::file::Deserializer` to read the storage
+    /// format version — the representation changed from milliseconds to
+    /// microseconds at version 4 — and *panics* given anything else. So an
+    /// `interval` has exactly one path back out of the archived form, and it is
+    /// the one `dbsp` takes for a spilled batch. The old list never held one,
+    /// so the test read every value through a deserializer no batch uses.
+    #[test]
+    fn archived_round_trip_preserves_values(v in any_value()) {
         let bytes = rkyv::to_bytes::<_, 4096>(&v).expect("serialize");
         // `from_bytes` would require the archived type to derive `CheckBytes`,
         // which it does not; `dbsp` reads batches through the unchecked path too.
         let archived = unsafe { rkyv::archived_root::<DynValue>(&bytes) };
         let back: DynValue = archived
-            .deserialize(&mut rkyv::Infallible)
+            .deserialize(&mut dbsp::storage::file::Deserializer::default())
             .expect("deserialize");
-        assert_eq!(v, back);
+        prop_assert_eq!(v, back);
     }
+}
+
+/// Every `DynValue` variant is one [`any_value`] actually draws.
+///
+/// The properties above are only as wide as the strategy feeding them, and a
+/// variant it never draws is a variant whose archived order has never been
+/// compared with its in-memory one — which is the whole discipline
+/// `mapping.md` asks for. This is what stops that from being a matter of
+/// remembering.
+///
+/// Two things have to change before it passes again when a variant is appended:
+/// the match below stops compiling until the variant has an arm, and the set
+/// comparison fails until the strategy draws it. Neither can be satisfied by
+/// editing a list.
+#[test]
+fn every_variant_is_generated() {
+    fn walk(v: &DynValue, seen: &mut std::collections::BTreeSet<&'static str>) {
+        let name = match v {
+            DynValue::None => "None",
+            DynValue::Bool(_) => "Bool",
+            DynValue::I64(_) => "I64",
+            DynValue::F64(_) => "F64",
+            DynValue::String(_) => "String",
+            DynValue::Json(_) => "Json",
+            DynValue::Date(_) => "Date",
+            DynValue::Time(_) => "Time",
+            DynValue::Timestamp(_) => "Timestamp",
+            DynValue::Interval(_) => "Interval",
+            DynValue::Bytes(_) => "Bytes",
+            DynValue::Dynamic(_) => "Dynamic",
+            DynValue::Record(vs) => {
+                vs.iter().for_each(|x| walk(x, seen));
+                "Record"
+            }
+            DynValue::Array(vs) => {
+                vs.iter().for_each(|x| walk(x, seen));
+                "Array"
+            }
+            DynValue::Dict(kvs) => {
+                kvs.iter().for_each(|(k, v)| {
+                    walk(k, seen);
+                    walk(v, seen);
+                });
+                "Dict"
+            }
+        };
+        seen.insert(name);
+    }
+
+    let every: std::collections::BTreeSet<&'static str> = [
+        "None",
+        "Bool",
+        "I64",
+        "F64",
+        "String",
+        "Record",
+        "Json",
+        "Array",
+        "Dict",
+        "Date",
+        "Time",
+        "Timestamp",
+        "Interval",
+        "Bytes",
+        "Dynamic",
+    ]
+    .into_iter()
+    .collect();
+
+    let mut runner = proptest::test_runner::TestRunner::deterministic();
+    let strategy = any_value();
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..2000 {
+        let tree = strategy.new_tree(&mut runner).expect("a value");
+        walk(&tree.current(), &mut seen);
+    }
+    assert_eq!(
+        seen, every,
+        "`any_value` draws a different set of variants than `DynValue` has; \
+         a variant it never draws is never held to the invariants above"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -267,60 +368,76 @@ fn value_of(ty: TypeDesc) -> BoxedStrategy<DynValue> {
             .prop_map(DynValue::Array)
             .boxed(),
         TypeDesc::Json => any_json().prop_map(json_value).boxed(),
-        // Generated inside the range each written form can spell, because that
-        // is what the round trip is over: `make_date___` refuses a year outside
-        // 1..=9999, and a `time` is a point in one day.
-        TypeDesc::Date => (1i32..=9999, 1i32..=12, 1i32..=28)
-            .prop_map(|(y, m, d)| {
-                DynValue::Date(feldera_sqllib::make_date___(y, m, d).expect("a valid date"))
-            })
-            .boxed(),
-        TypeDesc::Time => (0i64..86_400_000_000)
-            .prop_map(|micros| {
-                let (h, m) = (micros / 3_600_000_000, micros / 60_000_000 % 60);
-                let (s, us) = (micros / 1_000_000 % 60, micros % 1_000_000);
-                grasp_dbsp_runner::value::parse_time(&format!("{h:02}:{m:02}:{s:02}.{us:06}"))
-                    .expect("a valid time")
-            })
-            .boxed(),
-        // Bounded by what `Display` can write: `Timestamp` prints a calendar
-        // date, and the parser reads years 1..=9999 back.
-        // Generated from the values it can hold, tagged the way `to_dynamic`
-        // tags them — so the round trip is over what a program could actually
-        // put in one.
-        TypeDesc::Dynamic => prop_oneof![
-            any::<bool>().prop_map(feldera_sqllib::Variant::Boolean),
-            any::<i64>().prop_map(feldera_sqllib::Variant::BigInt),
-            ".{0,8}".prop_map(|s| feldera_sqllib::Variant::String(
-                feldera_sqllib::SqlString::from_ref(&s)
-            )),
-            (1i32..=9999, 1i32..=12, 1i32..=28).prop_map(|(y, m, d)| {
-                feldera_sqllib::Variant::Date(
-                    feldera_sqllib::make_date___(y, m, d).expect("a valid date"),
-                )
-            }),
-            prop::collection::vec(any::<u8>(), 0..8).prop_map(|b| {
-                feldera_sqllib::Variant::Binary(feldera_sqllib::ByteArray::from_vec(b))
-            }),
-        ]
-        .prop_map(|v| DynValue::Dynamic(feldera_sqllib::FlatVariant::from(v)))
-        .boxed(),
-        TypeDesc::Bytes => prop::collection::vec(any::<u8>(), 0..8)
-            .prop_map(|b| DynValue::Bytes(feldera_sqllib::ByteArray::from_vec(b)))
-            .boxed(),
-        // Bounded well inside `i64`, so that the sum in an addition test cannot
-        // overflow — the round trip itself holds for any value.
-        TypeDesc::Interval => (-1_000_000_000_000_000i64..=1_000_000_000_000_000)
-            .prop_map(|micros| {
-                DynValue::Interval(feldera_sqllib::ShortInterval::from_microseconds(micros))
-            })
-            .boxed(),
-        TypeDesc::Timestamp => (-62_135_596_800_000_000i64..=253_402_300_799_000_000)
-            .prop_map(|micros| {
-                DynValue::Timestamp(feldera_sqllib::Timestamp::from_microseconds(micros))
-            })
-            .boxed(),
+        TypeDesc::Date => any_date().boxed(),
+        TypeDesc::Time => any_time().boxed(),
+        TypeDesc::Dynamic => any_dynamic().boxed(),
+        TypeDesc::Bytes => any_bytes().boxed(),
+        TypeDesc::Interval => any_interval().boxed(),
+        TypeDesc::Timestamp => any_timestamp().boxed(),
     }
+}
+
+// The six variants appended after the containers, each as one strategy both
+// `any_value` and `value_of` draw from. Two lists would drift, and the way they
+// would drift is silently: a variant missing from one of them is a variant that
+// simply never appears in that half of the suite.
+
+/// Inside the range the written form can spell: `make_date___` refuses a year
+/// outside `1..=9999`, and the round trip is over what a program can write.
+fn any_date() -> impl Strategy<Value = DynValue> {
+    (1i32..=9999, 1i32..=12, 1i32..=28)
+        .prop_map(|(y, m, d)| DynValue::Date(feldera_sqllib::make_date___(y, m, d).expect("valid")))
+}
+
+/// A point in one day, to microsecond resolution.
+fn any_time() -> impl Strategy<Value = DynValue> {
+    (0i64..86_400_000_000).prop_map(|micros| {
+        let (h, m) = (micros / 3_600_000_000, micros / 60_000_000 % 60);
+        let (s, us) = (micros / 1_000_000 % 60, micros % 1_000_000);
+        grasp_dbsp_runner::value::parse_time(&format!("{h:02}:{m:02}:{s:02}.{us:06}"))
+            .expect("a valid time")
+    })
+}
+
+/// Bounded by what `Display` can write: `Timestamp` prints a calendar date, and
+/// the parser reads years `1..=9999` back.
+fn any_timestamp() -> impl Strategy<Value = DynValue> {
+    (-62_135_596_800_000_000i64..=253_402_300_799_000_000).prop_map(|micros| {
+        DynValue::Timestamp(feldera_sqllib::Timestamp::from_microseconds(micros))
+    })
+}
+
+/// Bounded well inside `i64`, so that the sum in an addition test cannot
+/// overflow — the round trip itself holds for any value.
+fn any_interval() -> impl Strategy<Value = DynValue> {
+    (-1_000_000_000_000_000i64..=1_000_000_000_000_000).prop_map(|micros| {
+        DynValue::Interval(feldera_sqllib::ShortInterval::from_microseconds(micros))
+    })
+}
+
+/// A payload of any length, empty included — `ByteArray` orders
+/// lexicographically, so the prefix pairs are the interesting ones.
+fn any_bytes() -> impl Strategy<Value = DynValue> {
+    prop::collection::vec(any::<u8>(), 0..8)
+        .prop_map(|b| DynValue::Bytes(feldera_sqllib::ByteArray::from_vec(b)))
+}
+
+/// Tagged the way `to_dynamic` tags them, so this is what a program could
+/// actually put in one — and the tags are what the ordering sorts by first.
+fn any_dynamic() -> impl Strategy<Value = DynValue> {
+    prop_oneof![
+        any::<bool>().prop_map(feldera_sqllib::Variant::Boolean),
+        any::<i64>().prop_map(feldera_sqllib::Variant::BigInt),
+        ".{0,8}"
+            .prop_map(|s| feldera_sqllib::Variant::String(feldera_sqllib::SqlString::from_ref(&s))),
+        (1i32..=9999, 1i32..=12, 1i32..=28).prop_map(|(y, m, d)| {
+            feldera_sqllib::Variant::Date(feldera_sqllib::make_date___(y, m, d).expect("valid"))
+        }),
+        prop::collection::vec(any::<u8>(), 0..8).prop_map(|b| {
+            feldera_sqllib::Variant::Binary(feldera_sqllib::ByteArray::from_vec(b))
+        }),
+    ]
+    .prop_map(|v| DynValue::Dynamic(feldera_sqllib::FlatVariant::from(v)))
 }
 
 fn any_typed_value() -> impl Strategy<Value = (TypeDesc, DynValue)> {

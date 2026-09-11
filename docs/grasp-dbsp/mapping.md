@@ -33,6 +33,11 @@ implemented:
 - `Array(Vec<DynValue>)` — the language's `array(T)`.
 - `Json(FlatVariant)` — the language's `json`, a byte-encoded document.
 - `Dict(BTreeMap<DynValue, DynValue>)` — the language's `dict(K,V)`.
+- `Date`, `Time`, `Timestamp`, `Interval` — `sqllib`'s `Date`, `Time`,
+  `Timestamp` and `ShortInterval`, each one integer behind a newtype.
+- `Bytes(ByteArray)` — the language's `bytes`, ordered lexicographically.
+- `Dynamic(FlatVariant)` — the language's `dynamic`: `Json`'s payload with the
+  type tags kept.
 
 The rest of the vocabulary — the other integer widths, `f32`, and the `sql.*`
 types — is future work, listed in [`overview.md`](overview.md). **Append new
@@ -41,8 +46,25 @@ a storage format. Removing one shifts it too, which is why `SqlString` could go
 now and could not once anything is stored.
 
 `Record`, `Array` and `Dict` are the containers whose `Ord`, `Hash` and archived
-ordering are ours rather than borrowed, so all three are covered by the proptests
-in `tests/invariants.rs`.
+ordering are ours rather than borrowed. The appended six borrow theirs from a
+foreign payload instead, which makes the agreement below something they are
+*given* rather than something they derive — a different way to be right, and no
+less worth checking.
+
+So the proptests in `tests/invariants.rs` draw **every** variant, and a test
+beside them holds the generator to that: its match over `DynValue` stops
+compiling when a variant is appended, and its comparison fails until the
+generator draws the new one. The discipline in this section is only as real as
+the values the properties are fed.
+
+One consequence of a borrowed payload, found by widening them: **an `Interval`
+has exactly one way back out of the archived form.** `ShortInterval`'s
+hand-written `Deserialize` downcasts to `dbsp::storage::file::Deserializer` to
+read the storage format version — its representation changed from milliseconds
+to microseconds at version 4 — and panics given any other deserializer. That is
+the path `dbsp` takes for a spilled batch, so nothing in the runner is affected;
+but code that reads a `DynValue` back with a deserializer of its own choosing
+would find out at runtime.
 
 ### Why `json` is a `FlatVariant`
 

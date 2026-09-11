@@ -304,6 +304,31 @@
     - out:
         - [1, {days: 29, micros: 1000000}]
 
+# One span, asked in every unit it converts into exactly — which is every unit,
+# since a day is 86400 seconds here and months are not measured. These are the
+# `total_` family: how long the span *is*, where `temporal:hours` of a time of
+# day is which hour it names.
+- name: a span converts into every unit below a month
+  source: |
+    src :: relation(iv: interval)
+    src(iv:) <- input
+
+    out(d: d, h: h, m: m, s: s, us: us) <-
+        src(iv: iv)
+        d := temporal:total_days(iv)
+        h := temporal:total_hours(iv)
+        m := temporal:total_minutes(iv)
+        s := temporal:total_seconds(iv)
+        us := temporal:total_microseconds(iv)
+
+  input:
+    - src:
+        - [1, {iv: "P1DT2H30M"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {d: 1, h: 26, m: 1590, s: 95400, us: 95400000000}]
+
 - name: an instant shifts by a span
   source: |
     src :: relation(ts: timestamp)

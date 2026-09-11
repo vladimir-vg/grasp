@@ -46,6 +46,89 @@
         - [1, {k: "a", v: 1}]
         - [1, {k: "b", v: 2}]
 
+# The rest of the arithmetic and text families, one case each. They are here
+# because nothing else reached them: every one of these was implemented,
+# declared in `stdlib.grasp`, and never run — so `float:ceil` emitting a name
+# the target does not have would have compiled, and no case would have said so.
+# `every_callable_is_exercised` in the harness is what keeps the next one from
+# arriving the same way.
+
+- name: the float family rounds four ways
+  source: |
+    src :: relation(x: f64)
+    src(x:) <- input
+
+    out(a: a, b: b, c: c, d: d) <-
+        src(x: x)
+        a := float:abs(x)
+        b := float:ceil(x)
+        c := float:floor(x)
+        d := float:round(x)
+
+  input:
+    - src:
+        - [1, {x: -1.5}]
+
+  expected_exact_output:
+    - out:
+        - [1, {a: 1.5, b: -1.0, c: -2.0, d: -2.0}]
+
+- name: case and trimming are three functions over text
+  source: |
+    src :: relation(s: string)
+    src(s:) <- input
+
+    out(lower: a, upper: b, trimmed: c) <-
+        src(s: s)
+        a := string:lower(s)
+        b := string:upper(s)
+        c := string:trim(s)
+
+  input:
+    - src:
+        - [1, {s: "  Hi  "}]
+
+  expected_exact_output:
+    - out:
+        - [1, {lower: "  hi  ", upper: "  HI  ", trimmed: "Hi"}]
+
+# `dict:keys` is the column `dict:values` does not take, and the entries come
+# back sorted because a dict is sorted by construction.
+- name: dict:keys is the other column of the entries
+  source: |
+    src :: relation(d: dict(string, i64))
+    src(d:) <- input
+
+    out(ks: ks) <-
+        src(d: d)
+        ks := dict:keys(d)
+
+  input:
+    - src:
+        - [1, {d: {"b": 2, "a": 1}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {ks: ["a", "b"]}]
+
+- name: negation and absolute value
+  source: |
+    src :: relation(b: boolean, n: i64)
+    src(b:, n:) <- input
+
+    out(x: x, y: y) <-
+        src(b: b, n: n)
+        x := boolean:not(b)
+        y := integer:abs(n)
+
+  input:
+    - src:
+        - [1, {b: true, n: -3}]
+
+  expected_exact_output:
+    - out:
+        - [1, {x: false, y: 3}]
+
 # -- waiting on this compiler, not on the target ------------------------------
 
 # `dict:has` is the way to ask about absence, since `dict:get` answers by not
