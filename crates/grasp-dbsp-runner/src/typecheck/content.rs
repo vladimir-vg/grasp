@@ -208,6 +208,19 @@ fn hash_conv(h: &mut Xxh3Default, conv: &crate::expr::Conv) {
             ty.hash(h);
             return;
         }
+        // The type is part of what the conversion *is*, as for the document
+        // pair: reading a `date` out of a dynamic is not the computation
+        // reading a `string` out is.
+        ToDynamic(ty) => {
+            15u8.hash(h);
+            ty.hash(h);
+            return;
+        }
+        FromDynamic(ty) => {
+            16u8.hash(h);
+            ty.hash(h);
+            return;
+        }
         TemporalToString => 12,
         TimestampToDate => 13,
         TimestampToTime => 14,

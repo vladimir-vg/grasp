@@ -950,6 +950,7 @@ const RESERVED: &[&str] = &[
     "to_utf8",
     "from_utf8",
     "bytes",
+    "dynamic",
     "make_interval",
     "total_days",
     "total_hours",

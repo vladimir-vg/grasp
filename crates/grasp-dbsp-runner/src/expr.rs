@@ -303,6 +303,14 @@ pub enum Conv {
     /// document happens to be. Always fallible: a document need not hold the
     /// shape asked of it.
     FromJson(Arc<TypeDesc>),
+    /// Into a `dynamic`, from a value of the carried source type. Total, and
+    /// **tagged**: unlike [`Conv::ToJson`] it keeps the `Variant` tag that says
+    /// which type the value was, which is what lets the narrowing back out be
+    /// exact rather than a guess that succeeds.
+    ToDynamic(Arc<TypeDesc>),
+    /// Out of a `dynamic`, into the carried target type. Fallible: a dynamic
+    /// holds *some* type and need not hold the one asked for.
+    FromDynamic(Arc<TypeDesc>),
     /// Build a document from a value of the carried source type. Total — a
     /// record's field names live in the type and not in the value, which is why
     /// the type has to travel with the conversion.
@@ -321,6 +329,7 @@ impl Conv {
                 | Conv::StringToFloat
                 | Conv::StringToTemporal(_)
                 | Conv::FromJson(_)
+                | Conv::FromDynamic(_)
         )
     }
 }
@@ -611,6 +620,9 @@ fn compare(l: &DynValue, r: &DynValue) -> Option<std::cmp::Ordering> {
         (Interval(a), Interval(b)) => Some(a.cmp(b)),
         // Lexicographic, which is the order the payload already has.
         (Bytes(a), Bytes(b)) => Some(a.cmp(b)),
+        // Byte comparison over the canonical encoding, as for a document — and
+        // like one, only `==` and `!=` reach here.
+        (Dynamic(a), Dynamic(b)) => Some(a.cmp(b)),
         _ => Option::None,
     }
 }
@@ -706,6 +718,8 @@ fn convert(conv: &Conv, v: DynValue) -> DynValue {
         (Conv::Identity, v) => v,
         (Conv::FromJson(ty), Json(fv)) => from_json(&fv, ty).unwrap_or(None),
         (Conv::ToJson(ty), v) => Json(to_json(&v, ty)),
+        (Conv::ToDynamic(ty), v) => Dynamic(to_dynamic(&v, ty)),
+        (Conv::FromDynamic(ty), Dynamic(fv)) => from_dynamic(&fv, ty).unwrap_or(None),
         (Conv::IntToFloat, I64(n)) => F64(Flt::new(n as f64)),
         (Conv::FloatToInt, F64(f)) => {
             let x = f.into_inner();
@@ -875,6 +889,120 @@ fn json_f64(v: &Variant) -> Option<f64> {
 /// JSON null is one of its values.
 fn to_json(v: &DynValue, ty: &TypeDesc) -> FlatVariant {
     FlatVariant::from(to_variant(v, ty))
+}
+
+/// Into a `dynamic` — the same payload a document uses, with the tag kept.
+///
+/// Where [`to_variant`] writes a date as *text*, because JSON has no date, this
+/// writes `Variant::Date`. That one difference is the whole of what separates
+/// the two types: a document says what a value looks like, a dynamic says what
+/// it is.
+fn to_dynamic(v: &DynValue, ty: &TypeDesc) -> FlatVariant {
+    FlatVariant::from(to_tagged(v, ty))
+}
+
+fn to_tagged(v: &DynValue, ty: &TypeDesc) -> Variant {
+    match (v, ty.non_null()) {
+        (DynValue::Date(d), _) => Variant::Date(*d),
+        (DynValue::Time(t), _) => Variant::Time(*t),
+        (DynValue::Timestamp(t), _) => Variant::Timestamp(*t),
+        (DynValue::Interval(iv), _) => Variant::ShortInterval(*iv),
+        (DynValue::Bytes(b), _) => Variant::Binary(b.clone()),
+        (DynValue::Array(items), TypeDesc::Array(elem)) => Variant::Array(
+            items
+                .iter()
+                .map(|i| to_tagged(i, elem))
+                .collect::<Vec<_>>()
+                .into(),
+        ),
+        // A record and a dict both become a map, which is the one place a
+        // dynamic is as lenient as a document: `Variant` has a single `Map`.
+        (DynValue::Record(values), TypeDesc::Record(fields)) => Variant::Map(
+            fields
+                .iter()
+                .zip(values)
+                .map(|((name, fty), value)| {
+                    (
+                        Variant::String(SqlString::from_ref(name)),
+                        to_tagged(value, fty),
+                    )
+                })
+                .collect::<std::collections::BTreeMap<_, _>>()
+                .into(),
+        ),
+        (DynValue::Dict(entries), TypeDesc::Dict(_, vt)) => Variant::Map(
+            entries
+                .iter()
+                .filter_map(|(k, value)| {
+                    let key = k.dict_key_string()?;
+                    Some((
+                        Variant::String(SqlString::from_ref(&key)),
+                        to_tagged(value, vt),
+                    ))
+                })
+                .collect::<std::collections::BTreeMap<_, _>>()
+                .into(),
+        ),
+        // Everything else a document already spells exactly.
+        _ => to_variant(v, ty),
+    }
+}
+
+/// Out of a `dynamic`. `None` where it does not hold that type — and unlike a
+/// document, *holding* is an exact question: a dynamic carrying a `date` is not
+/// a `string`, where a document carrying `"2024-01-15"` is both.
+fn from_dynamic(fv: &FlatVariant, ty: &TypeDesc) -> Option<DynValue> {
+    let target = ty.non_null();
+    if is_absent(fv) {
+        return ty.is_optional().then_some(DynValue::None);
+    }
+    let decoded = Variant::from(fv);
+    let value = match (&decoded, target) {
+        (Variant::VariantNull, _) => return ty.is_optional().then_some(DynValue::None),
+        (Variant::Boolean(b), TypeDesc::Bool) => DynValue::Bool(*b),
+        (Variant::BigInt(n), TypeDesc::I64) => DynValue::I64(*n),
+        (Variant::Double(f), TypeDesc::F64) => DynValue::F64(*f),
+        (Variant::String(s), TypeDesc::String) => DynValue::String(s.str().to_string()),
+        (Variant::Date(d), TypeDesc::Date) => DynValue::Date(*d),
+        (Variant::Time(t), TypeDesc::Time) => DynValue::Time(*t),
+        (Variant::Timestamp(t), TypeDesc::Timestamp) => DynValue::Timestamp(*t),
+        (Variant::ShortInterval(iv), TypeDesc::Interval) => DynValue::Interval(*iv),
+        (Variant::Binary(b), TypeDesc::Bytes) => DynValue::Bytes(b.clone()),
+        (Variant::Array(items), TypeDesc::Array(elem)) => DynValue::Array(
+            items
+                .iter()
+                .map(|i| from_dynamic(&FlatVariant::from(i), elem))
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        (Variant::Map(entries), TypeDesc::Record(fields)) => {
+            let mut out = Vec::with_capacity(fields.len());
+            for (name, fty) in fields {
+                let found = entries
+                    .iter()
+                    .find(|(k, _)| matches!(k, Variant::String(s) if s.str() == name))
+                    .map(|(_, v)| v)?;
+                out.push(from_dynamic(&FlatVariant::from(found), fty)?);
+            }
+            DynValue::Record(out)
+        }
+        (Variant::Map(entries), TypeDesc::Dict(kt, vt)) => DynValue::Dict(
+            entries
+                .iter()
+                .map(|(k, v)| {
+                    let key = match k {
+                        Variant::String(s) => kt.parse_dict_key(s.str())?,
+                        other => kt.parse_dict_key(&format!("{other:?}"))?,
+                    };
+                    Some((key, from_dynamic(&FlatVariant::from(v), vt)?))
+                })
+                .collect::<Option<std::collections::BTreeMap<_, _>>>()?,
+        ),
+        // A document is what a dynamic falls back to: every value is one, so
+        // this never fails and is how a program reaches the lenient reading.
+        (_, TypeDesc::Json) => DynValue::Json(fv.clone()),
+        _ => return Option::None,
+    };
+    Some(value)
 }
 
 fn to_variant(v: &DynValue, ty: &TypeDesc) -> Variant {

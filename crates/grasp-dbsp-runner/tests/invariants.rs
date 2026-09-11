@@ -226,6 +226,7 @@ fn any_type() -> impl Strategy<Value = TypeDesc> {
         Just(TypeDesc::Timestamp),
         Just(TypeDesc::Interval),
         Just(TypeDesc::Bytes),
+        Just(TypeDesc::Dynamic),
     ]
 }
 
@@ -284,6 +285,26 @@ fn value_of(ty: TypeDesc) -> BoxedStrategy<DynValue> {
             .boxed(),
         // Bounded by what `Display` can write: `Timestamp` prints a calendar
         // date, and the parser reads years 1..=9999 back.
+        // Generated from the values it can hold, tagged the way `to_dynamic`
+        // tags them — so the round trip is over what a program could actually
+        // put in one.
+        TypeDesc::Dynamic => prop_oneof![
+            any::<bool>().prop_map(feldera_sqllib::Variant::Boolean),
+            any::<i64>().prop_map(feldera_sqllib::Variant::BigInt),
+            ".{0,8}".prop_map(|s| feldera_sqllib::Variant::String(
+                feldera_sqllib::SqlString::from_ref(&s)
+            )),
+            (1i32..=9999, 1i32..=12, 1i32..=28).prop_map(|(y, m, d)| {
+                feldera_sqllib::Variant::Date(
+                    feldera_sqllib::make_date___(y, m, d).expect("a valid date"),
+                )
+            }),
+            prop::collection::vec(any::<u8>(), 0..8).prop_map(|b| {
+                feldera_sqllib::Variant::Binary(feldera_sqllib::ByteArray::from_vec(b))
+            }),
+        ]
+        .prop_map(|v| DynValue::Dynamic(feldera_sqllib::FlatVariant::from(v)))
+        .boxed(),
         TypeDesc::Bytes => prop::collection::vec(any::<u8>(), 0..8)
             .prop_map(|b| DynValue::Bytes(feldera_sqllib::ByteArray::from_vec(b)))
             .boxed(),

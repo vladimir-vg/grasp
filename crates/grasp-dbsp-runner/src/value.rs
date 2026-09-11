@@ -183,6 +183,23 @@ pub enum DynValue {
     /// hand-written one copies it in bulk — measured 47x faster on a 16 KiB
     /// value. It orders lexicographically, so this is a scalar like the rest.
     Bytes(feldera_sqllib::ByteArray),
+    /// `dynamic` — any value, carrying what it is.
+    ///
+    /// **Appended, and new variants must be too**: the variant order is the
+    /// archived discriminant, which is a storage format.
+    ///
+    /// The same payload as [`DynValue::Json`], under a different contract. A
+    /// document holds a date as *text*, so it narrows to `string` and to `date`
+    /// alike — extracting from one is a guess that happens to succeed. A
+    /// dynamic holds the `Variant::Date` tag, so it narrows to `date` and to
+    /// nothing else.
+    ///
+    /// Exact for every scalar, and for an array, whose elements carry their own
+    /// tags. **Not** for a record against a dict: both are `Variant::Map`, and
+    /// telling them apart would need a recursive tagged value of our own rather
+    /// than `Variant`'s. Both are an object in every spelling this language
+    /// uses, so the leniency is bounded and stated.
+    Dynamic(feldera_sqllib::FlatVariant),
 }
 
 impl DynValue {
@@ -263,6 +280,7 @@ impl DynValue {
             DynValue::Timestamp(_) => "timestamp",
             DynValue::Interval(_) => "interval",
             DynValue::Bytes(_) => "bytes",
+            DynValue::Dynamic(_) => "dynamic",
         }
     }
 }
@@ -468,6 +486,8 @@ pub enum TypeDesc {
     Interval,
     /// `bytes` — binary data, any length.
     Bytes,
+    /// `dynamic` — any value, carrying what it is.
+    Dynamic,
 }
 
 impl TypeDesc {
@@ -583,6 +603,7 @@ impl std::fmt::Display for TypeDesc {
             TypeDesc::Timestamp => write!(f, "timestamp"),
             TypeDesc::Interval => write!(f, "interval"),
             TypeDesc::Bytes => write!(f, "bytes"),
+            TypeDesc::Dynamic => write!(f, "dynamic"),
             TypeDesc::Record(fields) => {
                 write!(f, "record(")?;
                 for (i, (name, ty)) in fields.iter().enumerate() {
@@ -786,4 +807,132 @@ pub fn parse_base64(text: &str) -> Option<DynValue> {
         .decode(text)
         .ok()
         .map(|d| DynValue::Bytes(feldera_sqllib::ByteArray::from_vec(d)))
+}
+
+/// A `dynamic` on the wire: a **single-key object naming what the value is**.
+///
+/// ```json
+/// {"i64": 42}   {"date": "2024-01-15"}   {"array": [{"i64": 1}, {"string": "x"}]}
+/// ```
+///
+/// Always tagged, never bare. A bare form would be ambiguous the moment a
+/// dynamic held the object `{"date": "…"}` itself — and the tag is the point of
+/// the type, since it is what a document does not carry.
+///
+/// The spellings inside are the ones each type already uses: a date writes what
+/// its own parser reads, a payload writes base64. So the tag adds knowledge of
+/// *which* type, and nothing else changes.
+///
+/// A record and a dict share the `map` tag. `Variant` has one `Map` and telling
+/// them apart would need a recursive tagged value of our own; both are an object
+/// in every spelling here, so this is the one place a dynamic is as lenient as
+/// a document.
+pub fn dynamic_to_json(fv: &feldera_sqllib::FlatVariant) -> serde_json::Value {
+    use feldera_sqllib::Variant;
+    use serde_json::Value as J;
+
+    fn tagged(tag: &str, value: J) -> J {
+        let mut obj = serde_json::Map::new();
+        obj.insert(tag.to_string(), value);
+        J::Object(obj)
+    }
+
+    let variant = Variant::from(fv);
+    match &variant {
+        Variant::SqlNull | Variant::VariantNull => tagged("json", J::Null),
+        Variant::Boolean(b) => tagged("boolean", J::Bool(*b)),
+        Variant::BigInt(n) => tagged("i64", J::from(*n)),
+        Variant::Double(f) => serde_json::Number::from_f64(f.into_inner())
+            .map(|n| tagged("f64", J::Number(n)))
+            .unwrap_or_else(|| tagged("json", J::Null)),
+        Variant::String(s) => tagged("string", J::String(s.str().to_string())),
+        Variant::Date(d) => tagged("date", J::String(d.to_string())),
+        Variant::Time(t) => tagged("time", J::String(time_string(t))),
+        Variant::Timestamp(t) => tagged("timestamp", J::String(t.to_string())),
+        Variant::ShortInterval(iv) => tagged("interval", J::String(interval_string(iv))),
+        Variant::Binary(b) => tagged("bytes", J::String(to_base64(b.as_slice()))),
+        Variant::Array(items) => tagged(
+            "array",
+            J::Array(
+                items
+                    .iter()
+                    .map(|i| dynamic_to_json(&feldera_sqllib::FlatVariant::from(i)))
+                    .collect(),
+            ),
+        ),
+        Variant::Map(entries) => tagged(
+            "map",
+            J::Object(
+                entries
+                    .iter()
+                    .map(|(k, v)| {
+                        let key = match k {
+                            Variant::String(s) => s.str().to_string(),
+                            other => format!("{other:?}"),
+                        };
+                        (key, dynamic_to_json(&feldera_sqllib::FlatVariant::from(v)))
+                    })
+                    .collect(),
+            ),
+        ),
+        // Every tag `to_dynamic` writes is above. A `Variant` this language
+        // cannot produce — a geometry, an unsigned width — has no grasp-dbsp
+        // type to be read back as.
+        _ => tagged("json", J::Null),
+    }
+}
+
+/// The inverse. `None` where the text is not one tagged value.
+pub fn dynamic_from_json(j: &serde_json::Value) -> Option<DynValue> {
+    use feldera_sqllib::{FlatVariant, SqlString, Variant};
+    use serde_json::Value as J;
+
+    fn variant(j: &J) -> Option<Variant> {
+        let obj = j.as_object().filter(|o| o.len() == 1)?;
+        let (tag, value) = obj.iter().next()?;
+        Some(match (tag.as_str(), value) {
+            ("json", J::Null) => Variant::VariantNull,
+            ("boolean", J::Bool(b)) => Variant::Boolean(*b),
+            ("i64", J::Number(n)) => Variant::BigInt(n.as_i64()?),
+            ("f64", J::Number(n)) => Variant::Double(dbsp::algebra::F64::new(n.as_f64()?)),
+            ("string", J::String(s)) => Variant::String(SqlString::from_ref(s)),
+            ("date", J::String(s)) => match parse_date(s)? {
+                DynValue::Date(d) => Variant::Date(d),
+                _ => return Option::None,
+            },
+            ("time", J::String(s)) => match parse_time(s)? {
+                DynValue::Time(t) => Variant::Time(t),
+                _ => return Option::None,
+            },
+            ("timestamp", J::String(s)) => match parse_timestamp(s)? {
+                DynValue::Timestamp(t) => Variant::Timestamp(t),
+                _ => return Option::None,
+            },
+            ("interval", J::String(s)) => match parse_interval(s)? {
+                DynValue::Interval(iv) => Variant::ShortInterval(iv),
+                _ => return Option::None,
+            },
+            ("bytes", J::String(s)) => match parse_base64(s)? {
+                DynValue::Bytes(b) => Variant::Binary(b),
+                _ => return Option::None,
+            },
+            ("array", J::Array(items)) => Variant::Array(
+                items
+                    .iter()
+                    .map(variant)
+                    .collect::<Option<Vec<_>>>()?
+                    .into(),
+            ),
+            ("map", J::Object(entries)) => Variant::Map(
+                entries
+                    .iter()
+                    .map(|(k, v)| Some((Variant::String(SqlString::from_ref(k)), variant(v)?)))
+                    .collect::<Option<std::collections::BTreeMap<_, _>>>()?
+                    .into(),
+            ),
+            _ => return Option::None,
+        })
+    }
+
+    Some(DynValue::Dynamic(FlatVariant::from(variant(j)?)))
 }

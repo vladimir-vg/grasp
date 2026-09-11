@@ -804,6 +804,9 @@ fn extractable(t: &TypeDesc) -> bool {
         TypeDesc::Date | TypeDesc::Time | TypeDesc::Timestamp | TypeDesc::Interval => true,
         // A document holds it as the same object the codec writes.
         TypeDesc::Bytes => true,
+        // A document is untagged, so there is nothing in one to read back as a
+        // `dynamic`. `cast(doc, dynamic)` goes the other way, and is total.
+        TypeDesc::Dynamic => false,
         TypeDesc::Record(fields) => fields.iter().all(|(_, f)| extractable(f.non_null())),
         TypeDesc::Array(elem) => extractable(elem.non_null()),
         // A document's object keys are strings, and a dict key parses from one,
@@ -896,6 +899,23 @@ fn conversion(from: &Ty, to: &TypeDesc, span: Span) -> TResult<Conv> {
         }
         return Ok(Conv::FromJson(std::sync::Arc::new(target.clone())));
     }
+    // Every value is a `dynamic`, and nothing comes out of one without being
+    // asked for — the shape a document already has, with the tag kept.
+    if target == &TypeDesc::Dynamic && source != &TypeDesc::Dynamic {
+        return Ok(Conv::ToDynamic(std::sync::Arc::new(from.clone())));
+    }
+    if source == &TypeDesc::Dynamic && target != &TypeDesc::Dynamic {
+        if !optional_target {
+            return err(
+                span,
+                format!(
+                    "extracting `{target}` from a dynamic can fail — it holds some type \
+                     and need not hold that one; write `cast(..., optional({target}))`"
+                ),
+            );
+        }
+        return Ok(Conv::FromDynamic(std::sync::Arc::new(target.clone())));
+    }
     if target == &TypeDesc::Json && source != &TypeDesc::Json {
         return Ok(Conv::ToJson(std::sync::Arc::new(from.clone())));
     }
@@ -929,6 +949,7 @@ fn conversion(from: &Ty, to: &TypeDesc, span: Span) -> TResult<Conv> {
     if conv.is_fallible() && !optional_target {
         let why = match conv {
             Conv::FloatToInt => "NaN, infinity, or a value outside `i64`",
+            Conv::FromDynamic(_) => "it holds some type and need not hold that one",
             Conv::StringToTemporal(t) => match t {
                 Date => "the text may not be a date",
                 Time => "the text may not be a time",
@@ -1078,12 +1099,20 @@ fn infer_binop(
                 // compares the type tag first, making the order well defined and
                 // arbitrary, and this language's ordering decides query results
                 // rather than only batch layout.
-                if t.non_null() == &TypeDesc::Json && !matches!(op, Eq | Ne) {
+                if matches!(t.non_null(), TypeDesc::Json | TypeDesc::Dynamic)
+                    && !matches!(op, Eq | Ne)
+                {
+                    let what = match t.non_null() {
+                        TypeDesc::Json => "documents",
+                        _ => "dynamics",
+                    };
                     return err(
                         span,
-                        "documents have no meaningful order: comparison sorts by type tag, \
-                         so every number would precede every string. Only `==` and `!=` are \
-                         allowed; extract a value with `cast` and compare that.",
+                        format!(
+                            "{what} have no meaningful order: comparison sorts by type tag, \
+                             so every number would precede every string. Only `==` and `!=` \
+                             are allowed; extract a value with `cast` and compare that."
+                        ),
                     );
                 }
                 pin(le, t.non_null());

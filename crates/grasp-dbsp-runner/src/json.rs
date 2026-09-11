@@ -119,6 +119,9 @@ pub fn encode_value(v: &DynValue, ty: &TypeDesc) -> JResult<J> {
         // `TAG_SQL_NULL` and `TAG_VARIANT_NULL` both write as `null`, so absence
         // and JSON null are indistinguishable on the wire. Round-trip is still
         // stable: a `json` column reads `null` back as JSON null.
+        // Tagged, unlike a document: what the value *is* travels with it, which
+        // is the whole difference between the two.
+        (DynValue::Dynamic(fv), TypeDesc::Dynamic) => crate::value::dynamic_to_json(fv),
         (DynValue::Json(fv), TypeDesc::Json) => match serde_json::to_value(fv) {
             Ok(v) => v,
             Err(e) => return bad(format!("encoding a json document: {e}")),
@@ -181,6 +184,10 @@ pub fn decode_value(j: &J, ty: &TypeDesc) -> JResult<DynValue> {
                 None => return bad(format!("`{text}` is not base64")),
             }
         }
+        TypeDesc::Dynamic => match crate::value::dynamic_from_json(j) {
+            Some(v) => v,
+            None => return bad(format!("`{j}` is not a tagged `dynamic` value")),
+        },
         TypeDesc::Date | TypeDesc::Time | TypeDesc::Timestamp | TypeDesc::Interval => {
             let Some(s) = j.as_str() else {
                 return bad(format!("expected a `{ty}` as a string, found `{j}`"));
@@ -297,6 +304,7 @@ fn type_key_name(ty: &TypeDesc) -> &'static str {
         TypeDesc::Timestamp => "timestamp",
         TypeDesc::Interval => "interval",
         TypeDesc::Bytes => "bytes",
+        TypeDesc::Dynamic => "dynamic",
         _ => "",
     }
 }

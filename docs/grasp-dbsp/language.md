@@ -81,7 +81,8 @@ language's. [`mapping.md`](mapping.md) records which Rust types these become.
 ### Value types
 
 ```
-value_type := scalar | record_type | array_type | dict_type | "json"
+value_type := scalar | record_type | array_type | dict_type
+                 | "json" | "dynamic"
 
 scalar      := bool | i64 | f64 | string | bytes | temporal
                  | optional "(" value_type ")"
@@ -206,6 +207,32 @@ no fields is vacuously all-optional, so there is nothing left to fail on.
 `record()` and an empty `dict(K,V)` are both `{}` on the wire. Decoding is driven
 by the declared type, so this is not an ambiguity — it is the same benign overlap
 that already puts `record(a: i64)` and `dict(string, i64)` on the same encoding.
+
+**`dynamic` is any value, carrying what it is** — the same payload as `json`,
+under a different contract. A document holds a date as *text*, because JSON has
+no date, so it reads back as a `string` and as a `date` alike: extracting from
+one is a guess that happens to succeed. A dynamic holds the tag, so it reads
+back as a `date` and as nothing else.
+
+```
+cast(x, dynamic)              # total: every value is one
+cast(d, optional(date))       # fallible: it holds some type, not necessarily that one
+```
+
+On the wire it is a **single-key object naming the type**, which is the
+convention `bytes` uses generalised — `{"i64": 42}`, `{"date": "2024-01-15"}`,
+`{"array": [{"i64": 1}]}`. Never bare, since a bare form would be ambiguous the
+moment a dynamic held the object `{"date": "…"}` itself. The spellings inside
+are each type's own, so the tag adds which type and nothing else changes.
+
+A record and a dict share the `map` tag: `Variant` has one `Map`, and telling
+them apart would need a recursive tagged value of this language's own. Both are
+an object in every spelling here, so that is the one place a dynamic is as
+lenient as a document. `cast(d, optional(json))` never fails, which is how a
+program reaches the lenient reading deliberately.
+
+Like a document, it has **no order** — comparison would sort by type tag — so
+only `==` and `!=` apply, and it cannot key a dict.
 
 `array(T)` is a sequence of one element type, and an ordinary value: it can sit
 in a record, in a column and in a stream, and `flat_map` turns one into rows.
@@ -753,6 +780,8 @@ That keeps a declared type a promise, and follows the rule division already set.
 | `string` | fallible | fallible | fallible | — | total |
 | `record(…)` / `array(T)` | — | — | — | — | total |
 | `json`   | fallible | fallible | fallible | fallible | — |
+| `dynamic` | fallible | fallible | fallible | fallible | total |
+| *anything* → `dynamic` | | | | | total |
 | `date` / `time` / `timestamp` | — | — | — | total | total |
 
 Text converts **to** a temporal type as well, and fallibly — parsing is how one

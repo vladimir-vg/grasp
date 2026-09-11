@@ -86,7 +86,8 @@ implicit numeric promotion deleted, both to satisfy the third and fifth.
   grammar at all.
 - The type system described in [`language.md`](language.md) (batch types and
   value types). The value vocabulary is `bool`, `i64`, `f64`, `string`,
-  `bytes`, `date`, `time`, `timestamp`, `interval`, `optional(T)`, `record(...)`,
+  `bytes`, `date`, `time`, `timestamp`, `interval`, `dynamic`, `optional(T)`,
+  `record(...)`,
   `array(T)`, `dict(K,V)` and `json`. A dict's entries are sorted and
   deduplicated by construction, and its keys are the scalars — the ones with a
   JSON object-key spelling.
@@ -158,9 +159,15 @@ become an output — by declared name, or by content id for a node that has none
   branch on what a document holds attempts casts in order today, which works and
   reads poorly. A serialisation builtin: `cast(d, optional(string))` *extracts* a
   string document, so writing one out as JSON text needs its own name
-  (`FlatVariant::to_json_string` exists). And `dynamic` — `json` plus the
-  temporal and decimal tags `FlatVariant` already carries — which is a one-line
-  addition once there is something in the language that can produce one.
+  (`FlatVariant::to_json_string` exists).
+
+  `dynamic` has **landed**, and this entry used to call it "a one-line addition
+  once there is something in the language that can produce one". That was
+  written when `json` was the only document type, and it was wrong twice over:
+  the tags are not the work — the **wire form** is, since a document is written
+  untagged and a `ShortInterval` has no serialisation at all — and the value it
+  adds is not the tags `FlatVariant` carries but the *exactness* they buy on the
+  way back out.
 
 - **Body bindings in a `function`** — `x := …` statements alongside `return`,
   with a flat slot table so an argument used twice is evaluated once. Inlining

@@ -1,0 +1,174 @@
+# `dynamic` — any value, carrying what it is.
+#
+# The same payload as `json`, under a different contract. A document holds a
+# date as *text*, so it reads back as a `string` and as a `date` alike —
+# extracting from one is a guess that happens to succeed. A dynamic holds the
+# tag, so it reads back as a `date` and as nothing else.
+#
+# On the wire it is a single-key object naming the type, which is `bytes`'s
+# convention generalised. Never bare: a bare form would be ambiguous the moment
+# a dynamic held the object `{"date": "…"}` itself.
+
+- name: every scalar goes in and comes back
+  source: |
+    t := input("t")
+    t :: zset(record(b: bool, n: i64, f: f64, s: string, d: date, y: bytes))
+
+    made := map(t, function((r) -> record(
+        b: cast(r.b, dynamic), n: cast(r.n, dynamic), f: cast(r.f, dynamic),
+        s: cast(r.s, dynamic), d: cast(r.d, dynamic), y: cast(r.y, dynamic))))
+    back := map(made, function((r) -> record(
+        b: cast(r.b, optional(bool)), n: cast(r.n, optional(i64)),
+        f: cast(r.f, optional(f64)), s: cast(r.s, optional(string)),
+        d: cast(r.d, optional(date)), y: cast(r.y, optional(bytes)))))
+
+  input:
+    - t:
+        - [1, {b: true, n: 42, f: 1.5, s: "x", d: "2024-01-15", y: {base64: "SGVsbG8="}}]
+
+  expected_exact_output:
+    - made:
+        - [1, {b: {boolean: true}, n: {i64: 42}, f: {f64: 1.5}, s: {string: "x"},
+               d: {date: "2024-01-15"}, y: {bytes: "SGVsbG8="}}]
+      back:
+        - [1, {b: true, n: 42, f: 1.5, s: "x", d: "2024-01-15", y: {base64: "SGVsbG8="}}]
+
+# The whole point of the tag. A document holding `"2024-01-15"` is a string and
+# a date both; a dynamic holding a date is a date and not a string.
+- name: a dynamic knows what it is, a document does not
+  source: |
+    t := input("t")
+    t :: zset(record(d: date))
+
+    out := map(t, function((r) -> record(
+        dyn_date: cast(cast(r.d, dynamic), optional(date)),
+        dyn_string: cast(cast(r.d, dynamic), optional(string)),
+        doc_date: cast(cast(r.d, json), optional(date)),
+        doc_string: cast(cast(r.d, json), optional(string)))))
+
+  input:
+    - t:
+        - [1, {d: "2024-01-15"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {dyn_date: "2024-01-15", dyn_string: null,
+               doc_date: "2024-01-15", doc_string: "2024-01-15"}]
+
+# And the same for a number: a document's `1.0` reads as either, a dynamic's
+# `f64` reads only as an `f64`.
+- name: an i64 and an f64 stay apart
+  source: |
+    t := input("t")
+    t :: zset(record(f: f64))
+
+    out := map(t, function((r) -> record(
+        as_f64: cast(cast(r.f, dynamic), optional(f64)),
+        as_i64: cast(cast(r.f, dynamic), optional(i64)))))
+
+  input:
+    - t:
+        - [1, {f: 1.0}]
+
+  expected_exact_output:
+    - out:
+        - [1, {as_f64: 1.0, as_i64: null}]
+
+# An array's elements carry their own tags, so a heterogeneous one round-trips
+# element by element.
+- name: an array of mixed tags
+  source: |
+    t := input("t")
+    t :: zset(record(a: array(i64)))
+
+    out := map(t, function((r) -> record(
+        d: cast(r.a, dynamic),
+        back: cast(cast(r.a, dynamic), optional(array(i64))))))
+
+  input:
+    - t:
+        - [1, {a: [1, 2]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {d: {array: [{i64: 1}, {i64: 2}]}, back: [1, 2]}]
+
+# A record and a dict share the `map` tag: `Variant` has one `Map`, and telling
+# them apart would need a recursive tagged value of this language's own. Both
+# are an object in every spelling here, so this is the one place a dynamic is as
+# lenient as a document.
+- name: a record and a dict share one tag
+  source: |
+    t := input("t")
+    t :: zset(record(r: record(a: i64)))
+
+    out := map(t, function((r) -> record(
+        d: cast(r.r, dynamic),
+        as_record: cast(cast(r.r, dynamic), optional(record(a: i64))),
+        as_dict: cast(cast(r.r, dynamic), optional(dict(string, i64))))))
+
+  input:
+    - t:
+        - [1, {r: {a: 7}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {d: {map: {a: {i64: 7}}}, as_record: {a: 7}, as_dict: {a: 7}}]
+
+# Every value is a document, so this reading never fails — it is how a program
+# reaches the lenient one from a dynamic.
+- name: a dynamic is always a document
+  source: |
+    t := input("t")
+    t :: zset(record(n: i64))
+
+    out := map(t, function((r) -> record(
+        doc: cast(cast(r.n, dynamic), optional(json)))))
+
+  input:
+    - t:
+        - [1, {n: 42}]
+
+  expected_exact_output:
+    - out:
+        - [1, {doc: 42}]
+
+- name: extracting from a dynamic can fail, and must say so
+  source: |
+    t := input("t")
+    t :: zset(record(n: i64))
+
+    out := map(t, function((r) -> record(v: cast(cast(r.n, dynamic), string))))
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+      message: "extracting `string` from a dynamic can fail"
+
+- name: dynamics have no order
+  source: |
+    t := input("t")
+    t :: zset(record(a: i64, b: i64))
+
+    out := filter(t, function((r) -> cast(r.a, dynamic) < cast(r.b, dynamic)))
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+      message: "dynamics have no meaningful order"
+
+- name: but they compare for equality
+  source: |
+    t := input("t")
+    t :: zset(record(a: i64, b: i64))
+
+    out := map(t, function((r) -> record(
+        same: cast(r.a, dynamic) == cast(r.b, dynamic))))
+
+  input:
+    - t:
+        - [1, {a: 1, b: 1}]
+        - [1, {a: 1, b: 2}]
+
+  expected_exact_output:
+    - out:
+        - [1, {same: true}]
+        - [1, {same: false}]
