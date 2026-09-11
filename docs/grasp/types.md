@@ -19,11 +19,31 @@ is in [`syntax.md`](syntax.md#grammar).
 | `array(T)` | a sequence of one element type |
 | `dict(K,V)` | a key-value map, `K` a scalar |
 | `json` | a document of any shape |
+| `dynamic` | any value, carrying what it is |
 | `date` | a calendar date — no time, no zone |
 | `time` | a time of day — no date, no zone |
 | `timestamp` | an instant, always UTC |
 | `interval` | a span of time, in microseconds |
 | `bytes` | binary data, any length |
+
+**`dynamic` is the top type**, and it differs from `json` in one thing that
+decides everything else: a document holds a date as *text*, because JSON has no
+date, so `d :: string` and `d :: date` both succeed on one — extracting from a
+document is a guess that happens to succeed. A dynamic holds the date as a date,
+so `d :: date` succeeds and `d :: string` derives no row.
+
+`dynamic:of(x)` is the way **in**, and `d :: T` the way out. A function rather
+than an implicit widening because grasp has no implicit conversion — and it is
+writable, `(T) -> dynamic`, where a coercion would have been a rule with nowhere
+to be written down. Absence is not a value a dynamic holds: `optional(dynamic)`
+is how a column says it might have none.
+
+`d :: json` always succeeds, since every value is a document. That is how a
+program asks for the lenient reading deliberately.
+
+Like a document it is **not a scalar**: an order over it would sort by what a
+value *is* before what it holds, so every number would precede every string.
+Equality only, no `min`/`max`, no dict keys.
 
 A **type variable** — `T`, `K`, `V` — is not in this table, being not a type but
 a stand-in for one. It is legal in a
@@ -261,6 +281,7 @@ same program.
 | `optional(T)` | `T` | the value is absent |
 | `optional(A)` | `optional(B)` | present and not a `B` |
 | `json` | `T` | the document does not hold a `T` |
+| `dynamic` | `T` | it is not a `T` — an exact question, not a shape |
 | `json` | `bytes` / `date` / `time` / `timestamp` / `interval` | the document does not hold one, written |
 | `array(A)` | `array(B)` | any element is not a `B` |
 | `dict(K,A)` | `dict(K,B)` | any value is not a `B` |

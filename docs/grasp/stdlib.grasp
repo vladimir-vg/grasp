@@ -253,6 +253,19 @@ bytes:to_string :: function
 bytes:from_string :: function
     (string) -> bytes
 
+# -- dynamic ------------------------------------------------------------------
+#
+# Any value, carrying what it is. `dynamic:of` is the way in and `d :: T` is the
+# way out — and unlike a document, what a dynamic holds is an exact question: a
+# dynamic holding a date is not a string, where a document holding
+# "2024-01-15" is both.
+#
+# One function, because a top type needs one name that takes every type, which
+# is what the type variable is for.
+
+dynamic:of :: function
+    (T) -> dynamic
+
 # -- temporal -----------------------------------------------------------------
 #
 # `date`, `time`, `timestamp` and `interval`. A timestamp is always UTC — there

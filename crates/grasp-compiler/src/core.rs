@@ -485,6 +485,14 @@ pub enum Builtin {
     BytesToString,
     BytesFromString,
 
+    /// `dynamic:of(x)` — a value as a `dynamic`.
+    ///
+    /// The way **in**; `d :: T` is the way out. A function rather than an
+    /// implicit widening because grasp has no implicit conversion, and its
+    /// typespec is writable — `(T) -> dynamic` — where a coercion would have
+    /// been a rule with nowhere to be written down.
+    DynamicOf,
+
     /// `record:get(r, field: "f")` — what `r.f` desugars to.
     ///
     /// Not a name a program may write, and the reason is its type: the result is
@@ -554,6 +562,7 @@ impl Builtin {
             "bytes:from_hex" => Builtin::BytesFromHex,
             "bytes:to_string" => Builtin::BytesToString,
             "bytes:from_string" => Builtin::BytesFromString,
+            "dynamic:of" => Builtin::DynamicOf,
             _ => return None,
         })
     }
@@ -623,6 +632,7 @@ impl Builtin {
         Builtin::BytesFromHex,
         Builtin::BytesToString,
         Builtin::BytesFromString,
+        Builtin::DynamicOf,
         Builtin::RecordGet,
     ];
 
@@ -854,7 +864,8 @@ impl Builtin {
             | Builtin::BytesToHex
             | Builtin::BytesFromHex
             | Builtin::BytesToString
-            | Builtin::BytesFromString => UNARY,
+            | Builtin::BytesFromString
+            | Builtin::DynamicOf => UNARY,
             Builtin::BytesConcat | Builtin::BytesAnd | Builtin::BytesOr | Builtin::BytesXor => {
                 BINARY
             }
@@ -1063,6 +1074,7 @@ impl Builtin {
             Builtin::BytesFromHex => "bytes:from_hex",
             Builtin::BytesToString => "bytes:to_string",
             Builtin::BytesFromString => "bytes:from_string",
+            Builtin::DynamicOf => "dynamic:of",
             Builtin::RecordGet => "record:get",
         }
     }
@@ -1145,6 +1157,9 @@ impl Builtin {
             Builtin::BytesFromHex => Some("from_hex"),
             Builtin::BytesToString => Some("to_utf8"),
             Builtin::BytesFromString => Some("from_utf8"),
+            // `cast(x, dynamic)` takes a type where an argument would go, so it
+            // has its own arm in `emit`.
+            Builtin::DynamicOf => None,
             Builtin::RecordGet => None,
         }
     }

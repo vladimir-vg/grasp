@@ -606,6 +606,7 @@ impl fmt::Display for Type {
             Type::Timestamp => f.write_str("timestamp"),
             Type::Interval => f.write_str("interval"),
             Type::Bytes => f.write_str("bytes"),
+            Type::Dynamic => f.write_str("dynamic"),
             Type::Var(name) => f.write_str(name),
             Type::Optional(t) => write!(f, "optional({t})"),
             Type::Array(t) => write!(f, "array({t})"),
@@ -650,6 +651,9 @@ pub enum Type {
     Interval,
     /// Binary data, any length. There is no bit-granular or fixed-size form.
     Bytes,
+    /// Any value, carrying what it is — the top type. `dynamic:of` puts a value
+    /// in and `d :: T` takes one out.
+    Dynamic,
     /// `T` — a type variable, and the one thing here that is not a type.
     ///
     /// Legal in a [function typespec][`FnSpec`] and nowhere else: it says that

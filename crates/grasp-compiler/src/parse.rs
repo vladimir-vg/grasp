@@ -44,6 +44,7 @@ pub const TYPE_NAMES: &[&str] = &[
     "time",
     "timestamp",
     "interval",
+    "dynamic",
 ];
 
 /// The word after `::` that says what kind of thing is being declared. Neither
@@ -58,7 +59,7 @@ pub const AGGREGATORS: &[&str] = &["sum", "count", "min", "max", "avg"];
 /// taking names a program was already using."
 pub const RESERVED_NAMESPACES: &[&str] = &[
     "string", "array", "dict", "record", "json", "boolean", "agg", "temporal", "integer", "float",
-    "numeric", "bytes", "bits", "crypto",
+    "numeric", "bytes", "bits", "crypto", "dynamic",
 ];
 
 /// Reserved as a relation, variable or column name.
@@ -742,6 +743,7 @@ impl<'a> Parser<'a> {
             "timestamp" => Ok(Type::Timestamp),
             "interval" => Ok(Type::Interval),
             "bytes" => Ok(Type::Bytes),
+            "dynamic" => Ok(Type::Dynamic),
             "optional" => {
                 self.expect(&Tok::LParen, "`(`")?;
                 let inner = self.ty_of(vars)?;

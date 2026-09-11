@@ -94,9 +94,7 @@ which are referenced below only as history.
 This is the first cut, and it is narrower than the Erlang implementation the
 design comes from. What is missing is missing on purpose.
 
-- **The rest of the type vocabulary.** `dynamic` — the top type, and the one
-  most likely to be wanted first, since it is what an untyped subset of the
-  language would be built on. Then the narrower integers and `f32`, string
+- **The rest of the type vocabulary.** The narrower integers and `f32`, string
   encodings, and general `enum(...)` beyond the `boolean` case. Each needs a
   grasp-dbsp value type underneath before grasp can offer it.
 

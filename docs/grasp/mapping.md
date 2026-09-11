@@ -182,8 +182,8 @@ name. That is not a coincidence — it is why the names were chosen.
 | `json` | `json` | |
 | `dict(K,V)` | `dict(K,V)` | `K` is a scalar in both |
 
-The types grasp does not have yet — `dynamic`, the narrower integers, `f32`,
-string encodings, general `enum` — are absent for the same reason: there is
+The types grasp does not have yet — the narrower integers, `f32`, string
+encodings, general `enum` — are absent for the same reason: there is
 nothing underneath them. Each arrives here when it arrives there. The ones that
 are absent by **decision** rather than for want of a target type — `bits`,
 `bytes(N)`, months, timezones, and arbitrary precision — are recorded in
@@ -247,6 +247,8 @@ rather than another call:
 | `temporal:date(s)` | `cast(s, optional(date))`, then the narrowing |
 | `temporal:date(ts)` | `cast(ts, date)` |
 | `temporal:hours(x)` | `hour(x)`, for a `time` or a `timestamp` alike |
+| `dynamic:of(x)` | `cast(x, dynamic)` |
+| `d :: T` on a dynamic | `cast(d, optional(T))`, then the narrowing |
 | `bytes:length(b)` | `octet_length(b)` |
 | `bytes:to_string(b)` | `to_utf8(b)`, then the narrowing |
 | `temporal:interval(hours: 2)` | `make_interval((0 * 86400000000) + (2 * 3600000000) + …)` |

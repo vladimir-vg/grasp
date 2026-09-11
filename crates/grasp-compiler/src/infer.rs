@@ -1728,6 +1728,22 @@ impl Cx {
                 }
             }
 
+            // The one function that takes any type at all — which is what a top
+            // type means, and why its typespec needs a type variable rather
+            // than an alternative per type.
+            B::DynamicOf => {
+                if let Some(d) = arity(1) {
+                    return (Ty::Error, Some(d));
+                }
+                match &args[0] {
+                    // A dynamic is already one, and absence is not a value a
+                    // dynamic holds — `optional(dynamic)` is how a column says
+                    // it might have none.
+                    Ty::Dynamic | Ty::Optional(_) => wrong(),
+                    _ => (Ty::Dynamic, None),
+                }
+            }
+
             // Not a signature list: its result depends on *which* field, so it
             // reads the key literal rather than a type.
             B::RecordGet => {

@@ -10,8 +10,8 @@ What the forms *mean* is [`semantics.md`](semantics.md); what their types are is
 
 ```
 keywords     not  and  or  input  true  false  NONE
-types        boolean  i64  f64  string  json  bytes  date  time  timestamp
-             interval  optional  record  array  dict
+types        boolean  i64  f64  string  json  dynamic  bytes  date  time
+             timestamp  interval  optional  record  array  dict
 declarations relation  function
 aggregators  sum  count  min  max  avg
 operators    +  -  *  /  %  ++
@@ -146,7 +146,7 @@ variable       ::= [a-zA-Z_][a-zA-Z0-9_]*   -- single segment: no namespace
 
 literal        ::= INTEGER | FLOAT | STRING | "true" | "false" | "NONE"
 
-type           ::= "boolean" | "i64" | "f64" | "string" | "json"
+type           ::= "boolean" | "i64" | "f64" | "string" | "json" | "dynamic"
                  | "bytes" | "date" | "time" | "timestamp" | "interval"
                  | "optional" "(" type ")"
                  | "record" "(" [type_fields] ")"
@@ -439,8 +439,8 @@ types twice are two answers to one call.
 These may not name a relation, a variable or a column:
 
 - **keywords** — `not`, `and`, `or`, `input`, `true`, `false`, `NONE`
-- **type names** — `boolean`, `i64`, `f64`, `string`, `json`, `bytes`,
-  `optional`, `record`, `array`, `dict`, `date`, `time`, `timestamp`,
+- **type names** — `boolean`, `i64`, `f64`, `string`, `json`, `dynamic`,
+  `bytes`, `optional`, `record`, `array`, `dict`, `date`, `time`, `timestamp`,
   `interval`
 - **declaration kinds** — `relation`, `function`; the word a typespec uses to
   say what it declares
@@ -452,7 +452,8 @@ by the one-name rule above, but a column may be called `length`.
 ### Reserved namespace prefixes
 
 `string:`, `array:`, `dict:`, `record:`, `json:`, `boolean:`, `integer:`,
-`float:`, `numeric:`, `bytes:`, `bits:`, `temporal:`, `crypto:` and `agg:`
+`float:`, `numeric:`, `bytes:`, `bits:`, `temporal:`, `crypto:`, `dynamic:`
+and `agg:`
 belong to the language. User code may not define names under them.
 
 They hold the [standard library](semantics.md#the-standard-library), every

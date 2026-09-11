@@ -63,6 +63,7 @@ pub enum Ty {
     Timestamp,
     Interval,
     Bytes,
+    Dynamic,
 }
 
 impl Ty {
@@ -79,6 +80,7 @@ impl Ty {
             Type::Timestamp => Ty::Timestamp,
             Type::Interval => Ty::Interval,
             Type::Bytes => Ty::Bytes,
+            Type::Dynamic => Ty::Dynamic,
             Type::Optional(inner) => Ty::Optional(Box::new(Ty::known(inner))),
             Type::Array(inner) => Ty::Array(Box::new(Ty::known(inner))),
             Type::Dict(k, v) => Ty::Dict(Box::new(Ty::known(k)), Box::new(Ty::known(v))),
@@ -149,6 +151,7 @@ impl fmt::Display for Ty {
             Ty::Timestamp => f.write_str("timestamp"),
             Ty::Interval => f.write_str("interval"),
             Ty::Bytes => f.write_str("bytes"),
+            Ty::Dynamic => f.write_str("dynamic"),
             Ty::Optional(t) => write!(f, "optional({t})"),
             Ty::Array(t) => write!(f, "array({t})"),
             Ty::Dict(k, v) => write!(f, "dict({k}, {v})"),
@@ -397,6 +400,15 @@ pub fn narrows(from: &Ty, to: &Ty) -> Narrowing {
             cast: true,
             shape: Shape::Value,
         },
+        // "`dynamic` :: `T` — drops the row unless it holds a `T`." The same
+        // shape, and a different question: a document is asked whether it
+        // *looks* like a `T`, a dynamic whether it *is* one. So a dynamic
+        // holding a date is not a `string`, where a document holding
+        // `"2024-01-15"` is both.
+        (Ty::Dynamic, t) if !matches!(t, Ty::Optional(_) | Ty::Dynamic) => Narrowing::Filter {
+            cast: true,
+            shape: Shape::Value,
+        },
         // "`optional(A)` :: `optional(B)` — drops the row when present and not
         // a `B`." The wrapper survives, so this is the inner check performed
         // under it, and absence is one of the answers rather than one of the
@@ -512,6 +524,7 @@ pub fn settle(ty: &Ty) -> Result<Type, Open> {
         Ty::Timestamp => Type::Timestamp,
         Ty::Interval => Type::Interval,
         Ty::Bytes => Type::Bytes,
+        Ty::Dynamic => Type::Dynamic,
         Ty::Optional(t) => Type::Optional(Box::new(settle(t)?)),
         Ty::Array(t) => Type::Array(Box::new(settle(t)?)),
         Ty::Dict(k, v) => Type::Dict(Box::new(settle(k)?), Box::new(settle(v)?)),

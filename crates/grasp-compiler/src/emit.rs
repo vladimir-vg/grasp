@@ -830,6 +830,8 @@ fn definite_value(ty: &Type) -> String {
         Type::Timestamp => "timestamp_from_micros(0)".to_string(),
         Type::Interval => "make_interval(0)".to_string(),
         Type::Bytes => "from_utf8(\"\")".to_string(),
+        // Every value is one, so the cheapest value of any type will do.
+        Type::Dynamic => "cast(0, dynamic)".to_string(),
         Type::Date => "cast(timestamp_from_micros(0), date)".to_string(),
         Type::Time => "cast(timestamp_from_micros(0), time)".to_string(),
         Type::Optional(_) => "NONE".to_string(),
@@ -1094,6 +1096,7 @@ fn ty_text(ty: &Type) -> String {
         Type::Timestamp => "timestamp".to_string(),
         Type::Interval => "interval".to_string(),
         Type::Bytes => "bytes".to_string(),
+        Type::Dynamic => "dynamic".to_string(),
         Type::Optional(t) => format!("optional({})", ty_text(t)),
         Type::Array(t) => format!("array({})", ty_text(t)),
         Type::Dict(k, v) => format!("dict({}, {})", ty_text(k), ty_text(v)),
@@ -1374,6 +1377,11 @@ fn call_text(scope: &Scope<'_>, callee: core::Builtin, args: &[core::Expr]) -> S
             .map(|(e, unit)| format!("({} * {unit})", expr_text(e, None)))
             .collect();
             format!("make_interval({})", parts.join(" + "))
+        }
+        // `cast(x, dynamic)` — a type where an argument would go, so this is not
+        // the rename arm.
+        (core::Builtin::DynamicOf, [value]) => {
+            format!("cast({}, dynamic)", expr_text(value, None))
         }
         (core::Builtin::DictHas, [dict, key]) => format!(
             "(get({}, {}) != NONE)",

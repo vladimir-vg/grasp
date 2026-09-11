@@ -1,0 +1,180 @@
+# `dynamic` — any value, carrying what it is.
+#
+# `dynamic:of` is the way in and `d :: T` is the way out. A function rather than
+# an implicit widening, because grasp has no implicit conversion — and its
+# typespec is writable, `(T) -> dynamic`, where a coercion would have been a
+# rule with nowhere to be written down.
+
+- name: a value goes in and comes back
+  source: |
+    src :: relation(n: i64, s: string, d: date)
+    src(n:, s:, d:) <- input
+
+    out(n: a, s: b, d: c) <-
+        src(n: n, s: s, d: d)
+        x := dynamic:of(n)
+        x :: i64
+        a := x
+        y := dynamic:of(s)
+        y :: string
+        b := y
+        z := dynamic:of(d)
+        z :: date
+        c := z
+
+  input:
+    - src:
+        - [1, {n: 42, s: "x", d: "2024-01-15"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {n: 42, s: "x", d: "2024-01-15"}]
+
+# The whole point of the type. A document holding `"2024-01-15"` narrows to a
+# `string` *and* to a `date` — extracting from one is a guess that happens to
+# succeed. A dynamic holding a date narrows to a `date` and to nothing else, so
+# the row asking for a string is not derived.
+- name: a dynamic knows what it is
+  source: |
+    src :: relation(d: date)
+    src(d:) <- input
+
+    out(v: v) <-
+        src(d: d)
+        x := dynamic:of(d)
+        x :: string
+        v := x
+
+  input:
+    - src:
+        - [1, {d: "2024-01-15"}]
+
+  expected_exact_output:
+    - {}
+
+- name: where a document does not
+  source: |
+    src :: relation(doc: json)
+    src(doc:) <- input
+
+    out(a: a, b: b) <-
+        src(doc: doc)
+        x := doc
+        x :: string
+        a := x
+        y := doc
+        y :: date
+        b := y
+
+  input:
+    - src:
+        - [1, {doc: "2024-01-15"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {a: "2024-01-15", b: "2024-01-15"}]
+
+# Every value is a document, so this reading always succeeds — the way a program
+# asks for the lenient one on purpose.
+- name: a dynamic is always a document
+  source: |
+    src :: relation(n: i64)
+    src(n:) <- input
+
+    out(v: v) <-
+        src(n: n)
+        x := dynamic:of(n)
+        x :: json
+        v := x
+
+  input:
+    - src:
+        - [1, {n: 42}]
+
+  expected_exact_output:
+    - out:
+        - [1, {v: 42}]
+
+- name: a container goes in whole
+  source: |
+    src :: relation(a: array(i64))
+    src(a:) <- input
+
+    out(n: n) <-
+        src(a: a)
+        x := dynamic:of(a)
+        x :: array(i64)
+        n := array:length(x)
+
+  input:
+    - src:
+        - [1, {a: [1, 2, 3]}]
+
+  expected_exact_output:
+    - out:
+        - [1, {n: 3}]
+
+# -- what it will not do ------------------------------------------------------
+
+# A dynamic holds a value; `optional(dynamic)` is how a column says it might
+# have none.
+- name: absence is not a value a dynamic holds
+  source: |
+    src :: relation(v: optional(i64))
+    src(v:) <- input
+
+    out(d: d) <-
+        src(v: v)
+        d := dynamic:of(v)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "no version of `dynamic:of` takes `optional(i64)`"
+
+- name: nor is a dynamic itself
+  source: |
+    src :: relation(n: i64)
+    src(n:) <- input
+
+    out(d: d) <-
+        src(n: n)
+        x := dynamic:of(n)
+        d := dynamic:of(x)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "no version of `dynamic:of` takes `dynamic`"
+
+# Not a scalar: comparison would sort by what a value *is* before what it holds,
+# so every number would precede every string. Same rule a document follows.
+- name: dynamics have no order
+  source: |
+    src :: relation(a: i64, b: i64)
+    src(a:, b:) <- input
+
+    out(v: v) <-
+        src(a: a, b: b)
+        v := dynamic:of(a) < dynamic:of(b)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "ordering is not defined on `dynamic`; compare its parts"
+
+- name: but they compare for equality
+  source: |
+    src :: relation(a: i64, b: i64)
+    src(a:, b:) <- input
+
+    out(a: a, same: v) <-
+        src(a: a, b: b)
+        v := dynamic:of(a) = dynamic:of(b)
+
+  input:
+    - src:
+        - [1, {a: 1, b: 1}]
+        - [1, {a: 2, b: 9}]
+
+  expected_exact_output:
+    - out:
+        - [1, {a: 1, same: true}]
+        - [1, {a: 2, same: false}]
