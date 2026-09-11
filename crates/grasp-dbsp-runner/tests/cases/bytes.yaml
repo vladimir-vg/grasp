@@ -212,3 +212,23 @@
   expected_exact_output:
     - out:
         - [1, {b: {base64: "SGVsbG8="}}]
+
+# A payload in a document spells itself the way a payload column does, so a
+# `bytes` cast in and narrowed back out is the same value. Not `Variant::Binary`,
+# whose tag exists but serialises as an array of byte numbers.
+- name: bytes cast into a document, and back
+  source: |
+    t := input("t")
+    t :: zset(record(b: bytes))
+
+    out := map(t, function((r) -> record(
+        doc: cast(r.b, json),
+        back: cast(cast(r.b, json), optional(bytes)))))
+
+  input:
+    - t:
+        - [1, {b: {base64: "SGVsbG8="}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {doc: {base64: "SGVsbG8="}, back: {base64: "SGVsbG8="}}]

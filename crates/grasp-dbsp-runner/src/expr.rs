@@ -800,9 +800,10 @@ fn from_json(fv: &FlatVariant, ty: &TypeDesc) -> Option<DynValue> {
         (Variant::String(s), TypeDesc::String) => DynValue::String(s.str().to_string()),
         // A temporal value is a string in a document, read in the one spelling
         // its own type writes — the same pairing a dict key uses just below.
-        (Variant::String(s), TypeDesc::Date | TypeDesc::Time | TypeDesc::Timestamp) => {
-            target.parse_dict_key(s.str())?
-        }
+        (
+            Variant::String(s),
+            TypeDesc::Date | TypeDesc::Time | TypeDesc::Timestamp | TypeDesc::Interval,
+        ) => target.parse_dict_key(s.str())?,
         (v, TypeDesc::I64) => DynValue::I64(json_i64(v)?),
         (v, TypeDesc::F64) => DynValue::F64(Flt::new(json_f64(v)?)),
         (Variant::Array(items), TypeDesc::Array(elem)) => DynValue::Array(
@@ -920,6 +921,31 @@ fn to_variant(v: &DynValue, ty: &TypeDesc) -> Variant {
                 })
                 .collect::<std::collections::BTreeMap<_, _>>()
                 .into(),
+        ),
+        // JSON has no date and no duration, so a document holds these the way
+        // a column of them is written: as text, in the one spelling their own
+        // parser reads back. `from_json` reads exactly this, so a value cast
+        // into a document and narrowed back out is the value again.
+        //
+        // **Not** the matching `Variant` tag, though one exists for each. Those
+        // do not survive a document: `Variant::Binary` serialises as an array
+        // of byte numbers rather than as the base64 a `bytes` column writes,
+        // and `ShortInterval` has no serialisation at all.
+        (v @ (DynValue::Date(_) | DynValue::Time(_) | DynValue::Timestamp(_)), _)
+        | (v @ DynValue::Interval(_), _) => Variant::String(SqlString::from_ref(
+            &v.dict_key_string()
+                .expect("a temporal value has a written form"),
+        )),
+        // The object the codec writes, so that a payload spells the same way
+        // inside a document as in a column of its own.
+        (DynValue::Bytes(b), _) => Variant::Map(
+            [(
+                Variant::String(SqlString::from_ref("base64")),
+                Variant::String(SqlString::from_ref(&crate::value::to_base64(b.as_slice()))),
+            )]
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>()
+            .into(),
         ),
         // The checker pairs the value with its own type, so a mismatch means the
         // two passes disagree.

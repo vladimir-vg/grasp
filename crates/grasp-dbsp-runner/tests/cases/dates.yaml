@@ -509,3 +509,25 @@
   expected_exact_output:
     - shortest:
         - [1, 1, "PT30M"]
+
+# JSON has no date and no duration, so a document holds these as text, in the
+# one spelling their own parser reads back — the same spelling a column of them
+# writes. So a value cast into a document and narrowed back out is the value.
+- name: a temporal value casts into a document, and back
+  source: |
+    t := input("t")
+    t :: zset(record(d: date, tm: time, ts: timestamp, iv: interval))
+
+    out := map(t, function((r) -> record(
+        d: cast(r.d, json), tm: cast(r.tm, json),
+        ts: cast(r.ts, json), iv: cast(r.iv, json),
+        back: cast(cast(r.iv, json), optional(interval)))))
+
+  input:
+    - t:
+        - [1, {d: "2024-01-15", tm: "14:30:00", ts: "2024-01-15 14:30:00", iv: "PT1H"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {d: "2024-01-15", tm: "14:30:00", ts: "2024-01-15 14:30:00",
+               iv: "PT1H", back: "PT1H"}]
