@@ -27,10 +27,11 @@ is in [`syntax.md`](syntax.md#grammar).
 | `bytes` | binary data, any length |
 
 **`dynamic` is the top type**, and it differs from `json` in one thing that
-decides everything else: a document holds a date as *text*, because JSON has no
-date, so `d :: string` and `d :: date` both succeed on one — extracting from a
-document is a guess that happens to succeed. A dynamic holds the date as a date,
-so `d :: date` succeeds and `d :: string` derives no row.
+decides everything else: JSON has no date, so a document cannot hold one **at
+all** — `d :: date` on a document is an error, and what a document carries is
+the *text*, which `d :: string` and then `temporal:date(s)` reads. A dynamic
+holds the date as a date, so `d :: date` succeeds on one and `d :: string`
+derives no row.
 
 `dynamic:of(x)` is the way **in**, and `d :: T` the way out. A function rather
 than an implicit widening because grasp has no implicit conversion — and it is
@@ -38,8 +39,11 @@ writable, `(T) -> dynamic`, where a coercion would have been a rule with nowhere
 to be written down. Absence is not a value a dynamic holds: `optional(dynamic)`
 is how a column says it might have none.
 
-`d :: json` always succeeds, since every value is a document. That is how a
-program asks for the lenient reading deliberately.
+`d :: json` succeeds where the dynamic holds a JSON value, and derives no row
+where it holds a date, a `bytes` or a span — the same boundary as everywhere
+else, applied one level in. That is how a program asks for the lenient reading
+deliberately, and it is the one narrowing out of a dynamic that is about shape
+rather than about what the value is.
 
 Like a document it is **not a scalar**: an order over it would sort by what a
 value *is* before what it holds, so every number would precede every string.
@@ -254,6 +258,8 @@ already a JSON value:
 | `i64` | **no** | JSON has one number type, and it is not this one |
 | `record(...)` | **no** | a record has a fixed shape; a document does not |
 | `optional(T)` | **no** | absence is not a JSON value; a document's `null` is |
+| `date` / `time` / `timestamp` / `interval` / `bytes` | **no** | JSON has none of these |
+| `dynamic` | **no** | a document is untagged, and a dynamic is what it is |
 
 `i64 → json` is refused rather than quietly widened to `f64`, because a 64-bit
 key or identifier does not survive the trip and finding that out at runtime is
@@ -266,6 +272,20 @@ Nothing is assignable **out** of `json` — a document need not hold the shape
 asked of it, so every extraction is fallible and goes through a
 [runtime filter](#runtime-filters), which drops the rows whose document did not
 hold what was asked.
+
+**A document holds what JSON holds, and nothing else**, in both directions: the
+temporal, `bytes` and `dynamic` rows above are refused going in, and the same
+types are refused coming back out. What a document carries instead is the *encoding* — a date as text, a
+payload as base64 — and reading one back is the function that says which
+encoding it was: `d :: string` and then `temporal:date(s)`, or
+`bytes:from_base64(s)`. A `d :: date` on a document would have chosen a
+convention on the program's behalf, and there is no encoding of a `bytes` that
+JSON suggests at all. A value that carries what it *is* rather than what it
+looks like is a [`dynamic`](#value-types), which is the type for that question.
+
+Going the other way, a document is built from the text a program produced, and
+the library has `bytes:to_base64` for a payload but no rendering of a temporal
+value as text yet — [`overview.md`](overview.md#future-work) collects that.
 
 ## Runtime filters
 
@@ -280,9 +300,8 @@ same program.
 |---|---|---|
 | `optional(T)` | `T` | the value is absent |
 | `optional(A)` | `optional(B)` | present and not a `B` |
-| `json` | `T` | the document does not hold a `T` |
+| `json` | `T` | the document does not hold a `T`, `T` being a JSON value |
 | `dynamic` | `T` | it is not a `T` — an exact question, not a shape |
-| `json` | `bytes` / `date` / `time` / `timestamp` / `interval` | the document does not hold one, written |
 | `array(A)` | `array(B)` | any element is not a `B` |
 | `dict(K,A)` | `dict(K,B)` | any value is not a `B` |
 

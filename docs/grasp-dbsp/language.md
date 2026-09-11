@@ -208,11 +208,11 @@ no fields is vacuously all-optional, so there is nothing left to fail on.
 by the declared type, so this is not an ambiguity — it is the same benign overlap
 that already puts `record(a: i64)` and `dict(string, i64)` on the same encoding.
 
-**`dynamic` is any value, carrying what it is** — the same payload as `json`,
-under a different contract. A document holds a date as *text*, because JSON has
-no date, so it reads back as a `string` and as a `date` alike: extracting from
-one is a guess that happens to succeed. A dynamic holds the tag, so it reads
-back as a `date` and as nothing else.
+**`dynamic` is any value, carrying what it is** — a wider payload than `json`,
+under a different contract. JSON has no date, so a document cannot hold one at
+all: what it carries is the *text*, and `cast(d, optional(date))` on a `json` is
+a type error naming the two steps that do it. A dynamic holds the date itself,
+tag and all, so it reads back as a `date` and as nothing else.
 
 ```
 cast(x, dynamic)              # total: every value is one
@@ -228,8 +228,9 @@ are each type's own, so the tag adds which type and nothing else changes.
 A record and a dict share the `map` tag: `Variant` has one `Map`, and telling
 them apart would need a recursive tagged value of this language's own. Both are
 an object in every spelling here, so that is the one place a dynamic is as
-lenient as a document. `cast(d, optional(json))` never fails, which is how a
-program reaches the lenient reading deliberately.
+lenient as a document. `cast(d, optional(json))` is how a program reaches that
+lenient reading deliberately — and it is fallible, since a dynamic holding a
+date, a `bytes` or an `interval` is not holding a document.
 
 Like a document, it has **no order** — comparison would sort by type tag — so
 only `==` and `!=` apply, and it cannot key a dict.
@@ -778,16 +779,36 @@ That keeps a declared type a promise, and follows the rule division already set.
 | `i64`    | — | — | total | total | total |
 | `f64`    | — | fallible | — | total | total |
 | `string` | fallible | fallible | fallible | — | total |
-| `record(…)` / `array(T)` | — | — | — | — | total |
+| `record(…)` / `array(T)` / `dict(K,V)` | — | — | — | — | total, if the parts are |
 | `json`   | fallible | fallible | fallible | fallible | — |
-| `dynamic` | fallible | fallible | fallible | fallible | total |
+| `dynamic` | fallible | fallible | fallible | fallible | fallible |
 | *anything* → `dynamic` | | | | | total |
-| `date` / `time` / `timestamp` | — | — | — | total | total |
+| `date` / `time` / `timestamp` / `interval` | — | — | — | total | — |
+| `bytes` | — | — | — | — | — |
 
 Text converts **to** a temporal type as well, and fallibly — parsing is how one
 arrives from outside, and `2024-13-45` is not a date. So `cast(s, date)` is an
 error and `cast(s, optional(date))` is the way to write it, which is the rule
 every other parse here follows.
+
+**A document holds what JSON holds**, which is what empties the `json` column in
+the last two rows: JSON has no date and no payload, so a `json` neither takes
+one nor gives one back. The encoding is the program's to choose and to name —
+
+```
+cast(cast(d, string), json)                        # a date into a document
+cast(cast(x, optional(string)), optional(date))    # and back out of one
+cast(to_base64(b), json)                           # a payload into one
+```
+
+and a cast across that line is refused with those spellings in the message. That
+is also what keeps the checker from admitting a cast the encoder has no arm for,
+which is how a `date` in a document once became a silent `null`.
+
+`dynamic` is the type that carries what a value *is*, and its `json` cell is
+fallible for the same reason: a dynamic holding a date is not holding a
+document. `bytes` reaches text through `to_utf8` and `from_utf8` rather than
+through `cast`, neither direction being a reinterpretation of the same value.
 
 A document also converts to a `record(…)` or an `array(T)`, and both are
 fallible. Those two rows are not a matrix: a document is converted by what is

@@ -2115,7 +2115,15 @@ impl Cx {
             // becomes will carry — so `resolve_subscripts` can run after this
             // and the plan still finds the entry.
             let partial = match sub {
-                core::Expr::Call { callee, .. } => callee.partial(),
+                // A family head is still a head here — `resolve_subscripts`
+                // runs after this pass — and a head is never partial, so
+                // asking it would miss `temporal:date(s)`, whose *parsing*
+                // member is. The types that pick the member are to hand, so
+                // ask the member; a name that is no family answers for itself.
+                core::Expr::Call { callee, args, .. } => {
+                    let tys: Vec<Ty> = args.iter().map(|a| self.expr_ty(a, vars).0).collect();
+                    family_member(*callee, &tys).unwrap_or(*callee).partial()
+                }
                 core::Expr::Index { .. } => true,
                 _ => false,
             };

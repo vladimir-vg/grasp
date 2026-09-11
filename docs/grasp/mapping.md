@@ -179,8 +179,12 @@ name. That is not a coincidence — it is why the names were chosen.
 | `optional(T)` | `optional(T)` | neither nests |
 | `record(f: T, …)` | `record(f: T, …)` | field order is not part of identity in either |
 | `array(T)` | `array(T)` | |
-| `json` | `json` | |
+| `json` | `json` | a document holds what JSON holds, in both |
 | `dict(K,V)` | `dict(K,V)` | `K` is a scalar in both |
+| `date` / `time` / `timestamp` | same | no timezones; a timestamp is UTC |
+| `interval` | `interval` | microseconds, in both |
+| `bytes` | `bytes` | |
+| `dynamic` | `dynamic` | tagged on the wire, in both |
 
 The types grasp does not have yet — the narrower integers, `f32`, string
 encodings, general `enum` — are absent for the same reason: there is

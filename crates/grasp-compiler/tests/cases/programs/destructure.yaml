@@ -380,9 +380,11 @@
   input:
     - src:
         - [1, {id: 1, d: {"b": 20}}]
+        - [1, {id: 2, d: {"a": 10, "b": 20}}]
 
   expected_exact_output:
-    - {}
+    - out:
+        - [1, {id: 2, a: 10, left: {"b": 20}}]
 
 # Several named keys are several conjuncts.
 - name: a dict remainder drops every key the pattern named

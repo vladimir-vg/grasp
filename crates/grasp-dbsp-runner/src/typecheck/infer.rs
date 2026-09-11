@@ -801,12 +801,17 @@ fn extractable(t: &TypeDesc) -> bool {
         // A temporal value is a string in a document, and the codec reads the
         // one spelling its own `Display` writes — so extracting one is the same
         // operation a dict key already is.
-        TypeDesc::Date | TypeDesc::Time | TypeDesc::Timestamp | TypeDesc::Interval => true,
-        // A document holds it as the same object the codec writes.
-        TypeDesc::Bytes => true,
-        // A document is untagged, so there is nothing in one to read back as a
-        // `dynamic`. `cast(doc, dynamic)` goes the other way, and is total.
-        TypeDesc::Dynamic => false,
+        // **Not** the temporal types, nor `bytes`. JSON has no date and no
+        // payload, so reading one out of a document would mean choosing an
+        // encoding on the program's behalf — and the functions that choose one
+        // deliberately already exist. `dynamic` is where a value carries what
+        // it is; a document is where it carries only what JSON can spell.
+        TypeDesc::Date
+        | TypeDesc::Time
+        | TypeDesc::Timestamp
+        | TypeDesc::Interval
+        | TypeDesc::Bytes
+        | TypeDesc::Dynamic => false,
         TypeDesc::Record(fields) => fields.iter().all(|(_, f)| extractable(f.non_null())),
         TypeDesc::Array(elem) => extractable(elem.non_null()),
         // A document's object keys are strings, and a dict key parses from one,
@@ -885,7 +890,11 @@ fn conversion(from: &Ty, to: &TypeDesc, span: Span) -> TResult<Conv> {
         if !extractable(target) {
             return err(
                 span,
-                format!("a document cannot be extracted as `{target}`"),
+                format!(
+                    "JSON has no `{target}`, so a document cannot hold one: take the \
+                     text out and parse it, as \
+                     `cast(cast(x, optional(string)), optional({target}))`"
+                ),
             );
         }
         if !optional_target {
@@ -917,6 +926,19 @@ fn conversion(from: &Ty, to: &TypeDesc, span: Span) -> TResult<Conv> {
         return Ok(Conv::FromDynamic(std::sync::Arc::new(target.clone())));
     }
     if target == &TypeDesc::Json && source != &TypeDesc::Json {
+        // A document holds what JSON holds. Anything else would mean picking an
+        // encoding silently — and without this the checker admits a cast the
+        // encoder cannot perform, which is how a `date` in a document became a
+        // silent `null` rather than a diagnostic.
+        if !extractable(source) {
+            return err(
+                span,
+                format!(
+                    "JSON has no `{source}`, so a document cannot hold one: write the \
+                     encoding you mean, as `cast(cast(x, string), json)`"
+                ),
+            );
+        }
         return Ok(Conv::ToJson(std::sync::Arc::new(from.clone())));
     }
 

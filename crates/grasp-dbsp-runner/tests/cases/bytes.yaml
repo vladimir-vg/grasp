@@ -198,32 +198,31 @@
     - out:
         - [1, {m: {"base64:SGVsbG8=": 7}}]
 
-- name: a document holds one as the object the codec writes
+# JSON has no payload, so a document cannot hold one. `{"base64": …}` is this
+# language's spelling for a `bytes` *column*; inside a document it would be an
+# object with a key of that name and nothing more, indistinguishable from one a
+# program wrote itself.
+- name: a document does not hold a payload
   source: |
     t := input("t")
-    t :: zset(record(doc: json))
+    t :: zset(record(b: bytes))
 
-    out := map(t, function((r) -> record(b: cast(get(r.doc, "payload"), optional(bytes)))))
+    out := map(t, function((r) -> record(b: cast(r.b, json))))
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+      message: "JSON has no `bytes`, so a document cannot hold one"
 
-  input:
-    - t:
-        - [1, {doc: {payload: {base64: "SGVsbG8="}}}]
-
-  expected_exact_output:
-    - out:
-        - [1, {b: {base64: "SGVsbG8="}}]
-
-# A payload in a document spells itself the way a payload column does, so a
-# `bytes` cast in and narrowed back out is the same value. Not `Variant::Binary`,
-# whose tag exists but serialises as an array of byte numbers.
-- name: bytes cast into a document, and back
+# An encoding said out loud does, and `to_base64` is where that choice belongs.
+- name: an encoding of it does
   source: |
     t := input("t")
     t :: zset(record(b: bytes))
 
     out := map(t, function((r) -> record(
-        doc: cast(r.b, json),
-        back: cast(cast(r.b, json), optional(bytes)))))
+        b64: cast(to_base64(r.b), json),
+        back: from_base64(coalesce(
+            cast(cast(to_base64(r.b), json), optional(string)), "")))))
 
   input:
     - t:
@@ -231,4 +230,4 @@
 
   expected_exact_output:
     - out:
-        - [1, {doc: {base64: "SGVsbG8="}, back: {base64: "SGVsbG8="}}]
+        - [1, {b64: "SGVsbG8=", back: {base64: "SGVsbG8="}}]

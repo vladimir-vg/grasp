@@ -813,6 +813,18 @@ fn check_output(case: &Case, expected: &[Epoch], exact: bool, where_: &str) -> R
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
+    // Only a named relation is observed, so a case whose every epoch is `{}`
+    // observes nothing and asserts nothing — which is how a "derives no row"
+    // fixture passed against a program that derived a row of nulls. A case
+    // says which relation it is about, and writes the empty epoch beside one
+    // that has rows.
+    if outputs.is_empty() {
+        return Err(format!(
+            "{where_}: no epoch names a relation, so this case observes nothing and \
+             asserts nothing; name the relation it is about — a case for a body that \
+             derives no row gives an input that does derive beside the one that does not"
+        ));
+    }
 
     let mut runner = Runner::build(&plan, &outputs).map_err(|d| {
         format!(

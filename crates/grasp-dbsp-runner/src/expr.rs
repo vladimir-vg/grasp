@@ -814,10 +814,6 @@ fn from_json(fv: &FlatVariant, ty: &TypeDesc) -> Option<DynValue> {
         (Variant::String(s), TypeDesc::String) => DynValue::String(s.str().to_string()),
         // A temporal value is a string in a document, read in the one spelling
         // its own type writes — the same pairing a dict key uses just below.
-        (
-            Variant::String(s),
-            TypeDesc::Date | TypeDesc::Time | TypeDesc::Timestamp | TypeDesc::Interval,
-        ) => target.parse_dict_key(s.str())?,
         (v, TypeDesc::I64) => DynValue::I64(json_i64(v)?),
         (v, TypeDesc::F64) => DynValue::F64(Flt::new(json_f64(v)?)),
         (Variant::Array(items), TypeDesc::Array(elem)) => DynValue::Array(
@@ -826,14 +822,6 @@ fn from_json(fv: &FlatVariant, ty: &TypeDesc) -> Option<DynValue> {
                 .map(|i| from_json(&FlatVariant::from(i), elem))
                 .collect::<Option<Vec<_>>>()?,
         ),
-        // The same object the codec writes, read from the other side.
-        (Variant::Map(entries), TypeDesc::Bytes) => {
-            let text = entries.iter().find_map(|(k, v)| match (k, v) {
-                (Variant::String(k), Variant::String(v)) if k.str() == "base64" => Some(v.str()),
-                _ => Option::None,
-            })?;
-            crate::value::parse_base64(text)?
-        }
         // A document's object keys are strings, and the dict's key type says
         // what to read them as — the same pairing the JSON codec uses.
         (Variant::Map(entries), TypeDesc::Dict(kt, vt)) => DynValue::Dict(
@@ -948,6 +936,22 @@ fn to_tagged(v: &DynValue, ty: &TypeDesc) -> Variant {
     }
 }
 
+/// Whether a `Variant` is something JSON can spell — the same boundary
+/// `extractable` draws over types, drawn over a value.
+fn json_able(v: &Variant) -> bool {
+    match v {
+        Variant::SqlNull
+        | Variant::VariantNull
+        | Variant::Boolean(_)
+        | Variant::BigInt(_)
+        | Variant::Double(_)
+        | Variant::String(_) => true,
+        Variant::Array(items) => items.iter().all(json_able),
+        Variant::Map(entries) => entries.iter().all(|(_, v)| json_able(v)),
+        _ => false,
+    }
+}
+
 /// Out of a `dynamic`. `None` where it does not hold that type — and unlike a
 /// document, *holding* is an exact question: a dynamic carrying a `date` is not
 /// a `string`, where a document carrying `"2024-01-15"` is both.
@@ -997,9 +1001,10 @@ fn from_dynamic(fv: &FlatVariant, ty: &TypeDesc) -> Option<DynValue> {
                 })
                 .collect::<Option<std::collections::BTreeMap<_, _>>>()?,
         ),
-        // A document is what a dynamic falls back to: every value is one, so
-        // this never fails and is how a program reaches the lenient reading.
-        (_, TypeDesc::Json) => DynValue::Json(fv.clone()),
+        // A dynamic is a document when what it holds is one — which is how a
+        // program reaches the lenient reading on purpose. A dynamic holding a
+        // date is not: JSON has no date, so the same rule applies one level in.
+        (v, TypeDesc::Json) if json_able(v) => DynValue::Json(fv.clone()),
         _ => return Option::None,
     };
     Some(value)
@@ -1050,33 +1055,13 @@ fn to_variant(v: &DynValue, ty: &TypeDesc) -> Variant {
                 .collect::<std::collections::BTreeMap<_, _>>()
                 .into(),
         ),
-        // JSON has no date and no duration, so a document holds these the way
-        // a column of them is written: as text, in the one spelling their own
-        // parser reads back. `from_json` reads exactly this, so a value cast
-        // into a document and narrowed back out is the value again.
+        // No temporal arm and no `bytes` arm, and that is the rule rather than
+        // an omission: JSON has neither, so `extractable` refuses the cast
+        // before it reaches here. A program that wants a date in a document
+        // writes the encoding it means, `cast(cast(d, string), json)`.
         //
-        // **Not** the matching `Variant` tag, though one exists for each. Those
-        // do not survive a document: `Variant::Binary` serialises as an array
-        // of byte numbers rather than as the base64 a `bytes` column writes,
-        // and `ShortInterval` has no serialisation at all.
-        (v @ (DynValue::Date(_) | DynValue::Time(_) | DynValue::Timestamp(_)), _)
-        | (v @ DynValue::Interval(_), _) => Variant::String(SqlString::from_ref(
-            &v.dict_key_string()
-                .expect("a temporal value has a written form"),
-        )),
-        // The object the codec writes, so that a payload spells the same way
-        // inside a document as in a column of its own.
-        (DynValue::Bytes(b), _) => Variant::Map(
-            [(
-                Variant::String(SqlString::from_ref("base64")),
-                Variant::String(SqlString::from_ref(&crate::value::to_base64(b.as_slice()))),
-            )]
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>()
-            .into(),
-        ),
-        // The checker pairs the value with its own type, so a mismatch means the
-        // two passes disagree.
+        // The checker pairs the value with its own type, so anything reaching
+        // this means the two passes disagree.
         _ => Variant::VariantNull,
     }
 }

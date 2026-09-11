@@ -33,18 +33,17 @@
       back:
         - [1, {b: true, n: 42, f: 1.5, s: "x", d: "2024-01-15", y: {base64: "SGVsbG8="}}]
 
-# The whole point of the tag. A document holding `"2024-01-15"` is a string and
-# a date both; a dynamic holding a date is a date and not a string.
-- name: a dynamic knows what it is, a document does not
+# The whole point of the tag, and the sharpest way to put it: a document cannot
+# hold a date **at all**, while a dynamic holds it as a date — and as nothing
+# else, so asking for a string gets no answer.
+- name: a dynamic holds a date, where a document cannot
   source: |
     t := input("t")
     t :: zset(record(d: date))
 
     out := map(t, function((r) -> record(
-        dyn_date: cast(cast(r.d, dynamic), optional(date)),
-        dyn_string: cast(cast(r.d, dynamic), optional(string)),
-        doc_date: cast(cast(r.d, json), optional(date)),
-        doc_string: cast(cast(r.d, json), optional(string)))))
+        as_date: cast(cast(r.d, dynamic), optional(date)),
+        as_string: cast(cast(r.d, dynamic), optional(string)))))
 
   input:
     - t:
@@ -52,8 +51,7 @@
 
   expected_exact_output:
     - out:
-        - [1, {dyn_date: "2024-01-15", dyn_string: null,
-               doc_date: "2024-01-15", doc_string: "2024-01-15"}]
+        - [1, {as_date: "2024-01-15", as_string: null}]
 
 # And the same for a number: a document's `1.0` reads as either, a dynamic's
 # `f64` reads only as an `f64`.
@@ -115,23 +113,25 @@
     - out:
         - [1, {d: {map: {a: {i64: 7}}}, as_record: {a: 7}, as_dict: {a: 7}}]
 
-# Every value is a document, so this reading never fails — it is how a program
-# reaches the lenient one from a dynamic.
-- name: a dynamic is always a document
+# A dynamic is a document when what it holds is one — the way a program reaches
+# the lenient reading on purpose. A dynamic holding a date is not, since JSON
+# has no date: the same rule, one level in.
+- name: a dynamic is a document when it holds one
   source: |
     t := input("t")
-    t :: zset(record(n: i64))
+    t :: zset(record(n: i64, d: date))
 
     out := map(t, function((r) -> record(
-        doc: cast(cast(r.n, dynamic), optional(json)))))
+        number: cast(cast(r.n, dynamic), optional(json)),
+        date: cast(cast(r.d, dynamic), optional(json)))))
 
   input:
     - t:
-        - [1, {n: 42}]
+        - [1, {n: 42, d: "2024-01-15"}]
 
   expected_exact_output:
     - out:
-        - [1, {doc: 42}]
+        - [1, {number: 42, date: null}]
 
 - name: extracting from a dynamic can fail, and must say so
   source: |

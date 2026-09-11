@@ -126,8 +126,10 @@ design comes from. What is missing is missing on purpose.
   `interval`. Neither timezones nor months are on this list, and both are
   decisions rather than gaps — see [`types.md`](types.md#value-types). What is
   left is small: the PostgreSQL special values `infinity`, `-infinity` and
-  `epoch`; scaling a span, `iv * 3`; and unary `-iv`, which a negative component
-  in the constructor covers.
+  `epoch`; scaling a span, `iv * 3`; unary `-iv`, which a negative component in
+  the constructor covers; and **rendering one as text** — `temporal:date` parses
+  a string, nothing goes back the other way, so a date cannot be written into a
+  document at all. See [`types.md`](types.md#json).
 
 - **Bitwise and shift operators.** `&`, `|`, `^`, `<<`, `>>` on `i64` — masks
   and flags, which is the common case and needs no binary type at all. `bytes`

@@ -304,6 +304,12 @@ relation emits as `r := input("r")` and a derived one as a node named `r`, so
 there is nothing else it could be. Use `{}` for a transaction that produces
 nothing.
 
+**A relation is observed only where an epoch names it**, so a case whose every
+epoch is `{}` asserts nothing at all and the harness rejects it. A body that
+[derives no row](../../../../docs/grasp/semantics.md#a-body-must-have-an-answer) is written with an input
+that *does* derive beside the one that does not — the row that comes out is what
+makes the missing row an assertion.
+
 A row is `[weight, value]`. A grasp relation is always a flat
 `zset(record(...))` — indexed streams never correspond to one — so there is none
 of the flat-versus-indexed arity distinction the runner's own fixtures have.

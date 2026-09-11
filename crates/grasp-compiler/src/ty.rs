@@ -456,34 +456,32 @@ fn under(inner: Narrowing, cast: bool, shape: Shape) -> Narrowing {
 }
 
 /// Whether a document can be converted to this — the `cast` rows out of `json`,
-/// which are every scalar, plus a record, an array or a dict asked for by name.
+/// which are what **JSON itself holds**: a bool, a number, a string, and the
+/// containers of those.
 ///
-/// A dict is here because an object *is* one: its keys are strings and a dict
-/// key parses from one, so extracting a dict is the check the JSON codec
-/// already performs. The target says the same, in `extractable`, and the two
-/// lists agree entry for entry — `json` is absent here only because
-/// `json :: json` is [`assignable`] and settles before [`narrows`] is reached.
+/// Not a `date` or a `bytes`, though a document could carry the text of one.
+/// JSON has neither, so reading one out would mean choosing an encoding on the
+/// program's behalf — and the functions that choose one deliberately already
+/// exist: `d :: string` and then `temporal:date(s)` says which convention it
+/// means, where `d :: date` would have assumed. A value that carries what it
+/// *is* rather than what it looks like is a [`Ty::Dynamic`].
+///
+/// A dict is here because an object *is* one. Its **key** is unrestricted, and
+/// that is not an inconsistency with the paragraph above: a JSON object's keys
+/// are always strings, so spelling a key as text is forced by the format rather
+/// than chosen from alternatives — which is exactly what makes a *value*
+/// encoding a decision the program should make.
+///
+/// The target says the same, in `extractable`, and the two lists agree entry
+/// for entry — `json` is absent here only because `json :: json` is
+/// [`assignable`] and settles before [`narrows`] is reached.
 ///
 /// The key needs no check: a written `dict(K,V)` is rejected at parse unless
 /// `K` is a scalar, and an inferred one comes from a literal `infer` checks.
 fn holdable(t: &Ty) -> bool {
     matches!(
         t,
-        Ty::Boolean
-            | Ty::I64
-            | Ty::F64
-            | Ty::String
-            | Ty::Record(_)
-            | Ty::Array(_)
-            // A temporal value is a string in a document, read in the one
-            // spelling its own type writes — so extracting one is the check the
-            // codec already performs, and `d :: date` is the row that says so.
-            | Ty::Date
-            | Ty::Time
-            | Ty::Timestamp
-            | Ty::Interval
-            | Ty::Bytes
-            | Ty::Dict(..)
+        Ty::Boolean | Ty::I64 | Ty::F64 | Ty::String | Ty::Record(_) | Ty::Array(_) | Ty::Dict(..)
     )
 }
 

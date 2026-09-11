@@ -148,14 +148,26 @@
     - on_holiday:
         - [1, {d: "2024-01-01", amount: 10, name: "new year"}]
 
-# Extraction from a document, which is the same round trip read from the other
-# side.
-- name: a date extracts from a document
+# JSON has no date, so a document cannot hold one. A program writes the encoding
+# it means — which is also the one that says *which* encoding.
+- name: a document does not hold a date
   source: |
     t := input("t")
     t :: zset(record(doc: json))
 
     out := map(t, function((r) -> record(d: cast(get(r.doc, "when"), optional(date)))))
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+      message: "JSON has no `date`, so a document cannot hold one"
+
+- name: text comes out and is parsed
+  source: |
+    t := input("t")
+    t :: zset(record(doc: json))
+
+    out := map(t, function((r) -> record(
+        d: cast(cast(get(r.doc, "when"), optional(string)), optional(date)))))
 
   input:
     - t:
@@ -510,24 +522,32 @@
     - shortest:
         - [1, 1, "PT30M"]
 
-# JSON has no date and no duration, so a document holds these as text, in the
-# one spelling their own parser reads back — the same spelling a column of them
-# writes. So a value cast into a document and narrowed back out is the value.
-- name: a temporal value casts into a document, and back
+# And the same going in: the cast is refused, and the text form is what a
+# document takes.
+- name: a temporal value does not go into a document
   source: |
     t := input("t")
-    t :: zset(record(d: date, tm: time, ts: timestamp, iv: interval))
+    t :: zset(record(d: date))
+
+    out := map(t, function((r) -> record(d: cast(r.d, json))))
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+      message: "JSON has no `date`, so a document cannot hold one"
+
+- name: its text form does
+  source: |
+    t := input("t")
+    t :: zset(record(d: date, iv: interval))
 
     out := map(t, function((r) -> record(
-        d: cast(r.d, json), tm: cast(r.tm, json),
-        ts: cast(r.ts, json), iv: cast(r.iv, json),
-        back: cast(cast(r.iv, json), optional(interval)))))
+        d: cast(cast(r.d, string), json),
+        iv: cast(cast(r.iv, string), json))))
 
   input:
     - t:
-        - [1, {d: "2024-01-15", tm: "14:30:00", ts: "2024-01-15 14:30:00", iv: "PT1H"}]
+        - [1, {d: "2024-01-15", iv: "PT1H"}]
 
   expected_exact_output:
     - out:
-        - [1, {d: "2024-01-15", tm: "14:30:00", ts: "2024-01-15 14:30:00",
-               iv: "PT1H", back: "PT1H"}]
+        - [1, {d: "2024-01-15", iv: "PT1H"}]

@@ -30,14 +30,18 @@
     - out:
         - [1, {n: 42, s: "x", d: "2024-01-15"}]
 
-# The whole point of the type. A document holding `"2024-01-15"` narrows to a
-# `string` *and* to a `date` — extracting from one is a guess that happens to
-# succeed. A dynamic holding a date narrows to a `date` and to nothing else, so
-# the row asking for a string is not derived.
+# The whole point of the type. A dynamic holding a date narrows to a `date` and
+# to nothing else, where a document holding `"2024-01-15"` is text and narrows
+# to a `string` — it cannot hold a date at all, which is the case below.
+#
+# The two rows here carry the same characters, and only the one that went in as
+# text comes back out of `:: string`. That is what a tag buys.
 - name: a dynamic knows what it is
   source: |
     src :: relation(d: date)
     src(d:) <- input
+    txt :: relation(s: string)
+    txt(s:) <- input
 
     out(v: v) <-
         src(d: d)
@@ -45,41 +49,47 @@
         x :: string
         v := x
 
+    out(v: v) <-
+        txt(s: s)
+        x := dynamic:of(s)
+        x :: string
+        v := x
+
   input:
     - src:
         - [1, {d: "2024-01-15"}]
+      txt:
+        - [1, {s: "2024-01-15"}]
 
   expected_exact_output:
-    - {}
+    - out:
+        - [1, {v: "2024-01-15"}]
 
-- name: where a document does not
+- name: where a document cannot hold one at all
   source: |
     src :: relation(doc: json)
     src(doc:) <- input
 
-    out(a: a, b: b) <-
+    out(v: v) <-
         src(doc: doc)
         x := doc
-        x :: string
-        a := x
-        y := doc
-        y :: date
-        b := y
+        x :: date
+        v := x
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "a document is not read as a `date`"
 
-  input:
-    - src:
-        - [1, {doc: "2024-01-15"}]
-
-  expected_exact_output:
-    - out:
-        - [1, {a: "2024-01-15", b: "2024-01-15"}]
-
-# Every value is a document, so this reading always succeeds — the way a program
-# asks for the lenient one on purpose.
-- name: a dynamic is always a document
+# A dynamic is a document when it holds one — the lenient reading, asked for on
+# purpose. It is the one narrowing out of a dynamic that is about shape rather
+# than about what the value is, and it stops where JSON does: a dynamic holding
+# a date is not a document, because no document holds a date.
+- name: a dynamic is a document when it holds one
   source: |
     src :: relation(n: i64)
     src(n:) <- input
+    day :: relation(d: date)
+    day(d:) <- input
 
     out(v: v) <-
         src(n: n)
@@ -87,9 +97,17 @@
         x :: json
         v := x
 
+    out(v: v) <-
+        day(d: d)
+        x := dynamic:of(d)
+        x :: json
+        v := x
+
   input:
     - src:
         - [1, {n: 42}]
+      day:
+        - [1, {d: "2024-01-15"}]
 
   expected_exact_output:
     - out:

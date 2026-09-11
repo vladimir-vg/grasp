@@ -69,7 +69,8 @@
         - [1, {d: "2024-01-15"}]
 
 # Parsing is partial, so a string that is not a date derives no row — the rule
-# `dict:get` follows.
+# `dict:get` follows. The date beside it is what makes the absence an assertion:
+# a case naming no relation observes none, and would pass whatever came out.
 - name: and derives no row for text that is not one
   source: |
     src :: relation(s: string)
@@ -82,9 +83,11 @@
   input:
     - src:
         - [1, {s: "the fifteenth"}]
+        - [1, {s: "2024-01-15"}]
 
   expected_exact_output:
-    - {}
+    - out:
+        - [1, {d: "2024-01-15"}]
 
 - name: temporal:date extracts from a timestamp
   source: |
@@ -429,12 +432,14 @@
       pass: infer
       message: "no version of `-` takes `interval` and `timestamp`"
 
-# -- narrowing ----------------------------------------------------------------
+# -- from a document ----------------------------------------------------------
 #
-# A document holds a temporal value as a string, so `d :: date` is the `json ::
-# T` row applied to a new `T` — the same codec, reached from the other side.
+# JSON has no date, so a document cannot hold one — `d :: date` on a `json` is
+# an error. What a document carries is the *text*, and the parse that turns it
+# into a date is `temporal:date`, which says which convention it means where the
+# narrowing would have assumed one.
 
-- name: a document narrows to a date
+- name: a document does not narrow to a date
   source: |
     src :: relation(doc: json)
     src(doc:) <- input
@@ -443,6 +448,21 @@
         src(doc: doc)
         d := doc
         d :: date
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "a document is not read as a `date`"
+
+- name: its text narrows, and the parse says the rest
+  source: |
+    src :: relation(doc: json)
+    src(doc:) <- input
+
+    out(d: d) <-
+        src(doc: doc)
+        s := doc
+        s :: string
+        d := temporal:date(s)
 
   input:
     - src:

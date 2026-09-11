@@ -219,9 +219,11 @@
   input:
     - src:
         - [1, {a: [10, 20]}]
+        - [1, {a: [0, 1, 2, 3, 4, 5, 6, 70]}]
 
   expected_exact_output:
-    - {}
+    - out:
+        - [1, {v: 70}]
 
 - name: an array is indexed by an integer and nothing else
   source: |

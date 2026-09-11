@@ -60,9 +60,11 @@
   input:
     - src:
         - [1, {s: "not base64!"}]
+        - [1, {s: "SGVsbG8="}]
 
   expected_exact_output:
-    - {}
+    - out:
+        - [1, {v: 5}]
 
 - name: and a payload that is not text derives no row
   source: |
@@ -76,9 +78,11 @@
   input:
     - src:
         - [1, {b: {base64: "/w=="}}]
+        - [1, {b: {base64: "aGk="}}]
 
   expected_exact_output:
-    - {}
+    - out:
+        - [1, {v: "hi"}]
 
 # -- bytewise -----------------------------------------------------------------
 
@@ -115,9 +119,11 @@
   input:
     - src:
         - [1, {a: {base64: "8A=="}, b: {base64: "z88="}}]
+        - [1, {a: {base64: "8A=="}, b: {base64: "zw=="}}]
 
   expected_exact_output:
-    - {}
+    - out:
+        - [1, {v: "c0"}]
 
 - name: concatenation takes any two
   source: |
@@ -172,7 +178,10 @@
     - out:
         - [1, {m: {"base64:SGVsbG8=": 7}}]
 
-- name: a document narrows to bytes
+# JSON has no payload either, so a document carries the encoding and
+# `bytes:from_base64` is what reads it — the name saying which encoding, where a
+# narrowing would have assumed one.
+- name: a document does not narrow to bytes
   source: |
     src :: relation(doc: json)
     src(doc:) <- input
@@ -182,11 +191,26 @@
         b := doc
         b :: bytes
         n := bytes:length(b)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "a document is not read as a `bytes`"
+
+- name: its text does, and the reading says which encoding
+  source: |
+    src :: relation(doc: json)
+    src(doc:) <- input
+
+    out(n: n) <-
+        src(doc: doc)
+        s := doc
+        s :: string
+        n := bytes:length(bytes:from_base64(s))
 
   input:
     - src:
-        - [1, {doc: {base64: "SGVsbG8="}}]
-        - [1, {doc: "not bytes"}]
+        - [1, {doc: "SGVsbG8="}]
+        - [1, {doc: "not base64!"}]
 
   expected_exact_output:
     - out:
