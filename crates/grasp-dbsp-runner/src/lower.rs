@@ -15,6 +15,7 @@ use dbsp::algebra::F64;
 use dbsp::algebra::{AddAssignByRef, HasZero, Semigroup};
 use dbsp::dynamic::{DataTrait, DynUnit, Erase, WeightTrait};
 use dbsp::operator::{Aggregator, ConstantGenerator, Fold, Generator, Max};
+use dbsp::typed_batch::SpineSnapshot;
 use dbsp::utils::Tup2;
 use dbsp::{
     DBSPHandle, IndexedZSetReader, NestedCircuit, OrdIndexedZSet, OrdZSet, OutputHandle,
@@ -22,6 +23,7 @@ use dbsp::{
 };
 use std::collections::HashMap;
 use std::fmt;
+use std::num::NonZeroUsize;
 
 /// `min` over a projection that may be absent.
 ///
@@ -204,9 +206,13 @@ fn shape_error(node: &crate::typecheck::PlanNode, wanted: &str) -> Diagnostic {
 }
 
 /// An output handle, in whichever shape its node has.
+///
+/// The handle is over a [`SpineSnapshot`] because these are
+/// [`Stream::accumulate_output`] sinks rather than [`Stream::output`] ones —
+/// see [`Runner::step`] for why that is not a detail.
 enum Out {
-    Flat(OutputHandle<OrdZSet<DynValue>>),
-    Indexed(OutputHandle<OrdIndexedZSet<DynValue, DynValue>>),
+    Flat(OutputHandle<SpineSnapshot<OrdZSet<DynValue>>>),
+    Indexed(OutputHandle<SpineSnapshot<OrdIndexedZSet<DynValue, DynValue>>>),
 }
 
 /// One change: a value, and the weight by which its multiplicity changed.
@@ -217,6 +223,44 @@ pub struct Delta {
     /// `None` for a flat stream.
     pub value: Option<DynValue>,
     pub weight: ZWeight,
+}
+
+/// How a circuit is **run**, as opposed to what it computes.
+///
+/// Nothing here reaches the plan: two runners built from one plan with
+/// different configurations compute the same relations, node for node and row
+/// for row. That is what makes this a separate argument rather than part of
+/// the program.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunnerConfig {
+    /// `dbsp` worker threads.
+    ///
+    /// Batches are sharded across them by `key.default_hash() % workers`
+    /// (`dbsp/src/operator/dynamic/communication/shard.rs:454`), so more than
+    /// one rests on invariants 2 and 3 in `mapping.md` — equal values hashing
+    /// equally, and the hash being stable — and on nothing else in this
+    /// module: every operator that needs its input placed shards it itself,
+    /// and an embedder that shards on their behalf gets it wrong
+    /// (`dbsp/src/operator/communication/shard.rs:50-57`).
+    ///
+    /// `NonZeroUsize` because `Layout::new_solo` asserts rather than
+    /// diagnosing (`dbsp/src/circuit/dbsp_handle.rs:105-108`), and a panic on a
+    /// reachable path is the one thing this crate does not do. It is also what
+    /// `available_parallelism` returns, for the CLI that will eventually pass
+    /// one — the count belongs there and not in a default here, since a count
+    /// taken from the host would make a placement bug reproduce on a three-core
+    /// machine and not on a four-core one.
+    pub workers: NonZeroUsize,
+}
+
+impl Default for RunnerConfig {
+    /// One worker: a count nobody chose should be the one that needs no
+    /// invariant to be right.
+    fn default() -> Self {
+        Self {
+            workers: NonZeroUsize::MIN,
+        }
+    }
 }
 
 /// A built circuit, its input handles, and the outputs that were selected.
@@ -231,7 +275,11 @@ impl Runner {
     ///
     /// Nodes that are not named are still constructed — there is no dead-code
     /// elimination.
-    pub fn build(plan: &Plan, outputs: &[String]) -> Result<Runner, Vec<Diagnostic>> {
+    pub fn build(
+        plan: &Plan,
+        outputs: &[String],
+        config: RunnerConfig,
+    ) -> Result<Runner, Vec<Diagnostic>> {
         // A node may be selected by its declared name or by its content id, so
         // a nested node — which has no name, only a `filter@3:12` label — can
         // still be observed.
@@ -258,10 +306,22 @@ impl Runner {
 
         let plan = plan.clone();
 
-        // `Runtime::init_circuit` runs this closure once per worker and asserts
-        // the circuits match, so it must be deterministic: nodes are visited in
-        // plan order and nothing here iterates a hash map.
-        let (dbsp, (inputs, outs)) = Runtime::init_circuit(1, move |circuit| {
+        // `Runtime::init_circuit` clones this closure into every worker thread
+        // and runs it there — and does *not* check what they built
+        // (`dbsp/src/circuit/dbsp_handle.rs:1121-1125`, "we don't check"): it
+        // keeps worker 0's answer. So determinism here is an obligation rather
+        // than a checked invariant, and what it protects is the per-worker
+        // `Runtime::sequence_next` counter that hands out input and exchange
+        // ids (`dbsp/src/circuit/runtime.rs:1305-1313`). Workers that build
+        // different circuits desync it and then deadlock or cross-wire, with no
+        // error anywhere.
+        //
+        // Hence: nodes are visited in plan order, ids and the output selection
+        // are computed above rather than here, and nothing in this closure
+        // iterates a hash map. What each worker clones is one immutable `Plan`
+        // whose expressions are behind `Arc`s, so the circuits differ only if
+        // the walk does. `Runner::recheck_determinism` is how a test asks.
+        let (dbsp, (inputs, outs)) = Runtime::init_circuit(config.workers, move |circuit| {
             let mut nodes: Vec<Node<RootCircuit>> = Vec::with_capacity(plan.nodes.len());
             let mut inputs: Vec<(String, ZSetHandle<DynValue>)> = Vec::new();
 
@@ -276,8 +336,9 @@ impl Runner {
                 outs.push((
                     name.clone(),
                     match &nodes[idx] {
-                        Node::Flat(s) => Out::Flat(s.output()),
-                        Node::Indexed(s) => Out::Indexed(s.output()),
+                        // `accumulate_output`, not `output`: see `step`.
+                        Node::Flat(s) => Out::Flat(s.accumulate_output()),
+                        Node::Indexed(s) => Out::Indexed(s.accumulate_output()),
                         // A fixpoint instance is not itself a stream; only its
                         // recursive members are, and the checker registers
                         // those under `<instance>.<label>`.
@@ -314,6 +375,13 @@ impl Runner {
 
         Ok(Runner {
             dbsp,
+            // Worker 0's handles, and that is not a single-worker assumption:
+            // `InputHandle::new` keys the runtime's shared local store by
+            // `sequence_next()`, so every worker's constructor resolved to the
+            // same `Arc`, whose mailbox vector is sized to all of them
+            // (`dbsp/src/operator/input.rs:811-827`). `push` then round-robins
+            // over those mailboxes — the caller never shards by key, and the
+            // operators that need placement re-shard anyway.
             inputs: inputs.into_iter().collect(),
             outputs: outs,
         })
@@ -342,6 +410,7 @@ impl Runner {
         for (name, handle) in &self.outputs {
             let deltas = match handle {
                 Out::Flat(h) => h
+                    .concat()
                     .consolidate()
                     .iter()
                     .map(|(k, (), w)| Delta {
@@ -351,6 +420,7 @@ impl Runner {
                     })
                     .collect(),
                 Out::Indexed(h) => h
+                    .concat()
                     .consolidate()
                     .iter()
                     .map(|(k, v, w)| Delta {
@@ -363,6 +433,40 @@ impl Runner {
             out.push((name.clone(), deltas));
         }
         Ok(out)
+    }
+
+    /// Builds this plan's circuit a second time in every worker and requires
+    /// each worker's two copies to agree.
+    ///
+    /// The obligation named at [`Runner::build`] has one place where `dbsp`
+    /// checks anything: `create_bootstrap_circuit` re-runs the constructor on
+    /// every worker, at the real worker count, and refuses a fingerprint
+    /// mismatch with "the circuit constructor is nondeterministic"
+    /// (`dbsp/src/circuit/dbsp_handle.rs:977-991`). Given no checkpoint it
+    /// restores nothing, so borrowing it as a check costs one rebuild and the
+    /// teardown below.
+    ///
+    /// **Be exact about what that is.** Each worker compares its own two
+    /// builds, so what this catches is a constructor that is not a pure
+    /// function of what it captured — a hash map reaching node order, a
+    /// counter, a clock. It does *not* compare the workers with each other,
+    /// and the fingerprint is FNV over each node's **type name**
+    /// (`dbsp/src/circuit/fingerprinter.rs`,
+    /// `circuit_builder.rs:8788-8795`), so a constructor that read
+    /// `Runtime::worker_index()` into a node's *name* would pass this and
+    /// still be wrong. Against that there is an argument rather than a test:
+    /// the closure captures one immutable `Plan` and a `Vec` of ids computed
+    /// before it, reads nothing else, and every expression under it is an
+    /// `Arc`.
+    ///
+    /// Call it between transactions.
+    pub fn recheck_determinism(&mut self) -> Result<(), RunError> {
+        self.dbsp
+            .create_bootstrap_circuit()
+            .map_err(|e| RunError(format!("rebuilding the circuit: {e}")))?;
+        self.dbsp
+            .destroy_bootstrap_circuit()
+            .map_err(|e| RunError(format!("discarding the rebuilt circuit: {e}")))
     }
 
     pub fn kill(self) {

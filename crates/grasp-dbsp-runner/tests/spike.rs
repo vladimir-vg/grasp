@@ -1,6 +1,10 @@
 //! Does `dbsp`'s typed operator API instantiate at a single universal value
 //! type?
 //!
+//! One worker throughout, deliberately: the question here is whether the typed
+//! API composes at `DynValue`, and the worker count is not part of it. What a
+//! circuit does at several is `tests/workers.rs`.
+//!
 //! This is the design's central bet, stated in `docs/grasp-dbsp/mapping.md`. If
 //! these tests do not compile, the architecture is wrong and no amount of
 //! parser work rescues it — so they exist before the parser does, and they are

@@ -14,7 +14,7 @@ use grasp_dbsp_runner::diag::Diagnostic;
 use grasp_dbsp_runner::json::{
     Format, decode_delta_insert_delete, decode_value, encode_delta_insert_delete, encode_value,
 };
-use grasp_dbsp_runner::lower::Runner;
+use grasp_dbsp_runner::lower::{Runner, RunnerConfig};
 use grasp_dbsp_runner::value::{BatchType, TypeDesc};
 use libtest_mimic::{Arguments, Failed, Trial};
 use serde::Deserialize;
@@ -306,7 +306,7 @@ fn check_output(case: &Case, expected: &[Epoch], exact: bool, where_: &str) -> R
         ));
     }
 
-    let mut runner = Runner::build(&plan, &outputs).map_err(|d| {
+    let mut runner = Runner::build(&plan, &outputs, RunnerConfig::default()).map_err(|d| {
         format!(
             "{where_}: building the circuit failed:\n{}",
             indent(&render_diags(&d))

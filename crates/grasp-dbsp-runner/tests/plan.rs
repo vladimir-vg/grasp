@@ -1,7 +1,7 @@
 //! Structural properties of a checked `Plan` that the fixtures cannot express.
 
 use grasp_dbsp_runner::compile;
-use grasp_dbsp_runner::lower::Runner;
+use grasp_dbsp_runner::lower::{Runner, RunnerConfig};
 use grasp_dbsp_runner::typecheck::PlanOp;
 
 const NESTED: &str = "\
@@ -71,7 +71,11 @@ fn a_nested_node_cannot_be_an_output() {
         .unwrap();
 
     // `Runner` is not `Debug`, so match rather than `expect_err`.
-    match Runner::build(&plan, std::slice::from_ref(&nested.name)) {
+    match Runner::build(
+        &plan,
+        std::slice::from_ref(&nested.name),
+        RunnerConfig::default(),
+    ) {
         Ok(_) => panic!("an anonymous node should not be addressable as an output"),
         Err(diags) => assert!(
             diags.iter().any(|d| d.message.contains("no node named")),
@@ -80,7 +84,8 @@ fn a_nested_node_cannot_be_an_output() {
     }
 
     // The declared name works, so the rejection is about anonymity.
-    Runner::build(&plan, &["out".to_string()]).expect("a declared node is addressable");
+    Runner::build(&plan, &["out".to_string()], RunnerConfig::default())
+        .expect("a declared node is addressable");
 }
 
 /// Nodes are content-addressed, so identical work is built once. This is
@@ -317,7 +322,8 @@ fn a_nested_node_is_observable_by_content_id() {
         .position(|n| n.name.starts_with("filter@"))
         .unwrap();
 
-    let runner = Runner::build(&plan, &[ids[nested].clone()]).expect("builds");
+    let runner =
+        Runner::build(&plan, &[ids[nested].clone()], RunnerConfig::default()).expect("builds");
     runner.kill();
 }
 

@@ -22,7 +22,7 @@
 use common::{assert_every_directory_was_walked, fixture_files, label};
 use grasp_compiler::diag::{Diagnostic, Pass};
 use grasp_dbsp_runner::json::{decode_value, encode_value};
-use grasp_dbsp_runner::lower::Runner;
+use grasp_dbsp_runner::lower::{Runner, RunnerConfig};
 use grasp_dbsp_runner::typecheck::Plan;
 use grasp_dbsp_runner::value::{BatchType, TypeDesc};
 use libtest_mimic::{Arguments, Failed, Trial};
@@ -896,7 +896,7 @@ fn check_output(case: &Case, expected: &[Epoch], exact: bool, where_: &str) -> R
         ));
     }
 
-    let mut runner = Runner::build(&plan, &outputs).map_err(|d| {
+    let mut runner = Runner::build(&plan, &outputs, RunnerConfig::default()).map_err(|d| {
         format!(
             "{where_}: building the circuit failed:\n{}\n  emitted:\n{}",
             indent(&grasp_dbsp_runner::diag::render(&d)),
