@@ -10,6 +10,7 @@ use grasp_dbsp_runner::value::{DynValue, TypeDesc};
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use rkyv::Deserialize;
+use size_of::SizeOf;
 use std::cmp::Ordering;
 
 /// Serialize, then compare in archived form.
@@ -112,6 +113,175 @@ proptest! {
         prop_assert_eq!(a.cmp(&b), b.cmp(&a).reverse());
         prop_assert_eq!(a.cmp(&b) == Ordering::Equal, a == b);
     }
+}
+
+/// A value reports what it weighs, and `dbsp` spills on the answer.
+///
+/// The fifth load-bearing property, and the newest: `approximate_byte_size`
+/// samples this number to decide whether a batch stays in memory or goes to a
+/// file (`dbsp/src/trace.rs:568-579`). It failed silently in the same way the
+/// others do — a relation of records reporting a constant would simply never
+/// spill, however large it grew — which is why it is a test and not a comment.
+#[test]
+fn a_value_reports_what_it_holds() {
+    let kib = "x".repeat(1024);
+    let held = 10 * 1024;
+    let record = DynValue::record((0..10).map(|_| DynValue::str(&kib)));
+    let bare = std::mem::size_of::<DynValue>();
+
+    let size = record.size_of().total_bytes();
+    assert!(
+        size >= held,
+        "a record of ten kilobytes reports {size}, less than the {held} it holds"
+    );
+    assert!(
+        size < held * 2,
+        "a record of ten kilobytes reports {size}, far more than the {held} it holds"
+    );
+
+    // The same payload under an array and under a dict weighs the same, give or
+    // take each container's own allocation.
+    let array = DynValue::Array(vec![record.clone()]);
+    let dict = DynValue::Dict([(DynValue::str("k"), record.clone())].into_iter().collect());
+    for (what, v) in [("an array", &array), ("a dict", &dict)] {
+        let nested = v.size_of().total_bytes();
+        assert!(
+            nested >= size && nested < size + 1024,
+            "{what} holding that record reports {nested}, against the record's own {size}"
+        );
+    }
+
+    // An empty container owns nothing, and a scalar owns nothing either.
+    for empty in [
+        DynValue::record([]),
+        DynValue::Array(Vec::new()),
+        DynValue::Dict(std::collections::BTreeMap::new()),
+        DynValue::I64(1),
+    ] {
+        let size = empty.size_of().total_bytes();
+        assert!(
+            size <= bare,
+            "{empty:?} reports {size}, more than the {bare} the enum itself is"
+        );
+    }
+
+    // A document's buffer is an `Arc`, and two values sharing one count it
+    // once — which is the property `FlatVariant` was chosen for.
+    let doc = json_value(serde_json::json!({"k": kib}));
+    let one = DynValue::Array(vec![doc.clone()]).size_of().total_bytes();
+    let two = DynValue::Array(vec![doc.clone(), doc])
+        .size_of()
+        .total_bytes();
+    assert!(
+        two < one + 1024,
+        "two values sharing one document buffer report {two} against one value's {one}, \
+         so the buffer was counted twice"
+    );
+}
+
+/// Every variant either owns nothing on the heap, or grows when its payload
+/// does.
+///
+/// The previous test measures one shape; this one measures all of them, and is
+/// what an appended variant runs into: `owns_an_allocation` is exhaustive, so
+/// the file stops compiling until the new variant says which it is, and the
+/// count at the end stops matching until it joins one of the two lists.
+#[test]
+fn every_variant_that_owns_something_reports_it() {
+    fn owns_an_allocation(v: &DynValue) -> bool {
+        match v {
+            DynValue::None
+            | DynValue::Bool(_)
+            | DynValue::I64(_)
+            | DynValue::F64(_)
+            | DynValue::Date(_)
+            | DynValue::Time(_)
+            | DynValue::Timestamp(_)
+            | DynValue::Interval(_) => false,
+            DynValue::String(_)
+            | DynValue::Bytes(_)
+            | DynValue::Json(_)
+            | DynValue::Dynamic(_)
+            | DynValue::Record(_)
+            | DynValue::Array(_)
+            | DynValue::Dict(_) => true,
+        }
+    }
+
+    const PAD: usize = 4096;
+    let pad = "x".repeat(PAD);
+    let dynamic = |s: &str| {
+        DynValue::Dynamic(feldera_sqllib::FlatVariant::from(
+            feldera_sqllib::Variant::String(feldera_sqllib::SqlString::from_ref(s)),
+        ))
+    };
+
+    // One pair per variant that owns something: the same shape, `PAD` bytes
+    // apart.
+    let pairs = [
+        (DynValue::str(""), DynValue::str(&pad)),
+        (
+            DynValue::Bytes(feldera_sqllib::ByteArray::from_vec(Vec::new())),
+            DynValue::Bytes(feldera_sqllib::ByteArray::from_vec(vec![0; PAD])),
+        ),
+        (
+            json_value(serde_json::json!("")),
+            json_value(serde_json::json!(pad)),
+        ),
+        (dynamic(""), dynamic(&pad)),
+        (
+            DynValue::record([]),
+            DynValue::record([DynValue::str(&pad)]),
+        ),
+        (
+            DynValue::Array(Vec::new()),
+            DynValue::Array(vec![DynValue::str(&pad)]),
+        ),
+        (
+            DynValue::Dict(std::collections::BTreeMap::new()),
+            DynValue::Dict(
+                [(DynValue::str("k"), DynValue::str(&pad))]
+                    .into_iter()
+                    .collect(),
+            ),
+        ),
+    ];
+    for (small, large) in &pairs {
+        assert!(owns_an_allocation(small), "{small:?} is in the wrong list");
+        let grew = large.size_of().total_bytes() - small.size_of().total_bytes();
+        assert!(
+            grew >= PAD,
+            "{large:?} carries {PAD} bytes more than {small:?} and reports only {grew} more; \
+             `dbsp` spills on this number, so what it cannot see it never writes out"
+        );
+    }
+
+    // And one per variant that owns nothing, which cannot grow at all.
+    let scalars = [
+        DynValue::None,
+        DynValue::Bool(true),
+        DynValue::I64(1),
+        DynValue::F64(dbsp::algebra::F64::new(1.0)),
+        DynValue::Date(feldera_sqllib::make_date___(2024, 1, 15).expect("valid")),
+        grasp_dbsp_runner::value::parse_time("14:30:00").expect("a valid time"),
+        DynValue::Timestamp(feldera_sqllib::Timestamp::from_microseconds(1)),
+        DynValue::Interval(feldera_sqllib::ShortInterval::from_microseconds(1)),
+    ];
+    let bare = std::mem::size_of::<DynValue>();
+    for v in &scalars {
+        assert!(!owns_an_allocation(v), "{v:?} is in the wrong list");
+        assert_eq!(
+            v.size_of().total_bytes(),
+            bare,
+            "{v:?} owns nothing, so it weighs what the enum weighs"
+        );
+    }
+
+    assert_eq!(
+        pairs.len() + scalars.len(),
+        15,
+        "`DynValue` has a variant in neither list"
+    );
 }
 
 /// Invariant 3: the hash is stable across builds and processes.

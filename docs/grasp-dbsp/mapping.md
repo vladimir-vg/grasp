@@ -192,6 +192,30 @@ name, and a `DynValue` deriving that one will not satisfy `DBData`. The same
 applies to `rkyv`: the derived `Archive` impls only unify with the bounds `dbsp`
 imposes if both crates resolve to the same `rkyv` version.
 
+**`SizeOf` is not bookkeeping, it is the spill decision.** `dbsp` chooses
+between keeping a batch in memory and writing it to a file entirely from this
+number: `BatchReader::approximate_byte_size` samples a hundred keys and
+multiplies (`dbsp/src/trace.rs:568-579`, `dbsp/src/dynamic/vec.rs:280-300`), and
+a builder spills part-way through once the keys it has accumulated cross the
+threshold (`dbsp/src/trace/ord/fallback/wset.rs:562-578`). A value that reports
+less than it holds is a value that never spills, however large the relation
+grows — a failure that ends in the process being killed rather than in a wrong
+answer, which is the family the invariants below belong to.
+
+So `DynValue`'s impl is **hand-written**. The derive cannot do it: it emits a
+`where Vec<DynValue>: SizeOf` bound while proving `DynValue: SizeOf`, which the
+solver reports as an overflow, and its escape hatch — `#[size_of(skip)]` on the
+recursive field — does not make a payload weightless, only invisible. A written
+impl carries no such bound, so `Vec`, `BTreeMap` and `String` resolve through
+their own impls and walk the tree. `sqllib::ByteArray` hand-writes its own for
+the same reason (`sqllib/src/binary.rs:73-88`).
+
+Two things it does *not* claim. It reports what a value **owns**, not what the
+process resident set grows by. And a `json` or `dynamic` document's buffer is an
+`Arc`, counted once per `Context` but once *per row* across rows that share it,
+so a document held by a thousand rows counts a thousand times — an over-count,
+which errs toward spilling early rather than late.
+
 `SupportsRoaring` should report `false` — its default. It only selects between an
 exact roaring-bitmap key filter and a Bloom filter for file-backed batches
 (`dbsp/src/utils/supports_roaring.rs:17`); reporting `false` costs a slightly

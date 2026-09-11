@@ -38,7 +38,6 @@ use size_of::SizeOf;
     Hash,
     PartialEq,
     PartialOrd,
-    SizeOf,
     rkyv::Archive,
     rkyv::Serialize,
     rkyv::Deserialize,
@@ -65,23 +64,9 @@ pub enum DynValue {
     F64(F64),
     String(String),
     /// `#[omit_bounds]` stops rkyv's derived bounds recursing through the
-    /// element type.
-    ///
-    /// `#[size_of(skip, skip_bounds)]` is needed because the `SizeOf` derive
-    /// would otherwise require `Vec<DynValue>: SizeOf` while proving
-    /// `DynValue: SizeOf`, which the trait solver reports as an overflow.
-    /// `skip_bounds` alone is not enough — the derive still emits the call — so
-    /// the field is skipped entirely, exactly as `sqllib::Variant` does for its
-    /// `Array` and `Map` payloads.
-    ///
-    /// The consequence is real: `dbsp`'s memory accounting does not see record
-    /// payloads, so reported sizes under-count. A hand-written `SizeOf` impl
-    /// would fix it and is the obvious follow-up.
-    Record(
-        #[omit_bounds]
-        #[size_of(skip, skip_bounds)]
-        Vec<DynValue>,
-    ),
+    /// element type. There is no `SizeOf` attribute beside it because there is
+    /// no `SizeOf` derive: see [the hand-written impl](#impl-SizeOf-for-DynValue).
+    Record(#[omit_bounds] Vec<DynValue>),
     /// `json` — a whole document, byte-encoded.
     ///
     /// **Appended, and new variants must be too**: the variant order is the
@@ -93,11 +78,7 @@ pub enum DynValue {
     /// the same bytes. Map entries are stored sorted and deduplicated, so two
     /// documents written with their keys in different orders are one value,
     /// one hash and one Z-set key.
-    Json(
-        #[omit_bounds]
-        #[size_of(skip, skip_bounds)]
-        FlatVariant,
-    ),
+    Json(#[omit_bounds] FlatVariant),
     /// `array(T)` — a sequence of one element type.
     ///
     /// **Appended, and new variants must be too**: the variant order is the
@@ -105,12 +86,8 @@ pub enum DynValue {
     ///
     /// Like `Record`, this is a container whose `Ord`, `Hash` and archived
     /// ordering are ours rather than borrowed, so it is covered by the
-    /// proptests in `tests/invariants.rs`. Same derive caveats as `Record`.
-    Array(
-        #[omit_bounds]
-        #[size_of(skip, skip_bounds)]
-        Vec<DynValue>,
-    ),
+    /// proptests in `tests/invariants.rs`.
+    Array(#[omit_bounds] Vec<DynValue>),
     /// `dict(K,V)` — a key-value map.
     ///
     /// **Appended, and new variants must be too**: the variant order is the
@@ -128,13 +105,7 @@ pub enum DynValue {
     /// `self.iter().cmp(other.iter())` — iteration order, the same lexicographic
     /// comparison `BTreeMap` itself uses. `sqllib::Variant` stores its `Map` the
     /// same way, behind an `Arc` it needs for sharing and we do not.
-    ///
-    /// Same derive caveats as `Record`.
-    Dict(
-        #[omit_bounds]
-        #[size_of(skip, skip_bounds)]
-        BTreeMap<DynValue, DynValue>,
-    ),
+    Dict(#[omit_bounds] BTreeMap<DynValue, DynValue>),
     /// `date` — a calendar date, as days since the Unix epoch.
     ///
     /// **Appended, and new variants must be too**: the variant order is the
@@ -200,6 +171,57 @@ pub enum DynValue {
     /// than `Variant`'s. Both are an object in every spelling this language
     /// uses, so the leniency is bounded and stated.
     Dynamic(feldera_sqllib::FlatVariant),
+}
+
+/// What a value weighs, including everything it owns.
+///
+/// **Hand-written, and load-bearing.** `dbsp` decides what to keep in memory
+/// and what to write to storage entirely from this number: a batch's
+/// `approximate_byte_size` (`dbsp/src/trace.rs:568-579`) samples a hundred
+/// elements and multiplies, and a builder spills mid-build once
+/// `key.size_of().total_bytes()` crosses the threshold
+/// (`dbsp/src/trace/ord/fallback/wset.rs:562-578`). A value that reports less
+/// than it holds is a value that never spills — the failure is silent and ends
+/// in the process being killed rather than in a wrong answer.
+///
+/// It is written rather than derived because the derive cannot do it: it emits
+/// a `where Vec<DynValue>: SizeOf` bound while proving `DynValue: SizeOf`,
+/// which the trait solver reports as an overflow. The escape hatch is
+/// `#[size_of(skip)]` on each recursive field, which is what this type used to
+/// carry — and skipping a field does not make it weightless, only invisible.
+/// `sqllib::ByteArray` hand-writes its own for the same reason, and its comment
+/// names the same symptom: "a spilled payload counted as zero, whatever its
+/// size" (`sqllib/src/binary.rs:73-88`).
+///
+/// The match is exhaustive on purpose: a variant appended later cannot avoid
+/// saying what it weighs.
+impl SizeOf for DynValue {
+    fn size_of_children(&self, context: &mut size_of::Context) {
+        match self {
+            // Nothing on the heap. The discriminant and the payload are both
+            // inside `size_of::<DynValue>()`, which the caller already counted.
+            DynValue::None
+            | DynValue::Bool(_)
+            | DynValue::I64(_)
+            | DynValue::F64(_)
+            | DynValue::Date(_)
+            | DynValue::Time(_)
+            | DynValue::Timestamp(_)
+            | DynValue::Interval(_) => {}
+            DynValue::String(s) => s.size_of_children(context),
+            // `ByteArray` counts a spilled `SmallVec` and adds nothing for an
+            // inline payload, which is already part of the enum.
+            DynValue::Bytes(b) => b.size_of_children(context),
+            // One `Arc<[u8]>` per document, deduplicated by pointer within a
+            // context — so two values sharing a buffer count it once, which is
+            // what `FlatVariant` is for.
+            DynValue::Json(v) | DynValue::Dynamic(v) => v.size_of_children(context),
+            // `Vec` and `BTreeMap` count their own allocation and then recurse
+            // through these arms, so the whole tree is walked once.
+            DynValue::Record(vs) | DynValue::Array(vs) => vs.size_of_children(context),
+            DynValue::Dict(d) => d.size_of_children(context),
+        }
+    }
 }
 
 impl DynValue {
