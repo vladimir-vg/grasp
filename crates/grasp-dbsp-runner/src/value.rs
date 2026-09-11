@@ -440,7 +440,14 @@ pub struct FpAcc {
     pub rows: i64,
 }
 
-/// Combines partial folds, which `dbsp` may compute over subsets.
+/// Combines two partial folds, which is what `Fold` asks of its accumulator.
+///
+/// Nothing on this path splits a group: `aggregate` shards its input and its
+/// trace by key (`dbsp/src/operator/dynamic/aggregate.rs:452-499`), so every
+/// row of one group is on one worker and the fold replays one cursor, in the
+/// value's own order rather than in arrival order. That is what makes a
+/// floating-point `sum` give the same answer at any worker count, which
+/// `tests/workers.rs` pins.
 #[derive(Clone)]
 pub struct FpAccSemigroup;
 

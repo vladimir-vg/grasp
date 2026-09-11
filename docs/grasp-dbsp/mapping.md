@@ -412,8 +412,10 @@ Two operators that look like they belong in this table but do not:
   for it to consolidate. Traces arise from `integrate_trace` and from nested
   circuits, so this operator becomes meaningful only alongside recursion. The
   identically named `OutputHandle::consolidate` (`operator/output.rs:465`) is a
-  different thing: it merges per-worker output batches on the read side, and the
-  runner uses it there.
+  different thing: it merges per-worker output batches on the read side. The
+  runner reads there through `concat().consolidate()` on an
+  [accumulating sink](#execution-model), which is the same merge over a whole
+  transaction rather than over one step.
 - **`left_join`.** Its right-hand input must be
   `OrdIndexedZSet<K, Option<V2>>` (`dbsp/src/mono.rs:200-215`) — the `Option` is
   there to avoid an internal transformation, not to express outer-join
@@ -703,11 +705,25 @@ read output deltas" is the transaction.
 
 A source therefore has to decide what "once" means for itself. `input` drains its
 mailbox on the first step; `constant` telescopes with `differentiate`
-([above](#why-constant-is-not-just-a-generator)). Note also that
-`Stream::output`'s mailbox is *overwritten* each step rather than accumulated, so
-the runner reads the last step's batch rather than the transaction's sum —
-correct while a transaction is one step, which is what these circuits are today,
-and a thing to revisit before one is not.
+([above](#why-constant-is-not-just-a-generator)).
+
+**A sink has to decide the same thing, and the answer is not `output`.**
+`Stream::output`'s mailbox is *overwritten* each step rather than accumulated,
+so a reader gets the last step's batch rather than the transaction's. At one
+worker that is the same thing, because these transactions are one step. At
+several it is not: a commit spans steps and the workers emit in different ones
+(`dbsp/src/operator/output.rs:579-594`), so a reader sees whichever part of the
+transaction happened to land last — rows missing, differently on every run.
+This was not a hazard to note and revisit; it was wrong, and the corpus could
+not see it, because every fixture ran at one worker.
+
+So every output is a `Stream::accumulate_output` sink. Each worker's accumulator
+emits once per transaction, and the operator parks those emissions in a cohort
+shared by the workers of one host, publishing them together when the last worker
+emits — "so a reader sees either all of a transaction's outputs or none". The
+runner then reads `concat().consolidate()`, which is the read-side merge over
+the whole transaction. A transaction spanning many steps is now ordinary rather
+than a thing to revisit.
 
 ## Checkpointing and parallelism
 
@@ -724,12 +740,53 @@ constructed** — so each recursive stream is named as the closure's first act,
 before `build_body` builds anything from it
 (`dbsp/src/operator/recursive.rs:150-171`).
 
-**Determinism.** `Runtime::init_circuit` runs the constructor closure **once per
-worker thread** and asserts that the resulting circuits have identical
-fingerprints (`dbsp/src/circuit/dbsp_handle.rs:695-757`). Lowering must therefore
-be deterministic: iterate nodes in a fixed order, and never let `HashMap`
-iteration order reach circuit construction.
+**Determinism.** `Runtime::init_circuit` clones the constructor closure into
+**every worker thread** and runs it there — and does **not** check what they
+built: it keeps worker 0's answer, saying so in as many words
+(`dbsp/src/circuit/dbsp_handle.rs:1121-1125`, "we don't check"). An earlier
+version of this paragraph claimed it asserted identical fingerprints. It does
+not, and the difference matters: what determinism protects is the per-worker
+`Runtime::sequence_next` counter that hands out input and exchange ids
+(`dbsp/src/circuit/runtime.rs:1305-1313`), so workers that build different
+circuits desync it and then deadlock or cross-wire, with no error anywhere.
+
+Lowering is therefore deterministic by construction: nodes are visited in plan
+order, content ids and the output selection are computed before the closure, and
+no `HashMap` iteration reaches circuit construction. The one check `dbsp` does
+make is `create_bootstrap_circuit`, which re-runs the constructor on each worker
+and refuses a fingerprint mismatch (`dbsp_handle.rs:977-991`);
+`Runner::recheck_determinism` borrows it, and `tests/workers.rs` calls it. It
+compares each worker's two builds rather than the workers with each other, so
+what it catches is a constructor that is not a pure function of what it
+captured.
 
 **Sharding.** Multi-worker execution shards batches by `key.default_hash()`, so
 invariants 2 and 3 above are prerequisites for running with more than one worker,
-not optional polish.
+not optional polish. The count is `RunnerConfig::workers`, a `NonZeroUsize`
+because `Layout::new_solo` asserts rather than diagnosing
+(`dbsp_handle.rs:105-108`), and it defaults to one. Nothing derives it from the
+host: a count from `available_parallelism` would make a placement bug reproduce
+on a three-core machine and not on a four-core one.
+
+Which operators need placement is `dbsp`'s business, not this crate's: `join`,
+`antijoin`, `distinct` and the aggregates shard their own inputs, and an
+embedder that shards on their behalf "is likely to lead to incorrect results"
+(`dbsp/src/operator/communication/shard.rs:50-57`). Nothing here calls `shard`.
+Input rows are pushed round-robin rather than by key
+(`dbsp/src/operator/dynamic/input.rs:690-702`), which is why that is safe.
+
+The evidence is `tests/workers.rs`: one program at one worker and at three,
+required to agree delta for delta. Three rather than two or four because
+placement functions differing only in a hash's high bits still agree modulo a
+power of two (`dbsp/src/operator/dynamic/input.rs:2175-2181`). Every program
+there retracts, because the read side merges every worker whatever the
+placement — a program that only inserts gets the right answer even when a key's
+rows are scattered, and what a misplacement breaks is a retraction cancelling an
+insertion.
+
+**A checkpoint will be partitioned by worker.** Batch files are written under a
+`w{worker_index}-` prefix (`dbsp/src/storage/file/writer.rs:1161-1162`), and
+Feldera's own adapters refuse to change the worker count across a restore
+(`crates/adapters/src/controller.rs:5863-5866`). So whatever eventually sets the
+count has to record it with the checkpoint and reject a mismatch; it is not a
+free tuning knob once anything is stored.

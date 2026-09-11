@@ -113,14 +113,18 @@ Outputs are **not** part of the source language. A program declares streams; the
 set of nodes to observe is supplied when the runner starts, so anything can
 become an output — by declared name, or by content id for a node that has none.
 
+Neither is the **worker count**: it is given to the runner, defaults to one, and
+changes nothing about what a program computes. `dbsp` shards batches across
+workers by key hash, so it rests on the hashing invariants in
+[`mapping.md`](mapping.md) and on nothing in the lowering — every operator that
+needs its input placed shards it itself. What holds it up is `tests/workers.rs`,
+which runs a program at one worker and at three and requires the two to agree.
+
 ## Future work
 
 - **Checkpoint and restore.** The ids are in place — every operator carries its
   node's content id as a `persistent_id` — but nothing takes or restores a
   checkpoint yet. See [`mapping.md`](mapping.md).
-- **Multi-worker execution.** `Runtime::init_circuit` is called with one worker.
-  Sharding is by key hash, so this depends on the hashing invariants in
-  [`mapping.md`](mapping.md).
 - **`left_join` is *not* planned.** `dbsp` has one, but its right-hand input is
   `OrdIndexedZSet<K, Option<V2>>` — a second Rust batch type, in a design whose
   leverage is that there is exactly one. It is not needed: a left join is
