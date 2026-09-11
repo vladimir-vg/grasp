@@ -444,7 +444,13 @@ fn under(inner: Narrowing, cast: bool, shape: Shape) -> Narrowing {
 }
 
 /// Whether a document can be converted to this — the `cast` rows out of `json`,
-/// which are every scalar plus a record or an array asked for by name.
+/// which are every scalar, plus a record, an array or a dict asked for by name.
+///
+/// A dict is here because an object *is* one: its keys are strings and a dict
+/// key parses from one, so extracting a dict is the check the JSON codec
+/// already performs. The target says the same, in `extractable`, and the two
+/// lists agree entry for entry — `json` is absent here only because
+/// `json :: json` is [`assignable`] and settles before [`narrows`] is reached.
 fn holdable(t: &Ty) -> bool {
     matches!(
         t,
@@ -462,6 +468,28 @@ fn holdable(t: &Ty) -> bool {
             | Ty::Timestamp
             | Ty::Interval
             | Ty::Bytes
+    ) || matches!(t, Ty::Dict(k, _) if scalar_key(k))
+}
+
+/// Whether a type may key a dict, for the one place [`holdable`] needs to know.
+///
+/// The written type `dict(K,V)` is **not** checked for a scalar key when it is
+/// parsed — only a dict *literal* is, in `infer` — so without this a
+/// `dict(record(…), i64)` annotation would narrow, emit a `cast` the target
+/// refuses, and report against text the program never wrote. It mirrors
+/// `TypeDesc::is_dict_key` on the other side.
+fn scalar_key(t: &Ty) -> bool {
+    matches!(
+        t,
+        Ty::Boolean
+            | Ty::I64
+            | Ty::F64
+            | Ty::String
+            | Ty::Bytes
+            | Ty::Date
+            | Ty::Time
+            | Ty::Timestamp
+            | Ty::Interval
     )
 }
 

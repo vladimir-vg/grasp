@@ -350,3 +350,108 @@
     - severity: error
       pass: infer
       message: "asserted as"
+
+# ---------------------------------------------------------------------------
+# `json :: dict(K,V)`. A document's object **is** a dict — its keys are strings
+# and a dict key parses from one — so extracting one is the check the codec
+# already performs, and it is the `json :: T` row like every other `T`.
+#
+# Not to be confused with the `dict(K,A) :: dict(K,B)` row below it: that one
+# checks *under* a dict that is already a dict, once per value.
+# ---------------------------------------------------------------------------
+
+- name: a document narrows to a dict
+  source: |
+    src :: relation(doc: json)
+    src(doc:) <- input
+
+    out(d: d) <-
+        src(doc: doc)
+        d := doc
+        d :: dict(string, string)
+
+  input:
+    - src:
+        - [1, {doc: {a: "x", b: "y"}}]
+        - [1, {doc: {a: 1}}]
+        - [1, {doc: [1, 2]}]
+        - [1, {doc: "not an object"}]
+
+  expected_exact_output:
+    - out:
+        - [1, {d: {a: "x", b: "y"}}]
+
+# The value type is checked too, not only the shape — an object whose values are
+# the wrong type is not a `dict(string, i64)`.
+- name: and the values have to be right
+  source: |
+    src :: relation(doc: json)
+    src(doc:) <- input
+
+    out(n: n) <-
+        src(doc: doc)
+        d := doc
+        d :: dict(string, i64)
+        n := dict:length(d)
+
+  input:
+    - src:
+        - [1, {doc: {a: 1, b: 2}}]
+        - [1, {doc: {a: "x"}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {n: 2}]
+
+- name: a nested value type narrows with it
+  source: |
+    src :: relation(doc: json)
+    src(doc:) <- input
+
+    out(n: n) <-
+        src(doc: doc)
+        d := doc
+        d :: dict(string, array(i64))
+        n := dict:length(d)
+
+  input:
+    - src:
+        - [1, {doc: {a: [1, 2], b: [3]}}]
+        - [1, {doc: {a: ["x"]}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {n: 2}]
+
+# An object's keys are strings, so a dict a document could hold is keyed by one
+# of the types that parses from a string. grasp says so itself rather than
+# emitting a cast the target would refuse.
+- name: a document is not read as a dict keyed by a record
+  source: |
+    src :: relation(doc: json)
+    src(doc:) <- input
+
+    out(d: d) <-
+        src(doc: doc)
+        d := doc
+        d :: dict(record(a: i64), i64)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "a document is not read as a `dict(record(a: i64), i64)`"
+
+# The other kind of refusal, and the message says which: no `i64` is a `string`,
+# where a document merely is not *read* as one shape or another.
+- name: a narrowing no value could satisfy still says so
+  source: |
+    src :: relation(n: i64)
+    src(n:) <- input
+
+    out(v: v) <-
+        src(n: n)
+        v := n
+        v :: string
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "no `i64` value is a `string`: this assertion would discard every row"

@@ -853,6 +853,18 @@ impl Cx {
                     Diagnostic::unimplemented(Pass::Infer, *span, "narrowing under two wrappers"),
                     &mut wrong,
                 ),
+                // Two different facts, and the first was being told as the
+                // second. A document *might* hold any shape, so what is wrong
+                // with `d :: dict(record(…), i64)` is that nothing extracts
+                // that shape — not that no such document exists.
+                Narrowing::Never if matches!(have, Ty::Json) => note(
+                    Diagnostic::error(
+                        Pass::Infer,
+                        *span,
+                        format!("a document is not read as a `{ty}`"),
+                    ),
+                    &mut wrong,
+                ),
                 Narrowing::Never => note(
                     Diagnostic::error(
                         Pass::Infer,

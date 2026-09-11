@@ -273,6 +273,15 @@ an absent value comes through absent and only a *present* one that fails is
 dropped. It is the check you want where absence is a legitimate answer and a
 malformed value is not.
 
+**`json :: T` and `dict(K,A) :: dict(K,B)` are two different things over a
+dict**, and it is worth saying which is which. The first extracts a dict from a
+document — an object *is* one, its keys being strings and a dict key parsing
+from one — and it is the `json` row like any other `T`, so
+`d :: dict(string, i64)` on a document works. The second checks *under* a value
+that is already a dict, once per entry. A document whose keys could not parse as
+`K` is not read as that dict at all, which the compiler says itself rather than
+leaving to the target.
+
 The last three rows all check **under** something, and each admits only a
 whole-value check beneath it. `array(json) :: array(i64)` works and
 `array(array(json)) :: array(array(i64))` does not, because the second is two of
