@@ -496,7 +496,7 @@ For more than two rules, `sum(rule₁, rule₂, …)` is n-ary and saves the nes
 
 **`distinct` wraps whatever gives a relation its rows.** Facts, rules, or both —
 a relation defined by facts *and* rules is one `distinct` over the sum of the two
-([above](#facts)) — and an [`input`](#external-relations), where the weights come
+([above](#facts)) — and an [`input`](#relations), where the weights come
 from outside. The one exception is a recursive stream, which grasp-dbsp
 deduplicates every round already ([below](#recursion)).
 
