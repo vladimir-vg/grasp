@@ -13,6 +13,7 @@ use crate::value::{Acc, BatchType, DynValue, FpAcc, FpAccSemigroup};
 use dbsp::Circuit;
 use dbsp::algebra::F64;
 use dbsp::algebra::{AddAssignByRef, HasZero, Semigroup};
+use dbsp::circuit::{CircuitConfig, CircuitStorageConfig};
 use dbsp::dynamic::{DataTrait, DynUnit, Erase, WeightTrait};
 use dbsp::operator::{Aggregator, ConstantGenerator, Fold, Generator, Max};
 use dbsp::typed_batch::SpineSnapshot;
@@ -231,7 +232,10 @@ pub struct Delta {
 /// different configurations compute the same relations, node for node and row
 /// for row. That is what makes this a separate argument rather than part of
 /// the program.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Not `Copy` or `Eq`, because [`RunnerConfig::storage`] holds an open storage
+/// backend behind an `Arc`. Nothing compares one.
+#[derive(Debug, Clone)]
 pub struct RunnerConfig {
     /// `dbsp` worker threads.
     ///
@@ -251,14 +255,56 @@ pub struct RunnerConfig {
     /// taken from the host would make a placement bug reproduce on a three-core
     /// machine and not on a four-core one.
     pub workers: NonZeroUsize,
+
+    /// Where operator state goes when it outgrows memory, and `None` to keep
+    /// all of it in memory.
+    ///
+    /// This is `dbsp`'s own type, built by the caller with
+    /// `CircuitStorageConfig::for_config(StorageConfig { path, cache },
+    /// StorageOptions { .. })` — every knob is `dbsp`'s, spelled the way
+    /// `dbsp` spells it, and opening the backend (the one fallible part)
+    /// happens where the caller can report it. Three of those knobs decide
+    /// three different things, which is worth knowing before setting one:
+    /// `min_storage_bytes` (10 MiB) is the merge output, `min_step_storage_bytes`
+    /// (`usize::MAX`, never) is a batch built during one step, and the third —
+    /// a batch entering a spine — is not settable at all and moves only under
+    /// memory pressure (`dbsp/src/circuit/runtime.rs:1158-1243`).
+    ///
+    /// Nothing here changes what a program computes: a batch in a file holds
+    /// the same rows it held in memory, which is what `tests/storage.rs`
+    /// asserts. What it needs from `DynValue` is that the archived form orders
+    /// as the value does (invariant 1) and that a value reports what it owns,
+    /// since the threshold is measured in bytes `SizeOf` reported — both in
+    /// `mapping.md`.
+    ///
+    /// **The directory is exclusive.** `dbsp` takes a lock on
+    /// `<path>/feldera.pidlock`, waits sixty seconds for it, and a
+    /// process-local table refuses a second circuit in the same directory
+    /// outright (`dbsp/src/storage/dirlock.rs:95-200`). Two live runners need
+    /// two directories.
+    pub storage: Option<CircuitStorageConfig>,
+
+    /// A memory budget for the whole process, in bytes.
+    ///
+    /// It is what makes spilling adapt rather than wait for a fixed threshold:
+    /// `dbsp` compares the resident set against this and lowers every storage
+    /// threshold as the fractions 0.85, 0.90 and 0.95 are crossed
+    /// (`dbsp/src/circuit/runtime.rs:571-591`). Left `None`, the pressure
+    /// level is permanently Low and only the static thresholds above apply.
+    ///
+    /// Per *process*, not per runner, so two runners in one process are
+    /// measured against each other's allocations as well as their own.
+    pub max_rss_bytes: Option<u64>,
 }
 
 impl Default for RunnerConfig {
-    /// One worker: a count nobody chose should be the one that needs no
-    /// invariant to be right.
+    /// One worker, everything in memory: what a caller who said nothing should
+    /// get is the configuration that needs no invariant to be right.
     fn default() -> Self {
         Self {
             workers: NonZeroUsize::MIN,
+            storage: None,
+            max_rss_bytes: None,
         }
     }
 }
@@ -304,6 +350,32 @@ impl Runner {
             }
         }
 
+        // The field comes with the type we pass through, and restoring is not
+        // what this runner does: a checkpoint pins the worker count it was
+        // written at and freezes `DynValue`'s variant order for good, neither
+        // of which is designed here. Refusing it is better than honouring it
+        // by accident.
+        if let Some(storage) = &config.storage
+            && storage.init_checkpoint.is_some()
+        {
+            return Err(vec![Diagnostic::error(
+                Pass::Lower,
+                None,
+                "this runner starts a circuit from nothing: a storage configuration \
+                 naming an initial checkpoint asks it to restore one, which it does not do"
+                    .to_string(),
+            )]);
+        }
+
+        // Storage is one field on the circuit's configuration; the batch types
+        // this module already builds are the ones that can live in a file
+        // (`dbsp/src/trace/ord.rs:20-23` aliases `FallbackWSet as OrdWSet`, and
+        // a `FallbackWSet` is an `enum { Vec, File }`), so nothing else here
+        // changes when it is set.
+        let mut circuit_config = CircuitConfig::with_workers(config.workers.get());
+        circuit_config.storage = config.storage.clone();
+        circuit_config.max_rss_bytes = config.max_rss_bytes;
+
         let plan = plan.clone();
 
         // `Runtime::init_circuit` clones this closure into every worker thread
@@ -321,7 +393,7 @@ impl Runner {
         // iterates a hash map. What each worker clones is one immutable `Plan`
         // whose expressions are behind `Arc`s, so the circuits differ only if
         // the walk does. `Runner::recheck_determinism` is how a test asks.
-        let (dbsp, (inputs, outs)) = Runtime::init_circuit(config.workers, move |circuit| {
+        let (dbsp, (inputs, outs)) = Runtime::init_circuit(circuit_config, move |circuit| {
             let mut nodes: Vec<Node<RootCircuit>> = Vec::with_capacity(plan.nodes.len());
             let mut inputs: Vec<(String, ZSetHandle<DynValue>)> = Vec::new();
 

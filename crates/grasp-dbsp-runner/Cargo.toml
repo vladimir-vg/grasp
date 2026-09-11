@@ -21,6 +21,7 @@ anyhow = { workspace = true }
 proptest = { workspace = true }
 libtest-mimic = { workspace = true }
 serde_yaml = { workspace = true }
+tempfile = { workspace = true }
 
 [[test]]
 name = "yaml"

@@ -62,3 +62,9 @@ libtest-mimic = "0.8"
 # Matches the version the Feldera workspace pins. Formally deprecated, but
 # 0.9.34 is its final stable release and is what this ecosystem uses.
 serde_yaml = "0.9.34"
+# A spill directory per test. `dbsp` locks the directory a circuit spills into
+# and refuses a second circuit in the same one, so the tests cannot share a
+# fixed path — and `dbsp::storage::backend::tempdir_for_thread` is per *thread*,
+# which two live runners in one test would collide on. Already in the lock file
+# through `dbsp`, so this costs no new compilation.
+tempfile = "3"

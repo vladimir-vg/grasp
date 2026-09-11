@@ -51,6 +51,7 @@ fn run(
     let outs: Vec<String> = outputs.iter().map(|s| (*s).to_string()).collect();
     let config = RunnerConfig {
         workers: NonZeroUsize::new(workers).expect("a worker count"),
+        ..RunnerConfig::default()
     };
     let mut runner = Runner::build(&plan, &outs, config)
         .unwrap_or_else(|d| panic!("builds: {}", grasp_dbsp_runner::diag::render(&d)));
