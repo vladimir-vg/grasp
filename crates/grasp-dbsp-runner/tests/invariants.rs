@@ -4,14 +4,13 @@
 //! or rows that never consolidate, rather than a panic — which is why they are
 //! tested rather than merely documented.
 
+use dbsp::default_hash;
 use grasp_dbsp_runner::json::{decode_value, encode_value};
 use grasp_dbsp_runner::value::{DynValue, TypeDesc};
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use rkyv::Deserialize;
 use std::cmp::Ordering;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
 /// Serialize, then compare in archived form.
 fn archived_cmp(a: &DynValue, b: &DynValue) -> Ordering {
@@ -22,10 +21,17 @@ fn archived_cmp(a: &DynValue, b: &DynValue) -> Ordering {
     aa.cmp(ab)
 }
 
+/// The hash that decides which worker a key lands on.
+///
+/// `dbsp`'s own, not `std`'s: sharding is `key.default_hash() % workers`
+/// (`dbsp/src/operator/dynamic/communication/shard.rs:454`), and
+/// `default_hash` is xxh3 (`dbsp/src/hash.rs:7-11`). Both hashers consume the
+/// same `Hash` impl, so today they agree about almost everything — but a
+/// `Hash` that fed a streaming hasher ambiguously, writing a container with no
+/// length separator so that `["ab"]` and `["a", "b"]` produce one byte stream,
+/// is a question about *this* function and not about `std`'s.
 fn hash_of(v: &DynValue) -> u64 {
-    let mut h = DefaultHasher::new();
-    v.hash(&mut h);
-    h.finish()
+    default_hash(v)
 }
 
 /// Leaf values, plus nesting. Recursion is what makes the archived
@@ -106,6 +112,81 @@ proptest! {
         prop_assert_eq!(a.cmp(&b), b.cmp(&a).reverse());
         prop_assert_eq!(a.cmp(&b) == Ordering::Equal, a == b);
     }
+}
+
+/// Invariant 3: the hash is stable across builds and processes.
+///
+/// It is what places a key on a worker, so a change moves every key at once —
+/// and once anything is checkpointed it is also what a restore is matched
+/// against, which is why `dbsp` pins its own the same way
+/// (`dbsp/src/dynamic/data.rs:108-109`). Nothing else here would notice: a
+/// reordered variant, or a `Hash` that grew a field, keeps every other
+/// property in this file true.
+///
+/// The numbers were read out of this test's first failure, not derived. One
+/// value per variant, so a reordering shows up as a whole column moving.
+#[test]
+fn the_shard_hash_is_pinned() {
+    let cases: Vec<(DynValue, u64)> = vec![
+        (DynValue::None, 14374147212387527897),
+        (DynValue::Bool(true), 10971357638593500668),
+        (DynValue::I64(1), 18110323628208699528),
+        (
+            DynValue::F64(dbsp::algebra::F64::new(0.0)),
+            12217256802940554018,
+        ),
+        (DynValue::str("a"), 13175042669753105890),
+        (
+            DynValue::record([DynValue::I64(1), DynValue::None]),
+            322651925485280935,
+        ),
+        (json_value(serde_json::json!({"a": 1})), 9149952449185460157),
+        (
+            DynValue::Array(vec![DynValue::I64(1)]),
+            17433800960406894783,
+        ),
+        (
+            DynValue::Dict(
+                [(DynValue::str("a"), DynValue::I64(1))]
+                    .into_iter()
+                    .collect(),
+            ),
+            10267951854747464872,
+        ),
+        (
+            DynValue::Date(feldera_sqllib::make_date___(2024, 1, 15).expect("a valid date")),
+            15361640281678058060,
+        ),
+        (
+            grasp_dbsp_runner::value::parse_time("14:30:00").expect("a valid time"),
+            8576659017415314607,
+        ),
+        (
+            DynValue::Timestamp(feldera_sqllib::Timestamp::from_microseconds(1)),
+            16617346159300649605,
+        ),
+        (
+            DynValue::Interval(feldera_sqllib::ShortInterval::from_microseconds(1)),
+            8391286410845269142,
+        ),
+        (
+            DynValue::Bytes(feldera_sqllib::ByteArray::from_vec(vec![1, 2])),
+            3586656741048657233,
+        ),
+        (
+            DynValue::Dynamic(feldera_sqllib::FlatVariant::from(
+                feldera_sqllib::Variant::BigInt(1),
+            )),
+            16185041875707032582,
+        ),
+    ];
+    let got: Vec<u64> = cases.iter().map(|(v, _)| default_hash(v)).collect();
+    let want: Vec<u64> = cases.iter().map(|(_, w)| *w).collect();
+    assert_eq!(
+        got, want,
+        "the hash that places a key on a worker changed; every key moves, and \
+         every checkpoint written against the old one is unreadable"
+    );
 }
 
 /// The float trap named in invariant 2, pinned explicitly: `0.0 == -0.0` is
