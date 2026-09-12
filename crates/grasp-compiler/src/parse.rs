@@ -386,6 +386,7 @@ impl<'a> Parser<'a> {
                 span: start.to(close.span),
             };
             let body = self.rule_body(start, arrow)?;
+            check_input_rule(&head, &body)?;
             let span = start.to(body.last().map(|s| s.span()).unwrap_or(arrow));
             return Ok(Decl::Rule(Rule { head, body, span }));
         }
@@ -1902,6 +1903,44 @@ fn check_one_typespec_each(decls: &[Decl]) -> Result<(), Diagnostic> {
             ));
         }
     }
+    Ok(())
+}
+
+/// `semantics.md`, "External relations": "`input` must be the only body
+/// statement, every head column takes the shorthand form".
+///
+/// Both are shape, so both are refused here. The first because a statement
+/// beside `input` would be one the language has no meaning for — nothing
+/// filters or joins what arrives from outside; the second because `w: 1` in an
+/// input's head would be a constraint on rows the program does not produce,
+/// and silently ignoring it is worse than either meaning.
+fn check_input_rule(head: &Head, body: &[Stmt]) -> Result<(), Diagnostic> {
+    let Some(input) = body.iter().find(|s| matches!(s, Stmt::Input { .. })) else {
+        return Ok(());
+    };
+    if let Some(other) = body.iter().find(|s| !matches!(s, Stmt::Input { .. })) {
+        return Err(Diagnostic::error(
+            Pass::Parse,
+            other.span(),
+            "`input` must be the only body statement: an external relation is \
+             what arrives, and nothing in the rule can constrain it",
+        ));
+    }
+    for arg in &head.args {
+        let shorthand = matches!(&arg.value, Arg::Expr(Expr::Var { name, .. }) if *name == arg.column);
+        if !shorthand {
+            return Err(Diagnostic::error(
+                Pass::Parse,
+                arg.span,
+                format!(
+                    "every head column of an input rule takes the shorthand form: write \
+                     `{}:`, since the value comes from outside",
+                    arg.column
+                ),
+            ));
+        }
+    }
+    let _ = input;
     Ok(())
 }
 

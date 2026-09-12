@@ -145,7 +145,8 @@ struct Columns {
 struct Cx {
     specs: BTreeMap<String, (Vec<(String, Type)>, Span)>,
     /// Relations with an `r(cols:) <- input` rule, and where it is.
-    inputs: BTreeMap<String, Span>,
+    /// Each input relation: the rule's span, and the columns its head names.
+    inputs: BTreeMap<String, (Span, Vec<String>)>,
     facts: Vec<core::Fact>,
     /// Rules that are not `<- input`.
     rules: Vec<core::Rule>,
@@ -169,7 +170,8 @@ impl Cx {
                 core::Decl::Fact(f) => cx.facts.push(f),
                 core::Decl::Rule(r) => {
                     if r.body.iter().any(|s| matches!(s, core::Stmt::Input { .. })) {
-                        cx.inputs.insert(r.head.relation.clone(), r.span);
+                        let columns = r.head.args.iter().map(|(c, _)| c.clone()).collect();
+                        cx.inputs.insert(r.head.relation.clone(), (r.span, columns));
                     } else {
                         cx.rules.push(r);
                     }
@@ -1864,8 +1866,8 @@ impl Cx {
         let mut out = Vec::new();
 
         // Relation-level, once each.
-        for (name, span) in &self.inputs {
-            if let Some(d) = self.check_input(name, *span) {
+        for (name, (span, columns)) in &self.inputs {
+            if let Some(d) = self.check_input(name, *span, columns) {
                 out.push(d);
             }
         }
@@ -1934,7 +1936,7 @@ impl Cx {
     }
 
     /// `r(cols:) <- input`, and the two things that stops it being.
-    fn check_input(&self, relation: &str, span: Span) -> Option<Diagnostic> {
+    fn check_input(&self, relation: &str, span: Span, named: &[String]) -> Option<Diagnostic> {
         let columns = self.specs.get(relation).map(|(c, _)| c.len());
         match columns {
             None => {
@@ -1954,6 +1956,11 @@ impl Cx {
                 ));
             }
             _ => {}
+        }
+        // The head names every column of the spec, as any head must: an input
+        // that omitted one would have a column nothing ever fills.
+        if let Some(d) = self.check_head_columns(relation, named.iter(), span) {
+            return Some(d);
         }
         // "A relation is defined by the program or comes from outside, not
         //  both."

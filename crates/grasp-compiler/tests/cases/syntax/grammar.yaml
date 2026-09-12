@@ -188,6 +188,40 @@
     edge(src:, dst:) <- input
   expected_ok: true
 
+# `semantics.md`, "External relations": "`input` must be the only body
+# statement, every head column takes the shorthand form". Both are shape, and
+# both were once accepted silently — a filter beside `input` was dropped, and a
+# literal in the head was ignored — which is worse than either meaning.
+- name: input must be the only body statement
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src:, dst:) <-
+        input
+        src > 1
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "`input` must be the only body statement"
+      line: 4
+
+- name: an input's head columns take the shorthand form
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src:, dst: 1) <- input
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "every head column of an input rule takes the shorthand form"
+
+- name: an input's head column may not rename its variable
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src:, dst: d) <- input
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "every head column of an input rule takes the shorthand form"
+
 # type_assertion ::= variable "::" type
 - name: a type assertion in a body
   source: |

@@ -171,6 +171,17 @@
       pass: infer
       message: "nothing in the body binds it"
 
+# An input's head names every column of its spec, as any head must: a column it
+# omitted would be one nothing ever fills.
+- name: an input's head names every column of its spec
+  source: |
+    edge :: relation(src: i64, dst: i64)
+    edge(src:) <- input
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "this head is missing column `dst` of relation `edge`"
+
 # `semantics.md`: "A relation is defined by the program or comes from outside,
 # not both."
 - name: a relation may not have both facts and an input rule
