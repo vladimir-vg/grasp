@@ -840,3 +840,94 @@ fn optional_json_null_degrades_to_absence() {
         "and absence stays absence"
     );
 }
+
+/// One value of every variant, in declaration order.
+///
+/// Order matters here and nowhere else in this file: the index into this list
+/// is asserted to be the archived discriminant, so a sample in the wrong place
+/// is a failure rather than a curiosity.
+fn one_of_each() -> Vec<DynValue> {
+    vec![
+        DynValue::None,
+        DynValue::Bool(true),
+        DynValue::I64(1),
+        DynValue::F64(dbsp::algebra::F64::new(1.0)),
+        DynValue::str("s"),
+        DynValue::record([DynValue::I64(1)]),
+        DynValue::Json(Default::default()),
+        DynValue::Array(vec![DynValue::I64(1)]),
+        DynValue::Dict(Default::default()),
+        DynValue::Date(feldera_sqllib::make_date___(2024, 1, 15).expect("valid")),
+        grasp_dbsp::value::parse_time("14:30:00").expect("a valid time"),
+        DynValue::Timestamp(feldera_sqllib::Timestamp::from_microseconds(1)),
+        DynValue::Interval(feldera_sqllib::ShortInterval::from_microseconds(1)),
+        DynValue::Bytes(feldera_sqllib::ByteArray::new(&[1u8])),
+        DynValue::Dynamic(Default::default()),
+    ]
+}
+
+/// The name of a variant, by an exhaustive match.
+///
+/// This is the half of the format-digest mechanism that the *compiler* checks:
+/// adding a variant to `DynValue` without adding it to `VARIANTS` fails to
+/// build here, rather than failing an assertion somewhere later.
+fn variant_name(v: &DynValue) -> &'static str {
+    match v {
+        DynValue::None => "None",
+        DynValue::Bool(_) => "Bool",
+        DynValue::I64(_) => "I64",
+        DynValue::F64(_) => "F64",
+        DynValue::String(_) => "String",
+        DynValue::Record(_) => "Record",
+        DynValue::Json(_) => "Json",
+        DynValue::Array(_) => "Array",
+        DynValue::Dict(_) => "Dict",
+        DynValue::Date(_) => "Date",
+        DynValue::Time(_) => "Time",
+        DynValue::Timestamp(_) => "Timestamp",
+        DynValue::Interval(_) => "Interval",
+        DynValue::Bytes(_) => "Bytes",
+        DynValue::Dynamic(_) => "Dynamic",
+    }
+}
+
+#[test]
+fn every_variant_is_named_in_order() {
+    let samples = one_of_each();
+    assert_eq!(
+        samples.len(),
+        DynValue::VARIANTS.len(),
+        "a variant is missing from `one_of_each`"
+    );
+    for (i, v) in samples.iter().enumerate() {
+        assert_eq!(
+            variant_name(v),
+            DynValue::VARIANTS[i],
+            "`VARIANTS[{i}]` does not name the variant at that position"
+        );
+    }
+}
+
+/// The archived discriminant is the position in `VARIANTS`.
+///
+/// This is what makes the digest content-derived rather than a version number.
+/// `rkyv` gives the archived enum a `#[repr(u8)]` tag in declaration order, so
+/// the first byte of the archived value *is* the discriminant a checkpoint
+/// stores. Reordering two variants changes those bytes, this fails, `VARIANTS`
+/// has to be corrected to match — and correcting it changes
+/// `DynValue::format_digest`, so every checkpoint written under the old order
+/// is refused instead of being read as the wrong variant.
+#[test]
+fn the_archived_discriminant_is_the_position_in_variants() {
+    for (i, v) in one_of_each().iter().enumerate() {
+        let bytes = rkyv::to_bytes::<_, 4096>(v).expect("serialize");
+        let archived = unsafe { rkyv::archived_root::<DynValue>(&bytes) };
+        let tag = unsafe { *(archived as *const _ as *const u8) };
+        assert_eq!(
+            tag as usize,
+            i,
+            "`{}` archives as discriminant {tag}, but `VARIANTS` puts it at {i}",
+            DynValue::VARIANTS[i]
+        );
+    }
+}

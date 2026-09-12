@@ -225,6 +225,64 @@ impl SizeOf for DynValue {
 }
 
 impl DynValue {
+    /// Every variant's name, in declaration order.
+    ///
+    /// Declaration order *is* the archived discriminant, so this array is the
+    /// on-disk format of every value a checkpoint holds. It is written out by
+    /// hand because Rust has no reflection, and it is kept honest by two tests
+    /// in `tests/invariants.rs` rather than by care: one is an exhaustive
+    /// `match`, so a variant added without being listed here does not compile;
+    /// the other serialises a sample of each and requires the archived
+    /// discriminant to equal that name's index, so a *reordering* fails too.
+    ///
+    /// Together they mean [`DynValue::format_digest`] cannot silently go stale,
+    /// which is the whole point of deriving it from content rather than from a
+    /// version number someone has to remember to raise.
+    pub const VARIANTS: [&'static str; 15] = [
+        "None",
+        "Bool",
+        "I64",
+        "F64",
+        "String",
+        "Record",
+        "Json",
+        "Array",
+        "Dict",
+        "Date",
+        "Time",
+        "Timestamp",
+        "Interval",
+        "Bytes",
+        "Dynamic",
+    ];
+
+    /// A digest of the archived value format, for a checkpoint to record.
+    ///
+    /// A checkpoint outlives the process that wrote it, and `dbsp` stores keys
+    /// and values as raw rkyv with no record of what type they were: it
+    /// validates the bytes structurally (`rkyv::check_archived_root`) and its
+    /// layer files carry a format version of their own, but nothing says the
+    /// discriminant `3` meant `F64` when it was written. So a reordered enum
+    /// reads old data as a different variant, quietly.
+    ///
+    /// This is what a restore is matched against, so that the mismatch is a
+    /// sentence instead. Any change to [`DynValue::VARIANTS`] — a reordering, a
+    /// removal, an addition — changes it and invalidates every checkpoint
+    /// written before, which is blunt and is the correct direction to be blunt
+    /// in.
+    pub fn format_digest() -> u64 {
+        use std::hash::Hasher;
+        let mut h = xxhash_rust::xxh3::Xxh3Default::new();
+        for (i, name) in DynValue::VARIANTS.iter().enumerate() {
+            // The index is hashed as well as the name, so that swapping two
+            // names is a different digest rather than the same multiset.
+            h.write_u64(i as u64);
+            h.write(name.as_bytes());
+            h.write_u8(0xff);
+        }
+        h.finish()
+    }
+
     pub fn is_none(&self) -> bool {
         matches!(self, DynValue::None)
     }
