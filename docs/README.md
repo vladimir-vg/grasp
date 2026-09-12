@@ -1,13 +1,16 @@
 # Design documents
 
 This workspace holds two languages, one directory each. They are designed
-separately and meet at exactly one file.
+separately and meet at exactly one file. A third document,
+[`grasp-dbsp/serving.md`](grasp-dbsp/serving.md), specifies not a language but
+the server that runs one.
 
 ## [`grasp-dbsp/`](grasp-dbsp/) — the target language
 
 Declarative dataflow, executed incrementally as a DBSP circuit. Implemented by
 [`grasp-dbsp`](../crates/grasp-dbsp), which parses it and builds
-the circuit at startup with no code generation.
+the circuit at startup with no code generation, and served over HTTP by
+[`grasp-dbsp-server`](../crates/grasp-dbsp-server).
 
 - [`overview.md`](grasp-dbsp/overview.md) — goals, design principles, scope, future work, architecture
 - [`language.md`](grasp-dbsp/language.md) — the language as implemented: types, operators, expressions
@@ -40,7 +43,9 @@ hand. [`grasp-dbsp/overview.md`](grasp-dbsp/overview.md) records the principles
 that follow from this, and they are worth reading before emitting it.
 
 **A note on the name.** `grasp-dbsp` here always means the language specified in
-[`grasp-dbsp/`](grasp-dbsp/). There is also an unrelated Erlang project called
-grasp-dbsp, which is where the grammar was borrowed from; these documents always
-name it explicitly. See
+[`grasp-dbsp/`](grasp-dbsp/) — including where a crate shares the name, as
+`grasp-compiler` shares `grasp`: the crate implements the language, and which
+one is meant is never in doubt from the sentence it appears in. There is also an
+unrelated Erlang project called grasp-dbsp, which is where the grammar was
+borrowed from; these documents always name it explicitly. See
 [`grasp-dbsp/overview.md`](grasp-dbsp/overview.md#relationship-to-other-projects).

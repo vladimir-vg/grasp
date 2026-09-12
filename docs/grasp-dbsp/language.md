@@ -51,7 +51,8 @@ So an ascription is the answer wherever inference falls short, and inference is
 never made cleverer to avoid one.
 
 A program declares streams only. **It does not say which of them are observed** —
-the set of output nodes is supplied when the runner starts, by node name. See
+the set of output nodes is supplied by the host when it starts the circuit, by
+node name. See
 [`mapping.md`](mapping.md) for how outputs are exposed.
 
 ## Types
@@ -370,7 +371,8 @@ node, and diagnostics about it are labelled by operator and position —
 that each contain a row with weight 1 produce that row with weight 2. Follow them
 with `distinct` for set semantics.
 
-There is no `output` operator. Outputs are named when the runner starts.
+There is no `output` operator. Outputs are named by the host when it starts the
+circuit.
 
 ## Aggregators
 

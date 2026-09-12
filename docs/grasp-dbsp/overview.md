@@ -8,13 +8,15 @@ changes are emitted as they are produced.
 
 ## What it is
 
-- Executed by one Rust crate, `grasp-dbsp`, linking against `dbsp`;
+- Compiled and executed by one Rust crate, `grasp-dbsp`, linking against `dbsp`;
   `feldera-sqllib`, for the value types behind `json`, `dynamic`, `bytes` and
   the temporal family; and `feldera-macros`, for the `IsNone` derive `dbsp`'s
   `DBData` bound requires.
   It shares a workspace with `grasp-compiler`, which compiles
   [grasp](../grasp/overview.md) down to this language; the two meet at
-  [`language.md`](language.md) and nowhere else.
+  [`language.md`](language.md) and nowhere else. Running a program as a
+  *service* — over HTTP, with configuration, transactions and pause — is a
+  third crate, `grasp-dbsp-server`, specified in [`serving.md`](serving.md).
 - A **runtime interpreter**: the program is parsed at startup and the circuit
   is assembled at startup, through `dbsp`'s ordinary operator API instantiated
   at a single universal value type. There is **no code generation and no Rust
@@ -112,17 +114,20 @@ distinct Rust circuit type needing its own instantiation of the lowering, and
 one level covers the recursive queries this language is for.
 
 Outputs are **not** part of the source language. A program declares streams; the
-set of nodes to observe is supplied when the runner starts, so anything can
-become an output — by declared name, or by content id for a node that has none.
+set of nodes to observe is supplied when the host starts the circuit, so
+anything can become an output — by declared name, or by content id for a node
+that has none. Throughout these documents the **host** is whatever process
+builds a circuit and supplies what the language deliberately omits; the host
+this workspace ships is [`grasp-dbsp-server`](serving.md).
 
-Neither is the **worker count**: it is given to the runner, defaults to one, and
+Neither is the **worker count**: it is given by the host, defaults to one, and
 changes nothing about what a program computes. `dbsp` shards batches across
 workers by key hash, so it rests on the hashing invariants in
 [`mapping.md`](mapping.md) and on nothing in the lowering — every operator that
 needs its input placed shards it itself. What holds it up is `tests/workers.rs`,
 which runs a program at one worker and at three and requires the two to agree.
 
-Nor is **storage**, on the same terms. A runner can be given a directory and a
+Nor is **storage**, on the same terms. A host can be given a directory and a
 set of thresholds, and operator state larger than memory then lives in a file
 rather than in the heap — the batch types the lowering already builds are the
 ones that decide this per batch, so nothing about a program changes when it is
@@ -204,8 +209,9 @@ spill.
   does not have. Both are Feldera-native; neither is implemented.
 
 - **A richer builtin set** — a fuller arithmetic/string/temporal library.
-- **The CLI / HTTP surface** — the current `validate` / `run` / `serve`
-  commands are placeholders and subject to change.
+- **The HTTP surface** — `grasp-dbsp-server` implements a subset of Feldera's
+  pipeline API, and [`serving.md`](serving.md) says which. What is outside that
+  subset is refused in words rather than approximated.
 
 ## Relationship to other projects
 
@@ -238,7 +244,10 @@ spill.
 | `expr` | type-checked expressions and their tree-walking evaluator |
 | `json` | the Feldera JSON codec (`weighted`, `insert_delete`) |
 | `lower` | mapping the program onto `dbsp` operators; also circuit construction, input/output handles and transactions (`Runner`) |
-| `serve` / CLI | *not implemented* — the crate's `main.rs` is a placeholder. YAML fixtures are the surface for now |
+
+This crate is a library: it has no binary. Serving a program over HTTP, and
+the `validate` and `serve` commands, belong to `grasp-dbsp-server` — see
+[`serving.md`](serving.md).
 
 The layered mapping is: source text → AST → typed AST (`TypeDesc`) → `dbsp`
 circuit, with values flowing through a single runtime value type.
