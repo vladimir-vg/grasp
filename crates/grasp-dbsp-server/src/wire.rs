@@ -58,7 +58,13 @@ impl ApiError {
         match self {
             ApiError::UnknownName { what: "table", .. } => "UnknownInputTable",
             ApiError::UnknownName { what: "view", .. } => "UnknownOutputTable",
-            ApiError::UnknownName { .. } => "UnknownPipelineName",
+            ApiError::UnknownName {
+                what: "pipeline", ..
+            } => "UnknownPipelineName",
+            // Unreachable: `what` is one of the three above at every
+            // construction site. Spelled as a table rather than as a pipeline
+            // because a name that reached a handler at all was a relation's.
+            ApiError::UnknownName { .. } => "UnknownInputTable",
             ApiError::InvalidParam(_) => "InvalidParam",
             ApiError::ParseErrors { .. } => "ParseErrors",
             ApiError::Gone(_) => "Terminating",

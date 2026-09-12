@@ -161,6 +161,31 @@ async fn an_unknown_table_is_a_404_with_feldera_s_error_code() {
     assert_eq!(body["error_code"], "UnknownInputTable");
 }
 
+/// The output half of the same guarantee, and it is a separate test because the
+/// two codes came from different places and only one of them used to be
+/// reachable. An unknown *view* travelled as `Fault::NoSuchName` with no word
+/// for what kind of name it was, so it fell through to `UnknownPipelineName` —
+/// a client asking for a view it had misspelled was told the pipeline did not
+/// exist, and `UnknownOutputTable` was never emitted at all.
+#[actix_web::test]
+async fn an_unknown_view_is_a_404_about_the_view_and_not_about_the_pipeline() {
+    let (state, _t) = state(&[]);
+    let app = app!(state);
+
+    let req = test::TestRequest::post()
+        .uri("/egress/nonesuch?format=json")
+        .to_request();
+    let response = test::call_service(&app, req).await;
+    assert_eq!(response.status(), 404);
+    let body: J = test::read_body_json(response).await;
+    assert_eq!(body["error_code"], "UnknownOutputTable");
+    let message = body["message"].as_str().expect("a message");
+    assert!(
+        message.contains("view") && message.contains("nonesuch"),
+        "the message should name the view and call it one: {message}"
+    );
+}
+
 /// Feldera ingests the rows that parsed and reports the ones that did not, and
 /// this has to be matched rather than improved on: a client that retried the
 /// whole batch after a 400 would double-insert the good rows.

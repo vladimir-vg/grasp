@@ -85,8 +85,11 @@ pub type Rows = BTreeMap<(DynValue, Option<DynValue>), dbsp::ZWeight>;
 /// Why a command could not be carried out.
 #[derive(Debug)]
 pub enum Fault {
-    /// The table or view is not in this program.
-    NoSuchName(String),
+    /// The table or view is not in this program. `what` is the word for the
+    /// kind of name, and it decides which of Feldera's two "unknown relation"
+    /// error codes the client sees — so it travels with the fault rather than
+    /// being guessed at the point the fault becomes a response.
+    NoSuchName { what: &'static str, name: String },
     /// The circuit thread is gone: it panicked, or the server is stopping.
     /// Every handler turns this into 410, never into a bare "channel closed".
     Gone(String),
@@ -98,7 +101,9 @@ pub enum Fault {
 impl std::fmt::Display for Fault {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Fault::NoSuchName(n) => write!(f, "`{n}` is not a relation of this program"),
+            Fault::NoSuchName { what, name } => {
+                write!(f, "`{name}` is not a {what} of this program")
+            }
             Fault::Gone(m) => write!(f, "the circuit is no longer running: {m}"),
             Fault::Refused(m) => f.write_str(m),
         }
@@ -492,7 +497,10 @@ impl Circuit {
         for (row, weight) in rows {
             self.runner
                 .push(table, row, weight)
-                .map_err(|_| Fault::NoSuchName(table.to_string()))?;
+                .map_err(|_| Fault::NoSuchName {
+                    what: "table",
+                    name: table.to_string(),
+                })?;
         }
 
         self.pending += count;
@@ -533,7 +541,10 @@ impl Circuit {
             .shapes
             .get(view)
             .cloned()
-            .ok_or_else(|| Fault::NoSuchName(view.to_string()))?;
+            .ok_or_else(|| Fault::NoSuchName {
+                what: "view",
+                name: view.to_string(),
+            })?;
 
         let snapshot = if snapshot {
             match self.materialized.get(view) {

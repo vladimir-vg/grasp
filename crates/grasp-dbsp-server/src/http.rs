@@ -42,10 +42,7 @@ pub struct State {
 impl From<Fault> for ApiError {
     fn from(f: Fault) -> ApiError {
         match f {
-            Fault::NoSuchName(name) => ApiError::UnknownName {
-                what: "relation",
-                name,
-            },
+            Fault::NoSuchName { what, name } => ApiError::UnknownName { what, name },
             Fault::Gone(m) => ApiError::Gone(m),
             Fault::Refused(m) => ApiError::Refused(m),
         }

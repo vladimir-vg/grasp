@@ -286,7 +286,12 @@ fn an_unknown_relation_is_not_a_panic() {
         backpressure: false,
         reply,
     }) {
-        Err(Fault::NoSuchName(n)) => assert_eq!(n, "nonesuch"),
+        Err(Fault::NoSuchName { what, name }) => {
+            assert_eq!(name, "nonesuch");
+            // The kind travels with the fault: it is what decides between
+            // Feldera's two "unknown relation" codes at the HTTP boundary.
+            assert_eq!(what, "view");
+        }
         Err(other) => panic!("an unknown view gave {other:?}"),
         Ok(_) => panic!("an unknown view was subscribed to"),
     }
