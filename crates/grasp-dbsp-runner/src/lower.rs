@@ -552,6 +552,31 @@ impl Runner {
     }
 }
 
+/// A `Runner` may be built on one thread and used on another.
+///
+/// Nothing in this crate spawns a thread, so until now this was a property
+/// nobody needed and nobody stated. A server needs it and cannot work around
+/// it: [`Runner::step`] takes `&mut self`, so the circuit has to be *owned* by
+/// whichever thread drives it, and that thread is not the one that compiled the
+/// program and read the configuration.
+///
+/// It holds structurally — `DBSPHandle` is `Vec`s, `Arc`s and crossbeam
+/// channels, a `ZSetHandle`'s factory is `Send + Sync` by trait bound
+/// (`dbsp/src/dynamic/factory.rs:9`), and `Runtime::init_circuit` already
+/// requires the value it returns to be `Send`. But structural truth is the kind
+/// that changes under you when a field is added, and the failure it would cause
+/// is a compile error in a *different crate*. Asserting it here makes it a
+/// compile error in this one, next to the field that would break it.
+///
+/// This is a static assertion rather than a trait bound because there is
+/// nothing to bound: `Send` is already auto-derived, and what is wanted is for
+/// its loss to be loud. `tests/threads.rs` is the moving half — this line says
+/// the type may cross, that file says a circuit that crossed still computes.
+const _: () = {
+    const fn assert_send<T: Send>() {}
+    assert_send::<Runner>();
+};
+
 /// The operator arms shared by every circuit type.
 ///
 /// `dbsp` exposes its operators as inherent methods on concrete circuit types
