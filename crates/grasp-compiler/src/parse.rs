@@ -749,6 +749,16 @@ impl<'a> Parser<'a> {
                 self.expect(&Tok::LParen, "`(`")?;
                 let inner = self.ty_of(vars)?;
                 self.expect(&Tok::RParen, "`)`")?;
+                // "`optional` does not nest. Writing it is an error rather
+                // than a silent collapse, because it usually means a mistake
+                // about which layer was already optional." — types.md
+                if matches!(inner, Type::Optional(_)) {
+                    return Err(self.error(
+                        span,
+                        "`optional(optional(T))` is not a distinct type: there is one \
+                         absence, so `optional` does not nest; write `optional(T)`",
+                    ));
+                }
                 Ok(Type::Optional(Box::new(inner)))
             }
             "array" => {

@@ -11,6 +11,18 @@
         (string) -> i64
   expected_ok: true
 
+# `types.md`, "Type identity": "`optional` does not nest … Writing it is an
+# error rather than a silent collapse". The target refuses the same spelling,
+# so accepting it here would only move the rejection past emission.
+- name: optional does not nest
+  source: |
+    s :: relation(a: optional(optional(i64)))
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "`optional(optional(T))` is not a distinct type"
+      line: 1
+
 # "Subject positional, everything else keyword."
 - name: a keyword parameter
   source: |
