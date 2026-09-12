@@ -246,7 +246,7 @@ A spec never *overrides* what a rule infers — it constrains it. A rule produci
 `string` for a column declared `i64` is rejected, not coerced.
 
 > ``relation `r` column `c` is `i64` at line N and `string` at line M``
-> ``rule at line N gives `r.c` type `string`, but it is declared `i64` ``
+> ``this rule gives `r.c` type `string`, but it is declared `i64` ``
 
 A relation declared `<- input` must have at least one column. A relation with
 none is a proposition, and rows pushed into one could only be counted rather than
@@ -259,7 +259,7 @@ A rule head must name **every** column of a declared relation. Omitting one is
 an error rather than an implicit absence, because a column that is sometimes
 absent should say so in its type.
 
-> ``rule head is missing column `c` of relation `r` ``
+> ``this head is missing column `c` of relation `r` ``
 
 ## Phase 3: literals take their type from context
 
@@ -276,8 +276,8 @@ An integer literal is not an `i64` until something says so. `42` can be `i64` or
 An empty `[]` or `{}` is the same case one level up: a complete value with an
 open type, resolved by context or reported.
 
-> ``the literal at line N has no type here; nothing determines whether it is
-> `i64` or `f64` ``
+> ``this literal has no type here; nothing determines whether it is `i64` or
+> `f64` ``
 
 ## Phase 4: overloads and filters
 
@@ -285,13 +285,14 @@ open type, resolved by context or reported.
 builtin has a fixed set of signatures — see
 [`semantics.md`](semantics.md#the-standard-library) — and exactly one must match.
 
-> ``no version of `length` takes `i64` ``
+> ``no version of `string:length` takes `i64` ``
 
 **Runtime filters** are inserted where an assertion or a head column requires a
 type the value is not assignable to, but a check could settle it — the table in
 [`types.md`](types.md#runtime-filters). The filter becomes an ordinary body
-statement, placed where the variable is bound, and narrows the variable for
-everything after it.
+statement, placed where the variable is bound, and narrows the variable for the
+whole rule — a body is a set, so "after" is a position in the plan and not in
+the program.
 
 This is the one place the compiler adds a statement the program did not write.
 It is worth the exception: the alternative is rejecting `n :: string` on an
@@ -353,9 +354,16 @@ Every rejection this pass can produce, in the phase that produces it.
 | ``ordering is not defined on A, so `f` has no meaning over it`` | 1 |
 | ``relation `r` is not defined and has no typespec`` | 2 |
 | ``relation `r` column `c` is A at line N and B at line M`` | 2 |
-| ``rule at line N gives `r.c` type B, but it is declared A`` | 2 |
-| ``rule head is missing column `c` of relation `r` `` | 2 |
+| ``this rule gives `r.c` type B, but it is declared A`` | 2 |
+| ``this head is missing column `c` of relation `r` `` | 2 |
+| ``relation `r` has no column `c` `` | 2 |
+| ``relation `r` is an input and needs a `::` typespec`` | 2 |
+| ``relation `r` has no columns and cannot be an input`` | 2 |
+| ``relation `r` has both an input rule and facts`` | 2 |
+| ``relation `r` is both an input and derived by a rule`` | 2 |
 | ``relation `r` has no non-recursive rule and no typespec`` | 2 |
-| ``the literal at line N has no type here`` | 3 |
+| ``this literal has no type here`` | 3 |
+| ``cannot infer a type for `NONE` here`` | 3 |
+| ``this empty container has no element type here`` | 3 |
 | ``no version of `f` takes A`` | 4 |
 | ``this assertion would discard every row`` | 4 |

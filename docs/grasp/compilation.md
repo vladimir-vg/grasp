@@ -17,11 +17,14 @@ of them knows what the backend is.
 Two passes run first, and neither is described here.
 
 - **Desugaring** rewrites the surface forms that stand for others — `x:`, `.f`,
-  `++`, and the destructure patterns with their size checks — and
-  [resolves each call](syntax.md#resolving-a-call) to one variant of one
-  callable, which is what puts its arguments in order: below here a call is
-  positional. See [`semantics.md`](semantics.md#desugaring). Everything below
-  sees the smaller core.
+  `++` and `not` in an expression — and
+  [resolves each call](syntax.md#resolving-a-call) by its shape, which is what
+  puts its arguments in order: below here a call is positional. See
+  [`semantics.md`](semantics.md#desugaring). The destructure patterns are
+  **not** expanded here: their expansion needs types, so they survive into the
+  core, inference types them, and the join graph builder expands them into the
+  bindings and filters `semantics.md` lists. Everything below sees the smaller
+  core.
 - **Type inference** gives every variable and every relation column a type,
   performs the safety check, and settles the one thing desugaring could not —
   [which library function a subscript means](inference.md#a-subscripts-function-is-chosen-here),
@@ -436,10 +439,10 @@ different columns needs.
 
 ### What each body statement becomes
 
-Every form in a rule body becomes DAG nodes. Desugaring has already run, so the
-patterns arrive as the bindings and filters
-[`semantics.md`](semantics.md#desugaring) expands them into — the rows below are
-what those, and the forms that do not desugar, compile to.
+Every form in a rule body becomes DAG nodes. The destructure patterns are
+expanded here, after inference, into the bindings and filters
+[`semantics.md`](semantics.md#desugaring) lists — the rows below are what those,
+and the forms that do not desugar, compile to.
 
 | body statement | nodes |
 |---|---|
@@ -598,3 +601,15 @@ n6: map(→ [x, y])
 **Program level.** The two rules' outputs are merged and deduplicated, and the
 whole component becomes one fixpoint whose recursive member is `path`. What that
 looks like as grasp-dbsp is in [`mapping.md`](mapping.md#worked-example).
+
+## Diagnostics
+
+Every rejection the plan stage can produce. Both are stratification's, from
+[`semantics.md`](semantics.md#stratification); everything else this stage could
+refuse, inference has refused already.
+
+| rejection | when |
+|---|---|
+| ``aggregate over `r` is in the same recursive component as this rule`` | an aggregate reads a relation in its own component |
+| ``` `p` is defined by its own negation at line N — negation cannot cross a recursive cycle ``` | a rule for `p` negates `p` |
+| ``` `p` and `q` are mutually recursive, and `q` is negated at line N — negation cannot cross a recursive cycle ``` | a negative edge inside a component |

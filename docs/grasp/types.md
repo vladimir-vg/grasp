@@ -57,7 +57,7 @@ to say about one.
 
 That is the whole vocabulary, and it is exactly what
 [grasp-dbsp](../grasp-dbsp/language.md#value-types) can carry. The wider set the
-Erlang implementation offers — `dynamic`, the narrower integers, `f32`, string
+Erlang implementation offers — the narrower integers, `f32`, string
 encodings, general `enum` — is listed under
 [future work](overview.md#future-work), each blocked on a grasp-dbsp value type.
 **Arbitrary precision is not on that list**: neither an unbounded `integer` nor
@@ -169,12 +169,15 @@ there is one absence, so a doubly-optional type has no value the singly-optional
 one lacks. Writing it is an error rather than a silent collapse, because it
 usually means a mistake about which layer was already optional.
 
-**A dict key is a scalar.** `dict(K,V)` requires `K` to be `boolean`, `i64`,
-`f64` or `string`. This is a JSON constraint rather than a representational one:
-a dict is an object on the wire and an object's keys are strings, so a key type
-must have one string spelling its own type reads back. No composite type does.
+**A dict key is a scalar.** `dict(K,V)` requires `K` to be one of the nine
+[scalars](#value-types) — `boolean`, `i64`, `f64`, `string`, `bytes`, `date`,
+`time`, `timestamp` or `interval`. This is a JSON constraint rather than a
+representational one: a dict is an object on the wire and an object's keys are
+strings, so a key type must have one string spelling its own type reads back.
+No composite type does, and neither does a document or a dynamic.
 
-> ``a dict key must be `boolean`, `i64`, `f64` or `string`, found `record(...)` ``
+> ``` `record(...)` cannot be a dict key: a key is a scalar — `boolean`, `i64`,
+> `f64`, `string`, `bytes`, `date`, `time`, `timestamp` or `interval` ```
 
 A dict literal written with `:` — `{name: v}` — has a string key by
 construction, so it constrains `K` to `string`. Mixing that with a non-string
@@ -241,7 +244,7 @@ width subtyping. That is deliberate: a rule head must name every column of its
 relation, so a missing field is a mistake the checker can see rather than a
 value silently carrying less than it claimed.
 
-> ``record(a: i64) is not assignable to record(a: i64, b: string): missing field `b` ``
+> ``` `r` is `record(a: i64)` here, but column `c` of `q` is `record(a: i64, b: string)` ```
 
 ### `json`
 
@@ -420,10 +423,12 @@ asks whether a value is present — but not ordered.
 
 | rejection | when |
 |---|---|
-| ``X is not assignable to Y`` | the tables above have no rule |
-| ``missing field `f` `` | a record type lacks a field the target names |
-| ``a dict key must be a scalar`` | `dict(K,V)` with composite `K` |
-| ```optional` does not nest`` | `optional(optional(T))` written |
+| ``` `x` is `S` here, but column `c` of `r` is `T` ``` | the tables above have no rule for `S → T` |
+| ``` `s` has no field `f` ``` | a record type lacks a field the program reads |
+| ``` `s` has fields this pattern does not name; write `**` to allow them ``` | `record(a:) := s` over a wider record |
+| ``cannot be a dict key: a key is a scalar`` | `dict(K,V)` written with a `K` that is not one |
+| ``a dict key must be a scalar`` | a dict literal keyed by a composite value |
+| ``` `optional(optional(T))` is not a distinct type ``` | `optional(optional(T))` written |
 | ``ordering is not defined on X`` | `<` and friends on a composite, or `min`/`max` folding one |
 | ``X needs a numeric argument`` | `sum` or `avg` folding something that is not a number |
 | ``this assertion would discard every row`` | `v :: T` where no value of `S` can be a `T` |

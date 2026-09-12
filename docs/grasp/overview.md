@@ -72,13 +72,13 @@ premise, and several of the principles invert with it.
   declared.
 - Stratified negation (`not r(...)`) and stratified aggregation.
 - Rule bodies of positive atoms, negated atoms, `:=` matches, filter
-  expressions, and dict, record and unnest patterns. Array patterns are
-  [future work](#future-work).
+  expressions, and array, dict, record and unnest patterns.
 - Expressions: arithmetic, comparison, logic, concatenation, function calls,
   array and dict literals, field access and subscript.
 - The value types listed in [`types.md`](types.md) — `boolean`, `i64`,
-  `f64`, `string`, `optional(T)`, `record(...)`, `array(T)`, `dict(K,V)` and
-  `json` — and `relation(...)` over them.
+  `f64`, `string`, `bytes`, `date`, `time`, `timestamp`, `interval`,
+  `optional(T)`, `record(...)`, `array(T)`, `dict(K,V)`, `json` and `dynamic`
+  — and `relation(...)` over them.
 - External relations, declared `r(cols:) <- input`.
 - Running against a sequence of transactions: rows arrive weighted, a relation
   is the rows whose accumulated weight is positive, and what a transaction
@@ -205,10 +205,19 @@ design comes from. What is missing is missing on purpose.
 - **The rest of the standard library.** [`stdlib.grasp`](stdlib.grasp) declares
   the whole of it, and this compiler has some of it; calling one of the others is
   `not implemented: <name>`, so what is left is the test suite's burn-down rather
-  than an entry here. Most of the remainder waits on grasp-dbsp — `contains` and
-  a Python `slice` over arrays and strings, and the same two extended to strings
-  — and the namespaces for types that do not exist yet, temporal, bytes, bits,
-  cryptographic hashing, arrive with those types.
+  than an entry here. What waits on grasp-dbsp is the string half of the
+  library: the target has `contains` and a Python `slice` over arrays, and
+  grasp has both, but `string:slice`, `string:contains` and their neighbours
+  need the same over strings, which the target does not have yet. The `bits:`
+  and `crypto:` namespaces arrive with their types.
+
+- **Emitter fusion.** The emitter writes one operator per computation-DAG node
+  and nothing else: a `join` whose result is re-indexed for the next join is a
+  `join` and then a `map_index`, and a narrowing's last `map` is followed by
+  the head's own projection. Fusing the first into `join_index` (and a
+  `flat_map` into `flat_map_index`) and folding the second into the head's
+  `map` would shorten the emitted program without changing what it computes —
+  an emission choice, not a DAG node kind, and one nothing has needed yet.
 
 - **User-defined functions.** All callables are builtins. grasp-dbsp has
   `function` templates and `circuit` definitions that a frontend could use to

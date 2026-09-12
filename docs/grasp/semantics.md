@@ -238,8 +238,11 @@ an operation has none for the values it was given, the row is not derived, and
 nothing is reported: there is no error to raise, because a rule that holds for
 some rows and not others is what a rule is.
 
-Division is the only operation that currently has none — a zero divisor — so
-`q := a / b` derives rows for the divisors that are not zero and no others.
+Division is the only *operator* that has none — a zero divisor — so
+`q := a / b` derives rows for the divisors that are not zero and no others. The
+[standard library](#the-standard-library) has partial functions too — `dict:get`
+on a missing key, `array:at` past the end, `temporal:date` on text that is not a
+date — and each derives no row on the same terms.
 
 This is not a new mechanism. It is what a filter does, what
 [`v :: T`](types.md#runtime-filters) does when the value is not a `T`, and what

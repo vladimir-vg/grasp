@@ -48,7 +48,7 @@ programs that mean the same thing would emit different text.
 namespace-qualified relation name — `mine:edges` — and permits names grasp-dbsp
 reserves, like `map` or `join`; grasp-dbsp identifiers are
 `[A-Za-z_][A-Za-z0-9_]*` and its reserved words are its own. So the node name is
-derived from the relation name rather than always equal to it: `:` becomes `__`,
+derived from the relation name rather than always equal to it: `:` becomes `_`,
 a reserved word takes a suffix, and the result is made unique against every other
 node name the same way an intermediate is. Only the *node* name moves. The
 `input(...)` table string is quoted and stays the relation name exactly, which is
@@ -168,7 +168,8 @@ identically.
 ## Types
 
 Every grasp type in this cut maps to exactly one grasp-dbsp type, with the same
-name. That is not a coincidence — it is why the names were chosen.
+name save one: grasp writes `boolean` where the target writes `bool`. That is
+not a coincidence — it is why the names were chosen.
 
 | grasp | grasp-dbsp | note |
 |---|---|---|
@@ -256,7 +257,6 @@ rather than another call:
 | `bytes:length(b)` | `octet_length(b)` |
 | `bytes:to_string(b)` | `to_utf8(b)`, then the narrowing |
 | `temporal:interval(hours: 2)` | `make_interval((0 * 86400000000) + (2 * 3600000000) + …)` |
-| `temporal:days_between(a, b)` | `(epoch_days(a) - epoch_days(b))` |
 | `dict:has(d, key: k)` | `(get(d, k) != NONE)` |
 | `dict:values(d)` | `map_array(dict_entries(d), function((e) -> e.value))` |
 | `dict:without(d, keys: ks)` | `dict(filter_array(dict_entries(d), function((e) -> (not contains(ks, e.key)))))` |
@@ -308,11 +308,13 @@ Two shape rules govern the surrounding code:
 - **`antijoin` returns an indexed stream**, and takes no function, so a `map`
   follows it to project and flatten.
 
-**Fusing the index into the join.** A `join` whose result is immediately
-re-indexed for another join emits as one `join_index` rather than a `join`
-followed by a `map_index`. Same for `flat_map` into `flat_map_index`. This is an
-emission choice, not a DAG node kind — [`compilation.md`](compilation.md) keeps
-the DAG in terms of `join` and `map_index` alone.
+**No fusion.** A `join` whose result is re-indexed for another join emits as a
+`join` followed by a `map_index`, and a `flat_map` likewise: the emitter writes
+one operator per DAG node and nothing else, so what the DAG says is what the
+text says. Fusing those into `join_index` and `flat_map_index` is
+[future work](overview.md#future-work) — an emission choice, not a DAG node
+kind, since [`compilation.md`](compilation.md) keeps the DAG in terms of `join`
+and `map_index` alone.
 
 ## Dicts
 
@@ -325,7 +327,7 @@ promise is one mechanism rather than two.
 | `{k => v, …}` | `{k => v, …}` — identical |
 | `d[k]` and `arr[i]` | `get(x, k)`, then the narrowing that makes it definite |
 | `arr[1:5:2]` | `slice(arr, 1, 5, 2)`, and an omitted bound is `NONE` |
-| `keys(d)` | `keys(d)` → `array(K)` |
+| `dict:keys(d)` | `keys(d)` → `array(K)` |
 | `dict:length(d)` | `length(d)` |
 | `{a:} := d` destructure | `get(d, "a")` per key, guarded by `length(d) = N` |
 | `{a:, **e} := d` remainder | `dict(filter_array(dict_entries(d), function((e) -> e.key != "a")))` |
@@ -406,8 +408,10 @@ refuses an optional source and says so, and `if` widens its arms rather than
 narrowing them. The default `d` is unreachable: the filter has already dropped
 every row that could take it. It is written because grasp-dbsp's checker cannot
 see that, not because a value was chosen — so an emitter needs some definite
-value of every type, which is `0`, `0.0`, `""`, `false`, `cast([], array(T))`,
-`cast({}, dict(K,V))`, or a record built from those.
+value of every type. A definite column of that type already in the row serves
+where there is one; otherwise `0`, `0.0`, `""`, `false`, `cast([], array(T))`,
+`cast({}, dict(K,V))`, a temporal value built from `timestamp_from_micros(0)`,
+or a record built from those.
 
 **A narrowing that keeps its wrapper is two operators, and different in kind.**
 `optional(A) :: optional(B)` leaves an `optional(B)`, so there is nothing to
@@ -455,9 +459,6 @@ that the *division* has no answer. That proxy happens to be exact today, but it
 is a fact about grasp-dbsp's `/` that grasp's emitter would then depend on, and
 it does not generalise to the rest of the table — a `json :: T` has no divisor
 to test.
-
-When the narrowing is the last thing before the head, the third `map` folds into
-the head's projection, the same fusion the join and index calls get above.
 
 **A cross product is a join on the unit key.** When the optimizer has to combine
 two components that share no variable
