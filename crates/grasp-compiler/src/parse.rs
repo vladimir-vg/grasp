@@ -329,6 +329,21 @@ impl<'a> Parser<'a> {
                 Ok((name.clone(), span))
             }
             Some(Tok::Underscore) => Err(self.error(self.here(), WILDCARD_MISUSE)),
+            // A keyword is a word too, and a reader who wrote `input :: …`
+            // meant a name: say the word is taken rather than that a token was
+            // unexpected, as the other reserved words are reported.
+            Some(
+                Tok::Not | Tok::And | Tok::Or | Tok::Input | Tok::True | Tok::False | Tok::None,
+            ) => {
+                let t = self.peek().expect("kind() saw one");
+                Err(self.error(
+                    t.span,
+                    format!(
+                        "{} is a reserved word and cannot be {expected}",
+                        t.kind.describe()
+                    ),
+                ))
+            }
             _ => Err(self.unexpected(expected)),
         }
     }
@@ -904,6 +919,19 @@ impl<'a> Parser<'a> {
             let not_span = self.bump().span;
             let (name, name_span) = self.expect_ident("a relation name")?;
             self.check_relation_name(&name, name_span)?;
+            // "At body-statement level, `name(` always begins an atom", and
+            // `not` in front of one makes it a negated atom — so a filter
+            // cannot begin with `not` here. Say so, rather than "expected `(`".
+            if !self.at(&Tok::LParen) {
+                return Err(self.error(
+                    name_span,
+                    format!(
+                        "a body statement beginning with `not` is a negated atom, and \
+                         `{name}` is followed by no `(`; a filter beginning with `not` \
+                         is written `(not {name})` or `boolean:not({name})`"
+                    ),
+                ));
+            }
             let (args, close) = self.atom_args()?;
             return Ok(Stmt::Atom {
                 relation: name,

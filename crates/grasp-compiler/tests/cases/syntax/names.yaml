@@ -9,6 +9,17 @@
       pass: parse
       line: 1
 
+# A keyword the lexer turns into a token of its own is reported the way every
+# other reserved word is — as a word that is taken, not as an unexpected token.
+- name: a keyword that is a token is still reported as a reserved word
+  source: |
+    input :: relation(v: i64)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "`input` is a reserved word and cannot be a relation name"
+      line: 1
+
 - name: a keyword cannot name a column
   source: |
     r(input: 1)

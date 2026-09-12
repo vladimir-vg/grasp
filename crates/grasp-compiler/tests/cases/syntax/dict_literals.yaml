@@ -128,3 +128,34 @@
   expected_diagnostics:
     - severity: error
       pass: parse
+
+# `types.md`: "Mixing that with a non-string `=>` key in one literal is the
+# ordinary key-type conflict, and reported as one" — naming the two types and
+# pointing at the entry that disagrees, for keys and for values alike.
+- name: a colon key beside an integer key is a key-type conflict
+  source: |
+    s :: relation(x: i64)
+
+    r(v: d) <-
+        s(x: x)
+        d := {a: x, 1 => x}
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "this dict is keyed by `string`, but this key is `an integer literal`"
+      line: 5
+      column: 17
+
+- name: two values of different types is a value-type conflict
+  source: |
+    s :: relation(x: i64, t: string)
+
+    r(v: d) <-
+        s(x: x, t: t)
+        d := {a: x, b: t}
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "this dict holds `i64`, but this value is `string`"
+      line: 5
+      column: 20

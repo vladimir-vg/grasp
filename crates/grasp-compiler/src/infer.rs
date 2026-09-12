@@ -431,6 +431,11 @@ impl Cx {
             }
         }
         let mut filters: Vec<Assert> = Vec::new();
+        // Where each variable's first contribution was made, so a conflict can
+        // name both places: `inference.md` promises "used as A here and as B
+        // at line N", and "elsewhere" sends a reader hunting.
+        let spans: std::cell::RefCell<BTreeMap<String, Span>> =
+            std::cell::RefCell::new(BTreeMap::new());
 
         // One contribution, composed into `source` — and mirrored into `vars`
         // unless an assertion has already said what the variable is.
@@ -444,13 +449,17 @@ impl Cx {
                 Some(existing) => match compose(existing, &ty) {
                     Ok(t) => t,
                     Err(c) => {
+                        let first = spans.borrow().get(name).copied();
+                        let there = match first {
+                            Some(s) if s.line != span.line => format!("at line {}", s.line),
+                            _ => "elsewhere".to_string(),
+                        };
                         note(
                             Diagnostic::error(
                                 Pass::Infer,
                                 span,
                                 format!(
-                                    "variable `{name}` is used as `{}` here and as `{}` \
-                                     elsewhere",
+                                    "variable `{name}` is used as `{}` here and as `{}` {there}",
                                     c.right, c.left
                                 ),
                             ),
@@ -461,6 +470,7 @@ impl Cx {
                 },
                 None => ty,
             };
+            spans.borrow_mut().entry(name.to_string()).or_insert(span);
             source.insert(name.to_string(), merged.clone());
             vars.insert(
                 name.to_string(),
@@ -1261,13 +1271,29 @@ impl Cx {
                             k = a;
                             v = b;
                         }
-                        _ => {
+                        (Err(c), _) => {
                             return (
                                 Ty::Error,
                                 Some(Diagnostic::error(
                                     Pass::Infer,
-                                    *span,
-                                    "a dict has one key type and one value type",
+                                    key.span(),
+                                    format!(
+                                        "this dict is keyed by `{}`, but this key is `{}`",
+                                        c.left, c.right
+                                    ),
+                                )),
+                            );
+                        }
+                        (_, Err(c)) => {
+                            return (
+                                Ty::Error,
+                                Some(Diagnostic::error(
+                                    Pass::Infer,
+                                    value.span(),
+                                    format!(
+                                        "this dict holds `{}`, but this value is `{}`",
+                                        c.left, c.right
+                                    ),
                                 )),
                             );
                         }
@@ -1921,6 +1947,16 @@ impl Cx {
             return out;
         }
 
+        // Two definitions giving one column two types. `refine` records the
+        // conflict as `Ty::Error` and says nothing, because which two it was is
+        // only worth finding once — here, with both places to hand.
+        for d in self.check_column_conflicts() {
+            out.push(d);
+        }
+        if !out.is_empty() {
+            return out;
+        }
+
         // Per declaration, at most one.
         for fact in &self.facts {
             if let Some(d) = self.check_fact(fact) {
@@ -1930,6 +1966,63 @@ impl Cx {
         for rule in &self.rules {
             if let Some(d) = self.check_rule(rule) {
                 out.push(d);
+            }
+        }
+        out
+    }
+
+    /// `inference.md`, phase 2: "two incompatible types are an error naming
+    /// both rules" — ``relation `r` column `c` is `i64` at line N and `string`
+    /// at line M``.
+    ///
+    /// Only an undeclared relation can get here: a declared one is the answer,
+    /// and a rule disagreeing with it is reported against the spec instead.
+    fn check_column_conflicts(&self) -> Vec<Diagnostic> {
+        let mut out = Vec::new();
+        for (relation, columns) in &self.known {
+            if columns.declared {
+                continue;
+            }
+            for (column, ty) in &columns.cols {
+                if !matches!(ty, Ty::Error) {
+                    continue;
+                }
+                // Every definition's contribution to this column, with where
+                // it was written.
+                let mut given: Vec<(Span, Ty)> = Vec::new();
+                for fact in self.facts.iter().filter(|f| f.relation == *relation) {
+                    if let Some((_, e)) = fact.args.iter().find(|(c, _)| c == column) {
+                        given.push((e.span(), self.expr_ty(e, &BTreeMap::new()).0));
+                    }
+                }
+                for rule in self.rules.iter().filter(|r| r.head.relation == *relation) {
+                    if let Some((_, e)) = rule.head.args.iter().find(|(c, _)| c == column)
+                        && let Some(t) = self.type_rule(rule).head.get(column)
+                    {
+                        given.push((e.span(), t.clone()));
+                    }
+                }
+                let Some((first_span, first)) = given.first().cloned() else {
+                    continue;
+                };
+                let mut sofar = first.clone();
+                for (span, ty) in given.iter().skip(1) {
+                    match compose(&sofar, ty) {
+                        Ok(t) => sofar = t,
+                        Err(c) => {
+                            out.push(Diagnostic::error(
+                                Pass::Infer,
+                                *span,
+                                format!(
+                                    "relation `{relation}` column `{column}` is `{}` at line {} \
+                                     and `{}` at line {}",
+                                    c.left, first_span.line, c.right, span.line
+                                ),
+                            ));
+                            break;
+                        }
+                    }
+                }
             }
         }
         out

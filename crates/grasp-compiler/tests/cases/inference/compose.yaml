@@ -91,3 +91,45 @@
   expected_types:
     named:   {p: "record(age: i64, name: string)"}
     named:0: {r: "record(age: i64, name: string)"}
+
+# "two incompatible types are an error naming both rules" — and both lines,
+# since the second definition is the one a reader has to go and look at.
+- name: two rules giving one column two types name both lines
+  source: |
+    a :: relation(v: i64)
+    a(v:) <- input
+    b :: relation(v: string)
+    b(v:) <- input
+
+    q(v: x) <- a(v: x)
+    q(v: x) <- b(v: x)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "relation `q` column `v` is `i64` at line 6 and `string` at line 7"
+      line: 7
+
+# "A fact counts as a rule here", so it is one of the two named.
+- name: a fact and a rule giving one column two types
+  source: |
+    b :: relation(v: string)
+    b(v:) <- input
+
+    q(v: 1)
+    q(v: x) <- b(v: x)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "relation `q` column `v` is `an integer literal` at line 4 and `string` at line 5"
+
+# On one line there is no other line to name.
+- name: a conflict on one line says so
+  source: |
+    a :: relation(v: i64, w: string)
+    a(v:, w:) <- input
+
+    q(v: x) <- a(v: x, w: x)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "variable `x` is used as `string` here and as `i64` elsewhere"

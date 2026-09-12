@@ -164,7 +164,7 @@
   expected_diagnostics:
     - severity: error
       pass: infer
-      message: "used as `i64` here and as `string` elsewhere"
+      message: "used as `i64` here and as `string` at line 7"
 
 - name: the same conflict written the other way round
   source: |
@@ -179,4 +179,4 @@
   expected_diagnostics:
     - severity: error
       pass: infer
-      message: "used as `string` here and as `i64` elsewhere"
+      message: "used as `string` here and as `i64` at line 7"

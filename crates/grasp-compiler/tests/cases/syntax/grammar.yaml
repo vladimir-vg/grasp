@@ -361,3 +361,28 @@
     - severity: error
       pass: parse
       line: 1
+
+# "At body-statement level, `name(` always begins an atom", and `not` before
+# one makes it a negated atom — so a filter cannot begin with `not` at
+# statement level. The rejection says how to write the filter instead.
+- name: a body statement beginning with not is a negated atom
+  source: |
+    s :: relation(a: boolean)
+
+    q(a: a) <-
+        s(a: a)
+        not a
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "a body statement beginning with `not` is a negated atom, and `a` is followed by no `(`; a filter beginning with `not` is written `(not a)` or `boolean:not(a)`"
+      line: 5
+
+- name: a filter beginning with not is parenthesised
+  source: |
+    s :: relation(a: boolean)
+
+    q(a: a) <-
+        s(a: a)
+        (not a)
+  expected_ok: true
