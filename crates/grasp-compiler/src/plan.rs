@@ -1054,7 +1054,11 @@ fn plan_rule(
         place_ready(&mut avail, &deps, &spanning_deps, &mut placed, &mut trace);
     }
 
-    debug_assert!(
+    // A hard assertion rather than a `debug_assert!`: with the check compiled
+    // out, a release build once went on to emit a program that read a column
+    // nothing had bound — a wrong program reported as success, which is the
+    // one outcome a compiler must never produce.
+    assert!(
         placed.iter().all(|p| *p),
         "a body statement consumes a variable nothing binds, which `infer`'s \
          safety check rejects before here"

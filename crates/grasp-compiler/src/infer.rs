@@ -2287,8 +2287,42 @@ impl Cx {
                         }
                     }
                 }
+                // A positive atom binds the variables written bare in its
+                // arguments; an *expression* there constrains the column and
+                // reads its variables like a filter does.
+                core::Stmt::Atom {
+                    args,
+                    negated: false,
+                    ..
+                } => {
+                    for (_, arg) in args {
+                        if let core::Arg::Expr(e) = arg
+                            && !matches!(e, core::Expr::Var { .. })
+                            && let Some(d) = unbound(e, &bound, "an atom's argument")
+                        {
+                            return Some(d);
+                        }
+                    }
+                }
                 core::Stmt::Filter { expr, .. } => {
                     if let Some(d) = unbound(expr, &bound, "a filter") {
+                        return Some(d);
+                    }
+                }
+                // A match binds its left-hand side and reads its right: every
+                // variable the expression mentions — in a call's argument, a
+                // slice bound, an array literal, anywhere — must be bound by
+                // something else in the body. This was the hole a fuzzer found:
+                // an unbound name inside a call argument reached `plan`, which
+                // emitted a program reading a field that did not exist.
+                core::Stmt::Match { rhs, .. } => {
+                    let (expr, where_) = match rhs {
+                        core::Rhs::Expr(e) => (Some(e), "a match"),
+                        core::Rhs::Aggregate { arg, .. } => (arg.as_ref(), "an aggregate"),
+                    };
+                    if let Some(e) = expr
+                        && let Some(d) = unbound(e, &bound, where_)
+                    {
                         return Some(d);
                     }
                 }

@@ -32,3 +32,156 @@
     - severity: error
       pass: infer
       line: 5
+
+# Where an unbound variable can hide. A rule body is a set, so "used" has to mean
+# every position an expression can occupy — and one a walk did not reach once
+# let an unbound name through to `plan`, which emitted a program reading a
+# column nothing had bound. One case per position, each pinned to the safety
+# message rather than to whatever typing would have said about an unknown type.
+- name: an unbound variable in a slice bound
+  source: |
+    src :: relation(a: array(i64), lo: i64)
+
+    out(v: v) <-
+        src(a: a, lo: lo)
+        v := a[lo:hi]
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "variable `hi` appears in a match but nothing in the body binds it"
+      line: 5
+
+- name: an unbound variable in a call argument
+  source: |
+    src :: relation(i: i64)
+
+    out(v: d) <-
+        src(i: i)
+        d := integer:abs(j)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "variable `j` appears in a match but nothing in the body binds it"
+      line: 5
+
+- name: an unbound variable in an array literal
+  source: |
+    src :: relation(i: i64)
+
+    out(v: d) <-
+        src(i: i)
+        d := [i, j]
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "variable `j` appears in a match but nothing in the body binds it"
+
+- name: an unbound variable as a subscript key
+  source: |
+    src :: relation(a: array(i64))
+
+    out(v: v) <-
+        src(a: a)
+        v := a[i]
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "variable `i` appears in a match but nothing in the body binds it"
+
+- name: an unbound variable as a subscript subject
+  source: |
+    src :: relation(i: i64)
+
+    out(v: v) <-
+        src(i: i)
+        v := a[i]
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "variable `a` appears in a match but nothing in the body binds it"
+
+- name: an unbound variable under a field access
+  source: |
+    src :: relation(i: i64)
+
+    out(v: v) <-
+        src(i: i)
+        v := r.f
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "variable `r` appears in a match but nothing in the body binds it"
+
+- name: an unbound variable in a dict literal
+  source: |
+    src :: relation(i: i64)
+
+    out(v: d) <-
+        src(i: i)
+        d := {k => i}
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "variable `k` appears in a match but nothing in the body binds it"
+
+- name: an unbound variable in a record literal
+  source: |
+    src :: relation(i: i64)
+
+    out(v: d) <-
+        src(i: i)
+        d := record(a: i, b: j)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "variable `j` appears in a match but nothing in the body binds it"
+
+- name: an unbound variable in an aggregate's argument
+  source: |
+    src :: relation(i: i64)
+
+    out(v: d) <-
+        src(i: i)
+        d := sum<j>
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "variable `j` appears in an aggregate but nothing in the body binds it"
+
+- name: an unbound variable as an unnest's source
+  source: |
+    src :: relation(i: i64)
+
+    out(v: d) <-
+        src(i: i)
+        (d) := *xs
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "variable `xs` appears in a match but nothing in the body binds it"
+
+- name: an unbound variable as a destructure's source
+  source: |
+    src :: relation(i: i64)
+
+    out(v: d) <-
+        src(i: i)
+        [d] := xs
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "variable `xs` appears in a match but nothing in the body binds it"
+
+# An expression in an atom's argument constrains the column; it binds nothing,
+# so what it reads must be bound elsewhere.
+- name: an unbound variable in an atom's expression argument
+  source: |
+    src :: relation(i: i64)
+
+    out(v: k) <-
+        src(i: k)
+        src(i: j + 1)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "variable `j` appears in an atom's argument but nothing in the body binds it"
