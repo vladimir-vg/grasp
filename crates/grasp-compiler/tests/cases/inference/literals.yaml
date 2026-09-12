@@ -54,3 +54,42 @@
     answer(v: x) <- x := NONE
   expected_types:
     answer:0: {x: "optional(string)"}
+
+# `types.md`: "`NONE` has no type of its own; it takes `optional(T)` from
+# wherever it sits. With nothing to take one from it is an error, not a guess."
+- name: NONE with nothing to take a type from
+  source: |
+    s :: relation(v: i64)
+    q(v: v, w: NONE) <- s(v: v)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "cannot infer a type for `NONE` here"
+      line: 2
+
+# "A literal with nothing to take from is an error naming the variable, not a
+# silent default to `i64`."
+- name: a literal with nothing to take a type from
+  source: |
+    answer(v: n) <-
+        n := 6 * 7
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "this literal has no type here; nothing determines whether it is `i64` or `f64`"
+      line: 2
+
+# "An empty `[]` or `{}` is the same case one level up: a complete value with an
+# open type, resolved by context or reported."
+- name: an empty container with nothing to take a type from
+  source: |
+    s :: relation(v: i64)
+
+    q(d: d) <-
+        s(v: v)
+        d := []
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "this empty container has no element type here"
+      line: 5

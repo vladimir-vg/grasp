@@ -2132,12 +2132,13 @@ impl Cx {
         }
         for (column, expr) in &rule.head.args {
             let ty = typed.head.get(column).cloned().unwrap_or(Ty::Unknown);
-            if let Err(open) = settle(&ty) {
-                return open_diagnostic(open, expr.span());
-            }
-            // A spec is the answer; a rule that disagrees is the error.
+            // A spec is the answer; a rule that disagrees is the error — and
+            // it is asked first, so that `q(v: 1)` against a `string` column
+            // is told about the column rather than that `1` has no type: it
+            // has a context, and cannot inhabit it.
             if let Some(want) = self.column_ty(&rule.head.relation, column)
                 && self.specs.contains_key(&rule.head.relation)
+                && !matches!(ty, Ty::Unknown | Ty::Error)
                 && !assignable(&ty, want)
             {
                 return Some(Diagnostic::error(
@@ -2148,6 +2149,9 @@ impl Cx {
                         rule.head.relation
                     ),
                 ));
+            }
+            if let Err(open) = settle(&ty) {
+                return open_diagnostic(open, expr.span());
             }
         }
 

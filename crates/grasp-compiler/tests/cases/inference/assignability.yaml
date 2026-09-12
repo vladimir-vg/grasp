@@ -20,3 +20,35 @@
     - severity: error
       pass: infer
       message: "no version of"
+
+# "A spec never *overrides* what a rule infers — it constrains it. A rule
+# producing `string` for a column declared `i64` is rejected, not coerced." A
+# head that names a variable reports the variable; a head that computes reports
+# the rule.
+- name: a computed head argument against a declared column
+  source: |
+    a :: relation(v: i64)
+    a(v:) <- input
+    q :: relation(v: string)
+
+    q(v: v + 1) <- a(v: v)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "this rule gives `q.v` type `i64`, but it is declared `string`"
+      line: 5
+
+# A literal in a head has a context — the declared column — and simply cannot
+# inhabit it. That is what it is told, rather than that it has no type.
+- name: a literal head argument against a declared column
+  source: |
+    a :: relation(v: i64)
+    a(v:) <- input
+    q :: relation(v: string)
+
+    q(v: 1) <- a(v: v)
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "this rule gives `q.v` type `an integer literal`, but it is declared `string`"
+      line: 5

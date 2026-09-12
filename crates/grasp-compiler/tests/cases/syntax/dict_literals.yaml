@@ -159,3 +159,17 @@
       message: "this dict holds `i64`, but this value is `string`"
       line: 5
       column: 20
+
+# `types.md`: "A dict key is a scalar" — for a literal's computed key as much
+# as for a typespec's `K`.
+- name: a composite value cannot key a dict literal
+  source: |
+    s :: relation(v: i64)
+
+    q(d: d) <-
+        s(v: v)
+        d := {record(a: v) => v}
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "a dict key must be a scalar, but this one is `record(a: i64)`"

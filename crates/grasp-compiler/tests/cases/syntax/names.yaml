@@ -242,3 +242,26 @@
       pass: parse
       message: "duplicate field"
       line: 1
+
+# "The namespace `n:` is reserved for the language" — a held prefix holds
+# callables, so a relation may not be declared under one.
+- name: a relation cannot be declared under a held namespace
+  source: |
+    string:foo :: relation(v: i64)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "the namespace `string:` is reserved for the language"
+      line: 1
+
+# The wildcard's one home is an atom's argument; in a head it would be a column
+# with no value.
+- name: the wildcard cannot stand in a head
+  source: |
+    s :: relation(v: i64)
+    q(v: _) <- s(v: v)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "the wildcard `_` binds nothing and cannot be used here"
+      line: 2

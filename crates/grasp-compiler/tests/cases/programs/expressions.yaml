@@ -34,3 +34,17 @@
         pair(a: a, b: b)
         n := a / b + a % b
   expected_ok: true
+
+# `inference.md`: "`e` is not a record, so it has no field `f`".
+- name: a field read on a value that is not a record
+  source: |
+    s :: relation(j: i64)
+
+    q(v: v) <-
+        s(j: j)
+        v := j.a
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "`i64` is not a record, so it has no field `a`"
+      line: 5

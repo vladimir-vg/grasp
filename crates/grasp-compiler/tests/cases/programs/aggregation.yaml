@@ -564,3 +564,17 @@
     - severity: error
       pass: infer
       message: "bound by the body and again from an aggregate result"
+
+# "`count<>` takes no argument", and the other four take exactly one.
+- name: an aggregator other than count needs its argument
+  source: |
+    s :: relation(v: i64)
+
+    q(t: t) <-
+        s(v: v)
+        t := sum<>
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "`sum` needs an argument: the expression to fold"
+      line: 5
