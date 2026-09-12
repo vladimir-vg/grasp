@@ -88,6 +88,7 @@ version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a16bf2f19c2ad84842bdfe6f3665620e93197d5c607889bfa3aaac45e762fd1"
 dependencies = [
+ "actix-macros",
  "futures-core",
  "tokio",
 ]
@@ -1768,7 +1769,9 @@ dependencies = [
 name = "grasp-dbsp-server"
 version = "0.1.0"
 dependencies = [
+ "actix-rt",
  "actix-web",
+ "async-stream",
  "base64",
  "clap",
  "crossbeam-channel",

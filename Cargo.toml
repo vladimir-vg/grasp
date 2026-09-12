@@ -103,3 +103,9 @@ crossbeam-channel = "0.5.16"
 # `docs/grasp-dbsp/overview.md` has named as placeholders since the beginning.
 # Already in the lock file through `dbsp` and `feldera-types`.
 clap = { version = "4.6.6", features = ["derive"] }
+# The egress response body. `stream!` is the macro Feldera's own HTTP output
+# transport builds its chunked response with (`adapters/src/transport/http/
+# output.rs:238`), and the alternative — a hand-written `Stream` impl over the
+# same state machine — is strictly more code for the same behaviour. Already in
+# the lock file through `dbsp`.
+async-stream = "0.3.6"

@@ -10,4 +10,6 @@
 
 pub mod circuit;
 pub mod config;
+pub mod http;
 pub mod token;
+pub mod wire;

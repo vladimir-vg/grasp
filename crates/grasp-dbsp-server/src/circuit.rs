@@ -165,6 +165,41 @@ pub struct Shared {
     /// to. Read by every handler that finds its reply channel closed, so the
     /// answer is the cause rather than "the channel closed".
     pub fatal: std::sync::Mutex<Option<String>>,
+    /// What a completion token is resolved against.
+    ///
+    /// Here rather than on the circuit thread because `/completion_status`
+    /// must never queue behind a transaction: a long commit occupies the
+    /// thread, and a client polling to find out whether its rows have landed
+    /// is exactly the client that would be blocked. The critical sections are
+    /// a few map operations.
+    pub progress: std::sync::Mutex<Progress>,
+}
+
+/// How far ingestion has got, and what is still in flight.
+#[derive(Debug, Default)]
+pub struct Progress {
+    /// Rows accepted, ever. A completion token names one of these counts.
+    pub accepted: u64,
+    /// Everything at or below this is complete, as of `done_step`.
+    pub done_count: u64,
+    pub done_step: u64,
+    /// Accepted-count watermark to the transaction that will consume it. At
+    /// most one entry, since at most one transaction is in flight.
+    pub in_flight: BTreeMap<u64, u64>,
+}
+
+impl Progress {
+    /// The transaction a token's watermark is waiting for, if any.
+    ///
+    /// `None` means the token names rows this run never accepted — which, for
+    /// a token that decoded and carried the right incarnation, cannot happen.
+    fn step_for(&self, count: u64) -> Option<u64> {
+        if count <= self.done_count {
+            Some(self.done_step)
+        } else {
+            self.in_flight.range(count..).next().map(|(_, s)| *s)
+        }
+    }
 }
 
 impl Shared {
@@ -180,6 +215,7 @@ impl Shared {
             transaction_open: AtomicBool::new(false),
             committing: AtomicBool::new(false),
             fatal: std::sync::Mutex::new(None),
+            progress: std::sync::Mutex::new(Progress::default()),
         }
     }
 
@@ -202,6 +238,10 @@ pub struct Handle {
     /// thread — and so `/metadata` can list them.
     pub views: Vec<String>,
     pub tables: Vec<String>,
+    pub materialized: Vec<String>,
+    /// Every relation's shape, so a handler can decode a request body and
+    /// encode a response without the plan.
+    pub shapes: Arc<HashMap<String, BatchType>>,
 }
 
 impl Handle {
@@ -214,6 +254,24 @@ impl Handle {
         self.commands
             .send(command)
             .map_err(|_| Fault::Gone(self.shared.why_gone()))
+    }
+
+    /// Rows this pipeline has accepted, ever.
+    pub fn accepted_now(&self) -> u64 {
+        self.shared.progress.lock().map(|p| p.accepted).unwrap_or(0)
+    }
+
+    /// The transaction a completion token is waiting for.
+    ///
+    /// Reads `Shared` directly and never sends a command, so a client polling
+    /// a token is answered even while a long transaction has the circuit
+    /// thread to itself.
+    pub fn step_for(&self, count: u64) -> Option<u64> {
+        self.shared
+            .progress
+            .lock()
+            .ok()
+            .and_then(|p| p.step_for(count))
     }
 
     /// Sends a command and awaits its answer.
@@ -249,16 +307,6 @@ struct Circuit {
     shapes: HashMap<String, BatchType>,
     subscribers: HashMap<String, Vec<Subscriber>>,
     materialized: HashMap<String, Arc<Rows>>,
-    /// Rows accepted, ever. A completion token names one of these counts.
-    accepted: u64,
-    /// Accepted-count watermark to the transaction that will consume it. At
-    /// most one entry, since at most one transaction is in flight — but a map
-    /// because the shape generalises and a `while` over it reads better than
-    /// an `Option` dance.
-    in_flight: BTreeMap<u64, u64>,
-    /// Everything at or below this is complete, as of `done_step`.
-    done_count: u64,
-    done_step: u64,
     /// Rows pushed since the last transaction, which is what decides whether
     /// there is anything to step for.
     pending: u64,
@@ -285,6 +333,7 @@ pub fn start(
 
     let mut views: Vec<String> = shapes.keys().cloned().collect();
     views.sort();
+    let shapes_for_handle = Arc::new(shapes.clone());
 
     let circuit = Circuit {
         runner,
@@ -295,10 +344,6 @@ pub fn start(
             .map(|v| (v.clone(), Arc::new(Rows::new())))
             .collect(),
         shapes,
-        accepted: 0,
-        in_flight: BTreeMap::new(),
-        done_count: 0,
-        done_step: 0,
         pending: 0,
         next_transaction_id: 1,
     };
@@ -314,6 +359,8 @@ pub fn start(
             shared,
             views,
             tables,
+            materialized: materialized.to_vec(),
+            shapes: shapes_for_handle,
         },
         thread,
     )
@@ -448,7 +495,6 @@ impl Circuit {
                 .map_err(|_| Fault::NoSuchName(table.to_string()))?;
         }
 
-        self.accepted += count;
         self.pending += count;
         self.shared
             .buffered_input_records
@@ -461,8 +507,11 @@ impl Circuit {
         // stepper, so there is no race: whatever is pushed now is consumed by
         // the next transaction, whose number is one past the last completed.
         let step = self.shared.completed_steps.load(Ordering::Relaxed) + 1;
-        self.in_flight.insert(self.accepted, step);
-        Ok(self.accepted)
+        let mut progress = self.shared.progress.lock().expect("the progress lock");
+        progress.accepted += count;
+        let accepted = progress.accepted;
+        progress.in_flight.insert(accepted, step);
+        Ok(accepted)
     }
 
     /// Registers a subscriber, and takes its snapshot in the same turn.
@@ -614,15 +663,16 @@ impl Circuit {
             });
         }
 
-        // The watermarks, then the counter.
         let step = self.shared.completed_steps.load(Ordering::Relaxed) + 1;
-        while let Some((&count, &at)) = self.in_flight.iter().next() {
-            if at > step {
-                break;
+        if let Ok(mut progress) = self.shared.progress.lock() {
+            while let Some((&count, &at)) = progress.in_flight.iter().next() {
+                if at > step {
+                    break;
+                }
+                progress.done_count = count;
+                progress.done_step = at;
+                progress.in_flight.remove(&count);
             }
-            self.done_count = count;
-            self.done_step = at;
-            self.in_flight.remove(&count);
         }
         self.shared.completed_steps.store(step, Ordering::Relaxed);
     }

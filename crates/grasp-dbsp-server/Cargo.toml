@@ -24,6 +24,7 @@ actix-web = { workspace = true }
 tokio = { workspace = true }
 crossbeam-channel = { workspace = true }
 clap = { workspace = true }
+async-stream = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
@@ -32,6 +33,9 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# `actix_web::test::init_service`, which builds the application and calls it
+# without a socket.
+actix-rt = "2"
 libtest-mimic = { workspace = true }
 
 [[test]]
