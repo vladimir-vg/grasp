@@ -197,12 +197,18 @@ fn rows(v: DynValue) -> Vec<DynValue> {
 }
 
 /// A shape mismatch here means the type checker and the lowering disagree,
-/// which is a bug in one of them rather than a problem with the program.
+/// which is a bug in one of them rather than a problem with the program — and
+/// the message says so, since "every rejection says what to write instead"
+/// cannot be honoured for a fault the program did not cause.
 fn shape_error(node: &crate::typecheck::PlanNode, wanted: &str) -> Diagnostic {
     Diagnostic::error(
         Pass::Lower,
         node.span,
-        format!("`{}` needs {wanted} here, but is `{}`", node.name, node.ty),
+        format!(
+            "internal error: `{}` needs {wanted} here, but the checker gave it `{}`; \
+             this is a bug in the runner, not in the program",
+            node.name, node.ty
+        ),
     )
 }
 
@@ -666,11 +672,19 @@ macro_rules! operator_arms {
                             }
                         },
                         move |acc: FpAcc| match agg {
-                            Agg::Avg if acc.rows == 0 => DynValue::None,
+                            // An all-`NONE` group, which needs an optional
+                            // projection to arise; with a definite one the
+                            // fold returns no row for an empty group, so
+                            // `rows == 0` is not reached and nothing here ever
+                            // writes absence into a definite column.
+                            _ if acc.rows == 0 && may_be_none => DynValue::None,
+                            Agg::Avg if acc.rows == 0 => unreachable!(
+                                "a definite projection with no rows is an empty group, \
+                                 which the fold does not report"
+                            ),
                             Agg::Avg => {
                                 DynValue::F64(F64::new(acc.sum.into_inner() / acc.rows as f64))
                             }
-                            _ if acc.rows == 0 && may_be_none => DynValue::None,
                             _ => DynValue::F64(acc.sum),
                         },
                     )))
@@ -710,10 +724,17 @@ macro_rules! operator_arms {
                             // answer even when the group's weights cancel — so
                             // this never returns absence in a column typed `i64`.
                             //
-                            // Unconditional for `avg` all the same, since it is
-                            // also what keeps the division below total.
-                            Agg::Avg if acc.rows == 0 => DynValue::None,
-                            Agg::Sum if acc.rows == 0 && may_be_none => DynValue::None,
+                            // `avg` is gated the same way rather than returning
+                            // absence unconditionally: with a definite projection
+                            // `rows == 0` means `present == 0` too, and a zero
+                            // accumulator never reaches this function — so the
+                            // division below is total, and a column typed `i64`
+                            // is never given `NONE`.
+                            Agg::Sum | Agg::Avg if acc.rows == 0 && may_be_none => DynValue::None,
+                            Agg::Avg if acc.rows == 0 => unreachable!(
+                                "a definite projection with no rows is a zero accumulator, \
+                                 which `dbsp` does not post-process"
+                            ),
                             // Integer division, so the mean of `i64`s truncates
                             // toward zero. The division happens here rather than
                             // in the accumulator, which is what keeps the fold
@@ -844,10 +865,21 @@ macro_rules! operator_arms {
 /// a fixpoint inside one. The checker should have caught it, so this is a
 /// disagreement between the two rather than a problem with the program.
 fn unsupported(node: &crate::typecheck::PlanNode, op: &PlanOp) -> Diagnostic {
+    let what = match op {
+        PlanOp::Input { .. } => "an `input`",
+        PlanOp::Constant { .. } => "a `constant`",
+        PlanOp::Fixpoint { .. } => "a `fixpoint`",
+        _ => "this operator",
+    };
     Diagnostic::error(
         Pass::Lower,
         node.span,
-        format!("`{}` cannot be built here ({op:?})", node.name),
+        format!(
+            "internal error: `{}` is {what}, which cannot be built where it stands and \
+             which the checker should have refused; this is a bug in the runner, not \
+             in the program",
+            node.name
+        ),
     )
 }
 

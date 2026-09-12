@@ -256,6 +256,29 @@
     - out:
         - [1, 1, 2]
 
+# The same shape for `avg`, which once returned absence unconditionally at
+# `rows == 0`: with a definite projection the rows counter and the presence
+# counter cancel together, the accumulator is zero, and `dbsp` reports no
+# group at all — never `NONE` in a column typed `i64`.
+- name: avg over a definite projection retracts the group rather than reporting absence
+  source: |
+    a := input("a")
+    a :: zset(record(k: i64, v: i64))
+    idx := map_index(a, function((r) -> record(key: r.k, value: r)))
+    out := aggregate(idx, avg, function((r) -> r.v))
+
+  input:
+    - a:
+        - [1, {k: 1, v: 5}]
+    - a:
+        - [-1, {k: 1, v: 5}]
+
+  expected_exact_output:
+    - out:
+        - [1, 1, 5]
+    - out:
+        - [-1, 1, 5]
+
 # --- min and max over a projection that may be absent ------------------------
 #
 # `NONE` is `DynValue` variant 0, so it sorts before every value. dbsp's `Min`

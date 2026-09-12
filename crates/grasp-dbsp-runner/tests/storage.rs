@@ -361,3 +361,30 @@ kept := distinct(map(idx, function((k, v) -> v)))
          than they hold, so `dbsp` sees a relation that never grows"
     );
 }
+
+/// A storage configuration naming an initial checkpoint is refused, not
+/// half-honoured: this runner starts a circuit from nothing. Claimed by both
+/// `overview.md` and `mapping.md`, and until now pinned by neither.
+#[test]
+fn a_configuration_naming_a_checkpoint_is_refused() {
+    let _lock = ONE_AT_A_TIME.lock().expect("the storage lock");
+    let (_dir, config) = forced(0);
+    let config = config.with_init_checkpoint(Some(uuid::Uuid::nil()));
+    let plan = grasp_dbsp_runner::compile("t := input(\"t\")\nt :: zset(record(v: i64))\n")
+        .expect("compiles");
+    let err = Runner::build(
+        &plan,
+        &["t".to_string()],
+        RunnerConfig {
+            storage: Some(config),
+            ..RunnerConfig::default()
+        },
+    )
+    .err()
+    .expect("refused");
+    let text = grasp_dbsp_runner::diag::render(&err);
+    assert!(
+        text.contains("naming an initial checkpoint"),
+        "the refusal names the checkpoint: {text}"
+    );
+}

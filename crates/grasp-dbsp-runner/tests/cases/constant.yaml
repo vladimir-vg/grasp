@@ -264,3 +264,28 @@
     - severity: error
       pass: typecheck
       message: "inside a `fixpoint` body"
+
+# `language.md` once advised `map_index(constant([…]), f)` for an indexed
+# constant, eight hundred lines after saying `constant` does not nest. It does
+# not: an indexed constant is two declarations.
+- name: a constant cannot be nested under map_index either
+  source: |
+    idx := map_index(constant([record(v: 1)]), function((r) -> record(key: r.v, value: r)))
+
+  expected_diagnostics:
+    - severity: error
+      pass: typecheck
+      message: "`constant` cannot be nested"
+
+- name: an indexed constant is two declarations
+  source: |
+    c :: zset(record(v: i64))
+    c := constant([record(v: 1)])
+    idx := map_index(c, function((r) -> record(key: r.v, value: r)))
+
+  input:
+    - {}
+
+  expected_exact_output:
+    - idx:
+        - [1, 1, {v: 1}]

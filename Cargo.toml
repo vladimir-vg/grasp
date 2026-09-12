@@ -68,3 +68,7 @@ serde_yaml = "0.9.34"
 # which two live runners in one test would collide on. Already in the lock file
 # through `dbsp`, so this costs no new compilation.
 tempfile = "3"
+# Only to name a checkpoint in a test: `CircuitStorageConfig::init_checkpoint`
+# is an `Option<Uuid>`, and the runner refuses any configuration that sets it.
+# Already in the lock file through `dbsp`.
+uuid = "1"
