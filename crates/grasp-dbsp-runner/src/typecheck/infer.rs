@@ -882,6 +882,15 @@ fn conversion(from: &Ty, to: &TypeDesc, span: Span) -> TResult<Conv> {
 
     let source = from.non_null();
 
+    // Every value is a `dynamic`, and nothing comes out of one without being
+    // asked for — the shape a document already has, with the tag kept. First,
+    // so that a document is a value here like any other: the `json` branch
+    // below would otherwise ask whether JSON can hold a `dynamic`, which is the
+    // wrong question for the one type that holds everything.
+    if target == &TypeDesc::Dynamic && source != &TypeDesc::Dynamic {
+        return Ok(Conv::ToDynamic(std::sync::Arc::new(from.clone())));
+    }
+
     // A document is converted by what is *wanted*, not by what it happens to
     // hold, so these are two rows rather than a matrix. Extraction is always
     // fallible — a document need not have the shape asked of it — and building
@@ -907,11 +916,6 @@ fn conversion(from: &Ty, to: &TypeDesc, span: Span) -> TResult<Conv> {
             );
         }
         return Ok(Conv::FromJson(std::sync::Arc::new(target.clone())));
-    }
-    // Every value is a `dynamic`, and nothing comes out of one without being
-    // asked for — the shape a document already has, with the tag kept.
-    if target == &TypeDesc::Dynamic && source != &TypeDesc::Dynamic {
-        return Ok(Conv::ToDynamic(std::sync::Arc::new(from.clone())));
     }
     if source == &TypeDesc::Dynamic && target != &TypeDesc::Dynamic {
         if !optional_target {
@@ -1314,7 +1318,7 @@ fn infer_builtin(
             definite(&args[0], name, span)?;
             let d = args[0].settle().expect("definite() rejected the none case");
             let TypeDesc::Dict(kt, vt) = d.non_null() else {
-                return err(span, format!("`entries` needs a dict, found `{d}`"));
+                return err(span, format!("`dict_entries` needs a dict, found `{d}`"));
             };
             Ty::Known(TypeDesc::Array(Box::new(TypeDesc::record([
                 ("key".to_string(), (**kt).clone()),

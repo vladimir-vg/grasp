@@ -1070,8 +1070,9 @@ impl Parser {
                 self.expect(&Tok::RParen, "`)` closing dict")?;
                 if !key.is_dict_key() {
                     return self.err(format!(
-                        "`{key}` cannot be a dict key; a key must be `string`, `i64`, \
-                         `f64` or `bool`"
+                        "`{key}` cannot be a dict key; a key is a scalar with an object-key \
+                         spelling: `bool`, `i64`, `f64`, `string`, `bytes`, `date`, `time`, \
+                         `timestamp` or `interval`"
                     ));
                 }
                 Ok(TypeDesc::Dict(Box::new(key), Box::new(value)))

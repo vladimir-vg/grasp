@@ -949,7 +949,7 @@
 
   expected_diagnostics:
     - pass: typecheck
-      message: "`entries` needs a dict"
+      message: "`dict_entries` needs a dict"
 
 - name: the array form of dict needs key and value fields
   source: |
