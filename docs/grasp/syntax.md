@@ -174,15 +174,15 @@ a type.
 ### Expressions
 
 ```
-expr        ::= or_expr
+expr        ::= "not" postfix                   -- a unary application stands alone:
+              | "-" postfix                     --   it is a whole expression, or parenthesised
+              | or_expr
 or_expr     ::= and_expr ("or" and_expr)*
-and_expr    ::= not_expr ("and" not_expr)*
-not_expr    ::= "not" not_expr | comparison
+and_expr    ::= comparison ("and" comparison)*
 comparison  ::= cat_expr [cmp_op cat_expr]      -- non-associative
 cat_expr    ::= add_expr ("++" add_expr)*
 add_expr    ::= mul_expr (("+" | "-") mul_expr)*
-mul_expr    ::= unary (("*" | "/" | "%") unary)*
-unary       ::= "-" postfix | postfix
+mul_expr    ::= postfix (("*" | "/" | "%") postfix)*
 postfix     ::= primary ("." name | "[" subscript "]")*
 subscript   ::= expr                                -- a lookup
               | [expr] ":" [expr] [":" [expr]]      -- a slice
@@ -249,8 +249,11 @@ comparison    < boolean           x < 3 and y  →  (x < 3) and y
 `a ++ b + c` and `a + b and c` do not parse. Comparison does not chain: `a < b <
 c` is an error, not `(a < b) < c`.
 
-A unary operator adjacent to a binary one from another group is likewise an
-error: write `(not a) and b` and `(-a) * b`.
+A unary operator may not stand beside **any** binary operator, its own group
+included: `-a * b`, `-5 * 2`, `a < -b` and `not a and b` are all errors. A
+unary application is a whole expression or a parenthesised one, and nothing
+else — write `(-a) * b`, `(-5) * 2`, `a < (-b)` and `(not a) and b`. Numbers
+being unsigned tokens, `-5` is such an application too.
 
 This is deliberate and stricter than most languages. Precedence between
 unrelated operator families is a thing people remember wrong, so grasp declines
@@ -355,6 +358,12 @@ There is no statement that is a bare call, so nothing has to disambiguate.
 Inside an expression, `name(` is a call. An atom cannot appear there, so the two
 never compete.
 
+**`not` at body-statement level begins a negated atom**, for the same reason:
+`not enrolled(…)` is the one thing a statement starting with `not` can be. So a
+filter may not begin with `not` there — `not a` is reported as a negated atom
+missing its `(`, and the filter is written `(not a)` or `boolean:not(a)`. Inside
+an expression `not` is the operator.
+
 ### Typespecs
 
 A relation's is one line; a function's is a **block**, one variant per line,
@@ -372,14 +381,15 @@ shape a subset of them makes:
 
 ```grasp
 array:slice :: function
-    (array(T), start: i64 = NONE, stop: i64 = NONE, step: i64 = 1) -> array(T)
+    (array(T), start: optional(i64) = NONE, stop: optional(i64) = NONE, step: i64 = 1) -> array(T)
 ```
 
 Three optional keywords are the eight ways to call it, and the file says so once
 rather than listing them. A default is a **literal** — it is what a call means
 when it leaves the parameter out, and an expression there would be one the
-language has no place to evaluate — and only a *named* parameter may have one,
-since a positional parameter cannot be left out: the shape is its count.
+language has no place to evaluate — and a value the parameter can hold, so
+`= NONE` needs an `optional`. Only a *named* parameter may have one, since a
+positional parameter cannot be left out: the shape is its count.
 
 Written in bulk — one block per name, however many ways there are to call it —
 so that a function's typespec is in one place. **There is one typespec per
@@ -519,7 +529,8 @@ The AST is untyped: a `Field` still carries a name rather than an index, and a
 | rejection | when |
 |---|---|
 | `unexpected token` | the grammar above does not accept the input |
-| ``operators `X` and `Y` cannot be mixed without parentheses`` | two incomparable operator groups meet |
+| ``operators `X` and `Y` cannot be mixed without parentheses`` | two incomparable operator groups meet, or a unary operator stands beside a binary one |
+| ``a body statement beginning with `not` is a negated atom`` | a filter written `not a` at statement level; write `(not a)` |
 | `comparison cannot be chained` | `a < b < c` |
 | ``unknown escape `\X` `` | a backslash before anything but `"` `\` `n` `t` `r` |
 | ``duplicate column `c` `` | one atom or head names a column twice |

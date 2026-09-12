@@ -285,3 +285,93 @@
       pass: parse
       message: "comparison cannot be chained"
       line: 3
+
+# ---------------------------------------------------------------------------
+# A unary operator stands alone
+# ---------------------------------------------------------------------------
+#
+# "A unary operator may not stand beside any binary operator, its own group
+# included." A unary application is a whole expression or a parenthesised one,
+# and nothing else — so `-5 * 2` is an error, numbers being unsigned tokens.
+- name: unary minus beside multiplication
+  source: |
+    s :: relation(a: i64, b: i64)
+
+    r(v: n) <-
+        s(a: a, b: b)
+        n := -a * b
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "operators `-` and `*` cannot be mixed without parentheses"
+
+- name: a negative literal beside multiplication
+  source: |
+    s :: relation(a: i64)
+
+    r(v: n) <-
+        s(a: a)
+        n := -5 * 2
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "operators `-` and `*` cannot be mixed without parentheses"
+
+- name: unary minus beside addition, its own group
+  source: |
+    s :: relation(a: i64, b: i64)
+
+    r(v: n) <-
+        s(a: a, b: b)
+        n := -a + b
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "operators `-` and `+` cannot be mixed without parentheses"
+
+- name: unary minus beside a comparison
+  source: |
+    s :: relation(a: i64, b: i64)
+
+    r(v: a) <-
+        s(a: a, b: b)
+        a < -b
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "operators `-` and `<` cannot be mixed without parentheses"
+
+- name: not beside a comparison
+  source: |
+    s :: relation(a: boolean, b: boolean)
+
+    r(v: a) <-
+        s(a: a, b: b)
+        c := not a = b
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "operators `not` and `=` cannot be mixed without parentheses"
+
+- name: the parenthesised forms are all accepted
+  source: |
+    s :: relation(a: i64, b: i64, p: boolean, q: boolean)
+
+    r(v: n, w: m, x: k, y: c, z: d) <-
+        s(a: a, b: b, p: p, q: q)
+        n := (-a) * b
+        m := (-5) * b
+        k := (-a) + b
+        c := a < (-b)
+        d := (not p) and q
+  expected_ok: true
+
+- name: a unary application is a whole expression
+  source: |
+    s :: relation(a: i64, p: boolean)
+
+    r(v: n, w: c) <-
+        s(a: a, p: p)
+        n := -a
+        c := not p
+  expected_ok: true
