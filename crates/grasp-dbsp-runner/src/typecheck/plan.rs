@@ -216,4 +216,39 @@ impl Plan {
             })
             .collect()
     }
+
+    /// Every declared name that may be selected as an output, sorted.
+    ///
+    /// A server that exposes "every view this program has" needs the list. The
+    /// body is `by_name`'s keys and nothing else, which is worth a method
+    /// rather than a field access for one reason: **that it needs no filter is
+    /// a fact about the checker, not an obvious truth**, and this is where the
+    /// fact is pinned.
+    ///
+    /// The filter it looks like it needs is for `fixpoint`. A fixpoint instance
+    /// is not a stream but a group of them, and `Runner::build` refuses one
+    /// with "select one of its recursive nodes" — so if `fp` were a key here,
+    /// exposing every key would offer a name that cannot build. It is not a
+    /// key: `Fixpoint` nodes are pushed without registering a name, and only
+    /// the members are registered, under the dotted `<instance>.<label>` that
+    /// `mapping.md` describes. For `fp := fixpoint(tc(…))` the keys are
+    /// `fp.path` and whatever else the body labelled, never `fp`.
+    /// `tests/plan.rs::a_fixpoint_instance_is_not_a_view` is what keeps that
+    /// true, and `::every_view_a_plan_offers_can_be_an_output` is what would
+    /// catch any other unbuildable key.
+    ///
+    /// Sorted so the order is the program's alphabet rather than a `HashMap`'s
+    /// iteration, which would make a server's view list — and the output
+    /// selection built from it — differ run to run. That is the determinism
+    /// obligation `Runner::build` carries, reaching one step further out.
+    ///
+    /// Nodes with no declared name are **not** here. They are addressable only
+    /// by content id (`typecheck::content_ids`), a deliberate asymmetry: a name
+    /// is something the program chose to expose, and an id is something a
+    /// caller had to go looking for.
+    pub fn views(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.by_name.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        names
+    }
 }

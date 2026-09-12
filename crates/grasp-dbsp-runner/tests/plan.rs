@@ -390,3 +390,89 @@ fn constants_are_identified_by_their_rows() {
         "the row values are identical; only the declared type tells them apart"
     );
 }
+
+const RECURSIVE: &str = "\
+edges := input(\"edges\")
+edges :: zset(record(src: i64, dst: i64))
+base  := map_index(edges, function((r) -> record(key: r.dst, value: record(src: r.src))))
+fwd   := map_index(edges, function((r) -> record(key: r.src, value: record(dst: r.dst))))
+
+circuit tc(base: b, fwd: f, path: p) {
+    step := join_index(p, f, function((k, a, e) -> record(key: e.dst, value: record(src: a.src))))
+    path := plus(b, step)
+}
+
+fp      := fixpoint(tc(base: base, fwd: fwd, path: empty()))
+closure := fp.path
+";
+
+/// `Plan::views` is the list a server exposes, so what it leaves out matters as
+/// much as what it has: every name it offers must actually build.
+#[test]
+fn every_view_a_plan_offers_can_be_an_output() {
+    for source in [NESTED, RECURSIVE] {
+        let plan = compile(source).expect("compiles");
+        let views: Vec<String> = plan.views().into_iter().map(str::to_string).collect();
+        assert!(!views.is_empty(), "a program with names offered none");
+
+        // All of them at once, which is what a server does at startup.
+        match Runner::build(&plan, &views, RunnerConfig::default()) {
+            Ok(runner) => runner.kill(),
+            Err(diags) => panic!("a name `views` offered was refused: {diags:?}"),
+        }
+    }
+}
+
+/// A `fixpoint` instance is the name that would break `views` if it were a key
+/// in `by_name`: it is not a stream, and `Runner::build` refuses it. It is not
+/// a key — the checker registers only the members, under `<instance>.<label>` —
+/// and this is what keeps that true, since `views` has no filter for it.
+#[test]
+fn a_fixpoint_instance_is_not_a_view() {
+    let plan = compile(RECURSIVE).expect("compiles");
+
+    assert!(
+        !plan.views().contains(&"fp"),
+        "the fixpoint instance `fp` was offered as a view, which `views` does \
+         not filter out — it relies on the checker never registering one"
+    );
+    // Both spellings of the stream taken out of it are, and both build: the
+    // dotted member path, and the name the program bound it to.
+    for name in ["fp.path", "closure"] {
+        assert!(
+            plan.views().contains(&name),
+            "`{name}` should be a view of a recursive program"
+        );
+    }
+
+    // The refusal it would have hit is reachable by content id, which is the
+    // only way to name a fixpoint node at all.
+    let ids = grasp_dbsp_runner::typecheck::content_ids(&plan);
+    let fixpoint = plan
+        .nodes
+        .iter()
+        .position(|n| matches!(n.op, PlanOp::Fixpoint { .. }))
+        .expect("a fixpoint node");
+    match Runner::build(
+        &plan,
+        std::slice::from_ref(&ids[fixpoint]),
+        RunnerConfig::default(),
+    ) {
+        Ok(_) => panic!("a fixpoint should not build as an output"),
+        Err(diags) => assert!(
+            diags.iter().any(|d| d.message.contains("not a stream")),
+            "unexpected: {diags:?}"
+        ),
+    }
+}
+
+/// Sorted, because a server's view list and the output selection built from it
+/// would otherwise differ run to run with `HashMap` iteration order.
+#[test]
+fn the_views_are_in_the_programs_alphabet() {
+    let plan = compile(RECURSIVE).expect("compiles");
+    let views = plan.views();
+    let mut sorted = views.clone();
+    sorted.sort_unstable();
+    assert_eq!(views, sorted, "`views` is not sorted");
+}
