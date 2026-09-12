@@ -1997,7 +1997,8 @@ fn check_input_rule(head: &Head, body: &[Stmt]) -> Result<(), Diagnostic> {
         ));
     }
     for arg in &head.args {
-        let shorthand = matches!(&arg.value, Arg::Expr(Expr::Var { name, .. }) if *name == arg.column);
+        let shorthand =
+            matches!(&arg.value, Arg::Expr(Expr::Var { name, .. }) if *name == arg.column);
         if !shorthand {
             return Err(Diagnostic::error(
                 Pass::Parse,

@@ -970,9 +970,7 @@ fn from_dynamic(fv: &FlatVariant, ty: &TypeDesc) -> Option<DynValue> {
         (Variant::Boolean(b), TypeDesc::Bool) => DynValue::Bool(*b),
         // Every integer width is one `i64`: a dynamic built from a document
         // carries whatever width the document's decoder chose.
-        (v, TypeDesc::I64) if json_i64(v).is_some() => {
-            DynValue::I64(json_i64(v).expect("checked"))
-        }
+        (v, TypeDesc::I64) if json_i64(v).is_some() => DynValue::I64(json_i64(v).expect("checked")),
         (Variant::Double(f), TypeDesc::F64) => DynValue::F64(*f),
         (Variant::Real(r), TypeDesc::F64) => DynValue::F64(Flt::new(r.into_inner() as f64)),
         (Variant::String(s), TypeDesc::String) => DynValue::String(s.str().to_string()),

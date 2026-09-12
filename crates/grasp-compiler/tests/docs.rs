@@ -260,7 +260,12 @@ fn every_link_in_the_documents_resolves() {
     let files = markdown_files();
     let texts: std::collections::BTreeMap<PathBuf, String> = files
         .iter()
-        .map(|p| (p.clone(), std::fs::read_to_string(p).expect("a markdown file")))
+        .map(|p| {
+            (
+                p.clone(),
+                std::fs::read_to_string(p).expect("a markdown file"),
+            )
+        })
         .collect();
     let mut broken = Vec::new();
     for (path, text) in &texts {
@@ -278,7 +283,10 @@ fn every_link_in_the_documents_resolves() {
                 path.parent().unwrap().join(file)
             };
             let Ok(resolved) = resolved.canonicalize() else {
-                broken.push(format!("{}:{line}: `{target}` names no file", path.display()));
+                broken.push(format!(
+                    "{}:{line}: `{target}` names no file",
+                    path.display()
+                ));
                 continue;
             };
             if let Some(anchor) = anchor
@@ -298,7 +306,12 @@ fn every_link_in_the_documents_resolves() {
             }
         }
     }
-    assert!(broken.is_empty(), "{} broken link(s):\n{}", broken.len(), broken.join("\n"));
+    assert!(
+        broken.is_empty(),
+        "{} broken link(s):\n{}",
+        broken.len(),
+        broken.join("\n")
+    );
 }
 
 #[test]
@@ -336,5 +349,10 @@ fn no_table_is_split_by_prose() {
             in_table = row;
         }
     }
-    assert!(broken.is_empty(), "{} broken table(s):\n{}", broken.len(), broken.join("\n"));
+    assert!(
+        broken.is_empty(),
+        "{} broken table(s):\n{}",
+        broken.len(),
+        broken.join("\n")
+    );
 }

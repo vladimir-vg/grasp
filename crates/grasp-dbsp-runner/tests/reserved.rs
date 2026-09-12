@@ -196,13 +196,12 @@ fn the_reserved_words_match_language_md() {
     let body = &body[body.find('\n').unwrap() + 1..];
     let paragraph = body.trim_start().split("\n\n").next().expect("a paragraph");
 
-    let listed: Vec<&str> = paragraph
-        .split('`')
-        .skip(1)
-        .step_by(2)
-        .collect();
+    let listed: Vec<&str> = paragraph.split('`').skip(1).step_by(2).collect();
     for name in &listed {
-        assert!(is_reserved(name), "`{name}` is listed as reserved in language.md but is not");
+        assert!(
+            is_reserved(name),
+            "`{name}` is listed as reserved in language.md but is not"
+        );
     }
     for name in TYPE_NAMES.iter().chain(KEYWORDS) {
         assert!(
@@ -211,7 +210,9 @@ fn the_reserved_words_match_language_md() {
         );
     }
     let count = |what: &str| -> usize {
-        let i = paragraph.find(what).unwrap_or_else(|| panic!("`{what}` in the paragraph"));
+        let i = paragraph
+            .find(what)
+            .unwrap_or_else(|| panic!("`{what}` in the paragraph"));
         let before = paragraph[..i].trim_end();
         before
             .rsplit(' ')
@@ -219,6 +220,14 @@ fn the_reserved_words_match_language_md() {
             .and_then(|n| n.parse().ok())
             .unwrap_or_else(|| panic!("a count before `{what}`"))
     };
-    assert_eq!(count(" operator names"), OPERATORS.len(), "operator count in language.md");
-    assert_eq!(count(" aggregator names"), AGGREGATORS.len(), "aggregator count in language.md");
+    assert_eq!(
+        count(" operator names"),
+        OPERATORS.len(),
+        "operator count in language.md"
+    );
+    assert_eq!(
+        count(" aggregator names"),
+        AGGREGATORS.len(),
+        "aggregator count in language.md"
+    );
 }
