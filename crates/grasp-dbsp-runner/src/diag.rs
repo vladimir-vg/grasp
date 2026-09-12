@@ -71,12 +71,21 @@ impl fmt::Display for Severity {
     }
 }
 
-/// The compilation pass a diagnostic came from.
+/// The pass a diagnostic came from.
+///
+/// Three of these are compilation; `Config` is not, and is here anyway. A
+/// server reads a configuration file before it compiles anything, and the file
+/// a person is most likely to get wrong should not be the one whose errors look
+/// unlike the rest of the system's — so a bad key renders through
+/// [`render`] with a line and a column, beside the diagnostics a bad program
+/// produces. The alternative was a second error type with its own formatting,
+/// which is how two vocabularies for one thing start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Pass {
     Parse,
     Typecheck,
     Lower,
+    Config,
 }
 
 impl Pass {
@@ -85,6 +94,7 @@ impl Pass {
             Pass::Parse => "parse",
             Pass::Typecheck => "typecheck",
             Pass::Lower => "lower",
+            Pass::Config => "config",
         }
     }
 }

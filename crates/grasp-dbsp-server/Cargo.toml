@@ -1,0 +1,39 @@
+[package]
+name = "grasp-dbsp-server"
+version = "0.1.0"
+edition = "2024"
+
+# A binary and a library. The library exists so that tests can build the actix
+# application without binding a socket — `actix_web::test::init_service` takes
+# an `App`, and a test that needs a port is a test that can fail for reasons
+# that have nothing to do with the code.
+[lib]
+name = "grasp_dbsp_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "grasp-dbsp-server"
+path = "src/main.rs"
+
+# Every dependency is declared once in the workspace root, where the comments
+# explaining the awkward ones live.
+[dependencies]
+grasp-dbsp-runner = { path = "../grasp-dbsp-runner" }
+dbsp = { workspace = true }
+actix-web = { workspace = true }
+tokio = { workspace = true }
+crossbeam-channel = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+base64 = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+libtest-mimic = { workspace = true }
+
+[[test]]
+name = "config"
+harness = false

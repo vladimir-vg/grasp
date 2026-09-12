@@ -1,0 +1,72 @@
+# Files that are not configurations, and what they are told.
+
+- name: a misspelled key is not silently ignored
+  config: |
+    worker: 4
+  expected_diagnostics:
+    - "unknown field `worker`"
+
+- name: a Feldera connector section says why there is nothing to configure
+  config: |
+    inputs:
+      orders:
+        stream: orders
+  expected_diagnostics:
+    - "there is nothing for a connector configuration to configure"
+
+- name: fault tolerance names the checkpoint this runner does not take
+  config: |
+    fault_tolerance:
+      model: exactly_once
+  expected_diagnostics:
+    - "needs checkpoints"
+
+- name: a multihost layout is refused rather than ignored
+  config: |
+    hosts: 4
+  expected_diagnostics:
+    - "multi-host"
+
+- name: a clock setting says this language has none
+  config: |
+    clock_resolution_usecs: 1000000
+  expected_diagnostics:
+    - "has no clock"
+
+- name: every unsupported key is reported, not just the first
+  config: |
+    inputs: {}
+    outputs: {}
+  expected_diagnostics:
+    - "`inputs` configures Feldera connectors"
+    - "`outputs` configures Feldera connectors"
+
+- name: storage with nowhere to write is refused
+  config: |
+    storage:
+      min_storage_bytes: 0
+  expected_diagnostics:
+    - "this file has the first and not the second"
+
+- name: a directory nothing would be written to is refused
+  config: |
+    storage_config:
+      path: /tmp/grasp-dbsp-server-fixture-b
+  expected_diagnostics:
+    - "nothing would ever be written to it"
+
+- name: zero workers is refused rather than clamped
+  config: |
+    workers: 0
+  expected_diagnostics:
+    - "at least one worker thread"
+
+- name: a materialized view the program does not have names the ones it does
+  program: |
+    t := input("t")
+    t :: zset(record(v: i64))
+    out := distinct(t)
+  config: |
+    materialized: [revenue]
+  expected_diagnostics:
+    - "`materialized` names `revenue`, which is not a view of this program. Its views are: out, t."

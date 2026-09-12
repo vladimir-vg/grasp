@@ -1765,6 +1765,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "grasp-dbsp-server"
+version = "0.1.0"
+dependencies = [
+ "actix-web",
+ "base64",
+ "clap",
+ "crossbeam-channel",
+ "dbsp",
+ "grasp-dbsp-runner",
+ "libtest-mimic",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "h2"
 version = "0.3.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,40 @@
+# Files that are configurations, and what they mean.
+
+- name: an empty file is a single-worker pipeline in memory
+  config: "{}"
+  expected_name: grasp
+  expected_workers: 1
+  expected_storage: false
+
+- name: the defaults are ours and not Feldera's eight workers
+  config: |
+    name: shop
+  expected_name: shop
+  expected_workers: 1
+
+- name: a worker count is taken as written
+  config: |
+    workers: 3
+  expected_workers: 3
+
+- name: storage is where it lives and how it is used, together
+  config: |
+    storage_config:
+      path: /tmp/grasp-dbsp-server-fixture-a
+    storage:
+      min_storage_bytes: 0
+  expected_storage: true
+
+- name: a memory budget needs no storage to be set
+  config: |
+    max_rss_mb: 4096
+  expected_storage: false
+
+- name: a materialized view the program has
+  program: |
+    t := input("t")
+    t :: zset(record(v: i64))
+    out := distinct(t)
+  config: |
+    materialized: [out]
+  expected_workers: 1

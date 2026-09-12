@@ -72,3 +72,34 @@ tempfile = "3"
 # is an `Option<Uuid>`, and the runner refuses any configuration that sets it.
 # Already in the lock file through `dbsp`.
 uuid = "1"
+
+# --- The server ---------------------------------------------------------------
+# These belong to `grasp-dbsp-server` alone. They are declared here because
+# every dependency in this workspace is, and they are kept out of
+# `grasp-dbsp-runner` deliberately: `grasp-compiler` dev-depends on the runner,
+# and its own manifest argues that the dependency "must stay one … a normal
+# dependency would put `dbsp`, `rkyv` and `feldera-sqllib` into the graph of a
+# crate that only manipulates strings". An HTTP stack in the runner would land
+# in that same graph.
+
+# The HTTP surface. actix-web because this server is a drop-in for Feldera's,
+# and Feldera's is an actix application (`adapters/src/server.rs`) — so a
+# handler here can be read against the handler it copies. It is also already in
+# the lock file as a transitive dependency of `dbsp` (through `feldera-types`),
+# so the choice costs linking rather than compilation.
+actix-web = "4.15.0"
+# Only `sync` and `time`: a `oneshot` for a handler awaiting the circuit
+# thread's reply, an `mpsc` per egress connection, a `watch` for the run state a
+# paused ingress request waits on. The runtime itself comes from actix-rt.
+tokio = { version = "1.53.1", default-features = false, features = ["sync", "time"] }
+# The command channel *into* the circuit thread, which is a plain OS thread with
+# no runtime in scope and so cannot `await`. Sending on an unbounded crossbeam
+# channel never blocks, which is what makes it callable from an async handler;
+# `tokio::sync::mpsc` is the right type for the other direction and the wrong
+# one for this. Already in the lock file through `dbsp`, which uses it to talk
+# to its own workers.
+crossbeam-channel = "0.5.16"
+# The command-line surface: `validate` and `serve`, the two commands
+# `docs/grasp-dbsp/overview.md` has named as placeholders since the beginning.
+# Already in the lock file through `dbsp` and `feldera-types`.
+clap = { version = "4.6.6", features = ["derive"] }
