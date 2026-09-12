@@ -264,7 +264,7 @@ fn parse_error<T>(span: Span, message: impl Into<String>) -> PResult<T> {
 // ---------------------------------------------------------------------------
 
 /// Type constructors and namespaces.
-const TYPE_NAMES: &[&str] = &[
+pub const TYPE_NAMES: &[&str] = &[
     "bool",
     "i64",
     "f64",
@@ -288,7 +288,7 @@ const TYPE_NAMES: &[&str] = &[
 /// Literals and keywords. `if` is not here: it is a builtin, so it is reserved
 /// through `Builtin::ALL` like every other one, and the list below is assembled
 /// from the real names rather than duplicating them.
-const KEYWORDS: &[&str] = &[
+pub const KEYWORDS: &[&str] = &[
     "true",
     "false",
     "NONE",

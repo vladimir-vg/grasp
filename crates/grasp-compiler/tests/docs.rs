@@ -153,3 +153,188 @@ fn report(file: &str, why: &str, block: &str) -> String {
     };
     format!("{file}:\n{}\n{}", indent(why), indent(block))
 }
+
+// ---------------------------------------------------------------------------
+// The documents hold together as documents
+// ---------------------------------------------------------------------------
+//
+// Two checks over every `.md` in the workspace, not only `docs/grasp/`: a
+// link's target has to exist, and a table has to be one table. Both fail
+// silently in a rendered page — a dead anchor is a plain link, and prose
+// dropped into the middle of a table splits it into two — and the last such
+// break was found by a reader and fixed by hand.
+
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// Every markdown file in the workspace, skipping build output and the
+/// vendored checkout.
+fn markdown_files() -> Vec<PathBuf> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if path.is_dir() {
+                if !matches!(name.as_ref(), ".git" | "target" | "vendor") {
+                    walk(&path, out);
+                }
+            } else if name.ends_with(".md") {
+                out.push(path);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&workspace_root(), &mut out);
+    out.sort();
+    assert!(
+        out.len() >= 14,
+        "expected the design documents and READMEs, found {} markdown files",
+        out.len()
+    );
+    out
+}
+
+/// GitHub's anchor for a heading: lowercased, punctuation dropped, spaces to
+/// hyphens, and a numeric suffix for a repeated heading.
+fn anchors(text: &str) -> std::collections::BTreeSet<String> {
+    let mut seen: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut out = std::collections::BTreeSet::new();
+    let mut in_code = false;
+    for line in text.lines() {
+        if line.starts_with("```") {
+            in_code = !in_code;
+            continue;
+        }
+        if in_code {
+            continue;
+        }
+        let heading = line.trim_start_matches('#');
+        if heading.len() == line.len() || !heading.starts_with(' ') {
+            continue;
+        }
+        let mut slug = String::new();
+        for c in heading.trim().chars() {
+            match c {
+                c if c.is_alphanumeric() || c == '_' || c == '-' => slug.extend(c.to_lowercase()),
+                ' ' => slug.push('-'),
+                _ => {}
+            }
+        }
+        let n = seen.entry(slug.clone()).or_insert(0);
+        out.insert(if *n == 0 { slug } else { format!("{slug}-{n}") });
+        *n += 1;
+    }
+    out
+}
+
+/// The `(target)` of every `[text](target)` outside a code block, with its line.
+fn links(text: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let mut in_code = false;
+    for (i, line) in text.lines().enumerate() {
+        if line.starts_with("```") {
+            in_code = !in_code;
+            continue;
+        }
+        if in_code {
+            continue;
+        }
+        let mut rest = line;
+        while let Some(close) = rest.find("](") {
+            let after = &rest[close + 2..];
+            let Some(end) = after.find(')') else { break };
+            out.push((i + 1, after[..end].to_string()));
+            rest = &after[end + 1..];
+        }
+    }
+    out
+}
+
+#[test]
+fn every_link_in_the_documents_resolves() {
+    let files = markdown_files();
+    let texts: std::collections::BTreeMap<PathBuf, String> = files
+        .iter()
+        .map(|p| (p.clone(), std::fs::read_to_string(p).expect("a markdown file")))
+        .collect();
+    let mut broken = Vec::new();
+    for (path, text) in &texts {
+        for (line, target) in links(text) {
+            if target.starts_with("http://") || target.starts_with("https://") {
+                continue;
+            }
+            let (file, anchor) = match target.split_once('#') {
+                Some((f, a)) => (f, Some(a)),
+                None => (target.as_str(), None),
+            };
+            let resolved = if file.is_empty() {
+                path.clone()
+            } else {
+                path.parent().unwrap().join(file)
+            };
+            let Ok(resolved) = resolved.canonicalize() else {
+                broken.push(format!("{}:{line}: `{target}` names no file", path.display()));
+                continue;
+            };
+            if let Some(anchor) = anchor
+                && resolved.extension().is_some_and(|x| x == "md")
+            {
+                let doc = texts
+                    .get(&resolved)
+                    .cloned()
+                    .or_else(|| std::fs::read_to_string(&resolved).ok())
+                    .unwrap_or_default();
+                if !anchors(&doc).contains(anchor) {
+                    broken.push(format!(
+                        "{}:{line}: `{target}` names no section",
+                        path.display()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(broken.is_empty(), "{} broken link(s):\n{}", broken.len(), broken.join("\n"));
+}
+
+#[test]
+fn no_table_is_split_by_prose() {
+    let mut broken = Vec::new();
+    for path in markdown_files() {
+        let text = std::fs::read_to_string(&path).expect("a markdown file");
+        let lines: Vec<&str> = text.lines().collect();
+        let mut in_code = false;
+        let mut in_table = false;
+        for (i, line) in lines.iter().enumerate() {
+            if line.starts_with("```") {
+                in_code = !in_code;
+                in_table = false;
+                continue;
+            }
+            if in_code {
+                continue;
+            }
+            let row = line.starts_with('|');
+            if row && !in_table && i > 0 && !lines[i - 1].trim().is_empty() {
+                broken.push(format!(
+                    "{}:{}: a table begins without a blank line before it",
+                    path.display(),
+                    i + 1
+                ));
+            }
+            if in_table && !row && !line.trim().is_empty() {
+                broken.push(format!(
+                    "{}:{}: prose directly after a table row splits the table",
+                    path.display(),
+                    i + 1
+                ));
+            }
+            in_table = row;
+        }
+    }
+    assert!(broken.is_empty(), "{} broken table(s):\n{}", broken.len(), broken.join("\n"));
+}

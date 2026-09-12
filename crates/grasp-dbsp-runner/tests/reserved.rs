@@ -176,3 +176,49 @@ fn every_construct_appears_in_a_fixture() {
         missing.join(", ")
     );
 }
+
+/// `language.md`'s "Reserved words" paragraph, pinned to the code — the way the
+/// compiler's `tests/reserved.rs` pins `syntax.md`. It lists the type
+/// constructors and keywords by name and the operators, aggregators and
+/// builtins by count, so those are what is checked: every name it lists is
+/// reserved, every type name and keyword the code reserves is listed, and the
+/// counts are the real ones. Six reserved type names were once missing from
+/// the list, and nothing noticed.
+#[test]
+fn the_reserved_words_match_language_md() {
+    use grasp_dbsp_runner::lang::{KEYWORDS, TYPE_NAMES};
+    let text = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/grasp-dbsp/language.md"),
+    )
+    .expect("language.md");
+    let start = text.find("## Reserved words").expect("the section");
+    let body = &text[start..];
+    let body = &body[body.find('\n').unwrap() + 1..];
+    let paragraph = body.trim_start().split("\n\n").next().expect("a paragraph");
+
+    let listed: Vec<&str> = paragraph
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .collect();
+    for name in &listed {
+        assert!(is_reserved(name), "`{name}` is listed as reserved in language.md but is not");
+    }
+    for name in TYPE_NAMES.iter().chain(KEYWORDS) {
+        assert!(
+            listed.contains(name),
+            "`{name}` is reserved but language.md's list does not name it"
+        );
+    }
+    let count = |what: &str| -> usize {
+        let i = paragraph.find(what).unwrap_or_else(|| panic!("`{what}` in the paragraph"));
+        let before = paragraph[..i].trim_end();
+        before
+            .rsplit(' ')
+            .next()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("a count before `{what}`"))
+    };
+    assert_eq!(count(" operator names"), OPERATORS.len(), "operator count in language.md");
+    assert_eq!(count(" aggregator names"), AGGREGATORS.len(), "aggregator count in language.md");
+}

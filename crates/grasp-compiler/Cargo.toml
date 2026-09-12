@@ -18,6 +18,8 @@ edition = "2024"
 # graph of a crate that only manipulates strings.
 grasp-dbsp-runner = { path = "../grasp-dbsp-runner" }
 libtest-mimic = { workspace = true }
+# `tests/fuzz.rs` mutates the corpus and asserts the compiler never panics.
+proptest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
