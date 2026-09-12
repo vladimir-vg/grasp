@@ -8,8 +8,10 @@ changes are emitted as they are produced.
 
 ## What it is
 
-- Executed by one Rust crate, `grasp-dbsp-runner`, linking against `dbsp` and
-  `feldera-macros`, for the `IsNone` derive `dbsp`'s `DBData` bound requires.
+- Executed by one Rust crate, `grasp-dbsp-runner`, linking against `dbsp`;
+  `feldera-sqllib`, for the value types behind `json`, `dynamic`, `bytes` and
+  the temporal family; and `feldera-macros`, for the `IsNone` derive `dbsp`'s
+  `DBData` bound requires.
   It shares a workspace with `grasp-compiler`, which compiles
   [grasp](../grasp/overview.md) down to this language; the two meet at
   [`language.md`](language.md) and nowhere else.
@@ -68,7 +70,7 @@ implicit numeric promotion deleted, both to satisfy the third and fifth.
 - Content-addressed nodes: identical operator, inputs and parameters means one
   node, however many times it is written — and that same address is the node's
   `persistent_id` and the name it can be observed by.
-- The operator set listed there: inputs and constants; the mapping family (`map`, `filter`,
+- The operator set listed there: inputs, constants and `empty()`; the mapping family (`map`, `filter`,
   `flat_map`, `map_index`, `flat_map_index`); the join family (`join`,
   `join_index`, `antijoin`); `distinct`; `aggregate` over
   `min`/`max`/`sum`/`avg`/`count`; `weighted_count`; the algebraic operators

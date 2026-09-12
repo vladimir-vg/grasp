@@ -134,12 +134,18 @@ like every other value here, and a day is exactly 86400 seconds — which is wha
 lets an `interval` be one integer.
 
 Each travels as a **string**, in the one spelling its own parser reads back —
-`2024-01-15`, `14:30:00`, `2024-01-15 14:30:00`, with `.ffffff` where there is a
-fraction. That single round trip is what the JSON codec, a dict key and
-`cast(s, optional(date))` all use, so none of them can spell a value a different
-way from the others. All three are **microsecond precision**: `time` counts
-nanoseconds underneath, and a finer fraction is truncated where text enters
-rather than kept and then lost on the way out.
+`2024-01-15`, `14:30:00`, `2024-01-15 14:30:00`, with a fraction of up to six
+digits where there is one and none where there is not, trailing zeros trimmed:
+`14:30:00.5`, never `14:30:00.500000` or `14:30:00.000000`. That single round
+trip is what the JSON codec, a dict key and `cast(s, optional(date))` all use,
+so none of them can spell a value a different way from the others. All three
+are **microsecond precision**: `time` counts nanoseconds underneath, and a finer
+fraction is truncated where text enters rather than kept and then lost on the
+way out.
+
+Text enters through that spelling and no other. RFC 3339 — `2024-01-15T14:30:00Z`
+— is not read, there being no timezone to carry; and a bare date read as a
+timestamp is that day at midnight.
 
 **`interval` is a span of time, in microseconds.** One integer, because with no
 timezone a day is exactly 86400 seconds and every unit below a month converts
@@ -243,9 +249,11 @@ entries are **sorted by key and deduplicated**, so two dicts written with their
 entries in different orders are one value, one hash and one Z-set key — the same
 property `record` gets by sorting its fields and `json` gets from its encoding.
 
-**A dict key is a scalar** — `bool`, `i64`, `f64` or `string`. A dict is a JSON
-object on the wire and an object's keys are strings, so a key type has to have
-one string spelling that its own type reads back; no composite type does. It is
+**A dict key is a scalar** — `bool`, `i64`, `f64`, `string`, `bytes`, `date`,
+`time`, `timestamp` or `interval`. A dict is a JSON object on the wire and an
+object's keys are strings, so a key type has to have one string spelling that
+its own type reads back; no composite type does, and nor does a document or a
+dynamic. It is
 called `dict` rather than `map` because `map` is an operator, and one word
 should not be both.
 
@@ -308,6 +316,7 @@ where that mapping is maintained.
 | `integrate(s)` | `X → X` (running sum) |
 | `differentiate(s)` | `X → X` |
 | `delay(s)` | `X → X` |
+| `empty()` | → `X`, taken from where it stands — see [`empty()`](#empty) |
 
 Operator arity follows `dbsp`: `plus` and `minus` are binary, `sum` is n-ary.
 
@@ -431,6 +440,7 @@ expr       := literal
             | unop expr
             | expr binop expr
             | NAME "(" [expr ("," expr)*] ")"             # a builtin, or a named function
+            | "cast" "(" expr "," value_type ")"          # a conversion — the one type in expression position
             | "map_array" "(" expr "," anon_function ")"     # one element per element
             | "filter_array" "(" expr "," anon_function ")"  # the elements it keeps
 
@@ -810,8 +820,8 @@ fallible for the same reason: a dynamic holding a date is not holding a
 document. `bytes` reaches text through `to_utf8` and `from_utf8` rather than
 through `cast`, neither direction being a reinterpretation of the same value.
 
-A document also converts to a `record(…)` or an `array(T)`, and both are
-fallible. Those two rows are not a matrix: a document is converted by what is
+A document also converts to a `record(…)`, an `array(T)` or a `dict(K,V)`, and
+all three are fallible. Those two rows are not a matrix: a document is converted by what is
 *wanted* rather than by what it happens to hold, so every extraction is one rule
 and every construction is another.
 
@@ -824,7 +834,9 @@ propagation rule of its own — the written type says whether it is allowed
 through. `optional(T) → optional(U)` is allowed whenever `T → U` is, and maps
 absence to absence.
 
-Records and arrays have no conversions.
+Records, arrays and dicts convert to and from a document, and to nothing else.
+A `timestamp` converts to a `date` and to a `time` — the two halves of an
+instant, so both are total — and every temporal type converts to text.
 
 `cast` exists because there is no implicit conversion: without it there would be
 no path at all from `i64` to `f64`, and a query as ordinary as `a * 1.5` on an
@@ -1114,9 +1126,9 @@ holds `record(v: 2)`.
 same reason: nothing in the argument says what type the rows are, so the
 annotation is the only thing that can, and an annotation needs a name.
 
-- **`zset(T)` only.** For an indexed constant, write
-  `map_index(constant([…]), f)`. `T` need not be a `record`; only `input` is
-  restricted that way.
+- **`zset(T)` only.** For an indexed constant, bind the constant to a name and
+  index that — `c := constant([…])`, then `map_index(c, f)` — since it does not
+  nest. `T` need not be a `record`; only `input` is restricted that way.
 - **The typespec is checked, not used to drive inference**, so a bare numeric
   literal still settles to its own type: `constant([record(v: 1)])` is
   `zset(record(v: i64))`, and an `f64` column wants `1.0` or `cast(1, f64)`.
@@ -1153,8 +1165,9 @@ each thing.
 
 These may not name a node, a function or a parameter: the 21 operator names,
 the 5 aggregator names, the builtin names, the type constructors (`bool`,
-`i64`, `f64`, `string`, `json`, `optional`, `record`, `array`, `dict`, `sql`,
-`zset`, `indexed_zset`), `cast`, `map_array`, `filter_array`, and `true`,
+`i64`, `f64`, `string`, `bytes`, `date`, `time`, `timestamp`, `interval`,
+`json`, `dynamic`, `optional`, `record`, `array`, `dict`, `sql`, `zset`,
+`indexed_zset`), `cast`, `map_array`, `filter_array`, and `true`,
 `false`, `NONE`, `null`, `function`, `return`, `and`, `or`, `not`, `circuit`,
 `fixpoint`.
 

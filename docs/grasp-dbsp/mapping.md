@@ -127,10 +127,11 @@ order that `BTreeMap` itself uses. `sqllib::Variant` stores its `Map` the same
 way (`sqllib/src/map.rs:9`), behind an `Arc` it needs for sharing and this does
 not.
 
-**Keys are scalars** — `bool`, `i64`, `f64`, `string` — which is a JSON
-constraint rather than a representation one: `DynValue::Dict` can structurally
-hold any key, and the proptests exercise that, but a dict encodes as an object
-and an object's keys are strings. See [Input / output](#input--output).
+**Keys are scalars** — `bool`, `i64`, `f64`, `string`, `bytes` and the four
+temporal types — which is a JSON constraint rather than a representation one:
+`DynValue::Dict` can structurally hold any key, and the proptests exercise that,
+but a dict encodes as an object and an object's keys are strings. See
+[Input / output](#input--output).
 
 ### Records are positional
 
@@ -152,7 +153,8 @@ with the field names coming from the schema rather than the value.
 ### `TypeDesc`
 
 The schema, carried alongside the value: a tree mirroring the value grammar —
-`Bool | I64 | F64 | String | Optional(T) | Record(fields) | Array(T)` — and
+`Bool | I64 | F64 | String | Optional(T) | Record(fields) | Array(T) |
+Dict(K, V) | Json | Date | Time | Timestamp | Interval | Bytes | Dynamic` — and
 growing alongside `DynValue`. The type checker produces a
 `TypeDesc` for every node; the JSON codec uses it to know which `DynValue`
 variant is expected at each position. This is what makes I/O schema-driven
@@ -402,12 +404,6 @@ Each language operator lowers to one typed `dbsp` method.
 | `flat_map(s, f)` | `flat_map` | `f` returns an `array`, so fan-out follows the data |
 | `map_index(s, f)` | `map_index` | `f` returns `record(key:, value:)`, split by the lowering |
 | `flat_map_index(s, f)` | `flat_map_index` | as both of the above |
-
-Every method in the mapping family exists on an indexed stream too, taking the
-element as one `(&K, &V)` tuple — the shape `filter` already used. So each of
-those five arms matches on the operand's shape rather than requiring a flat one,
-and `map` on an indexed stream returns an `OrdZSet`: the only route out of an
-indexed shape that is not a join.
 | `join(l, r, f)` | `join` | `f` maps `(K,V₁,V₂)` to an output row |
 | `join_index(l, r, f)` | `join_index` | keeps the result indexed |
 | `antijoin(l, r)` | `antijoin` | |
@@ -421,6 +417,12 @@ indexed shape that is not a join.
 | `delay(s)` | `delay` | `z⁻¹` |
 | `empty()` | `add_source(Generator::new(HasZero::zero))` | a source yielding the zero batch every cycle |
 | `constant([…])` | `add_source(ConstantGenerator::new(batch)).differentiate()` | the rows in the first transaction, the zero batch after |
+
+Every method in the mapping family exists on an indexed stream too, taking the
+element as one `(&K, &V)` tuple — the shape `filter` already used. So each of
+those five arms matches on the operand's shape rather than requiring a flat one,
+and `map` on an indexed stream returns an `OrdZSet`: the only route out of an
+indexed shape that is not a join.
 
 These are the methods `dbsp` exposes under its default `backend-mode` feature,
 where they come from `dbsp/src/mono.rs`; with that feature off, the equivalent
@@ -498,8 +500,10 @@ does. **Floating-point `sum` and `avg` do not** — see below. Two consequences:
   - `sum` is optional exactly when its projection is. With a definite
     projection the weighted sum is the answer even for a group whose weights
     cancel, so it never returns absence in a column typed `i64`.
-  - `avg` is *always* optional, whatever the projection: a mean of no
-    contributing rows is undefined, and that can happen at any projection type.
+  - `avg` is optional exactly when its projection is, like `sum`. A group with
+    a definite projection always has a row to average: `rows == 0` there means
+    a zero accumulator, which `dbsp` never post-processes — so the division is
+    total and a column typed `i64` is never given `NONE`.
 
 **Non-linear**, via `aggregate(aggregator)`. `min`, `max`, and a
 floating-point `sum` or `avg` lower here. It replays the group rather than
@@ -709,9 +713,10 @@ property test excludes them for exactly this reason, with
 
 **Conventions Feldera fixes, which this codec follows.** A null may be written
 as JSON `null` *or by omitting the column entirely*; both decode to `NONE`.
-When the deferred types land they encode as: `DATE` `YYYY-MM-DD`, `TIME`
-`HH:MM:SS.fff`, `TIMESTAMP` `YYYY-MM-DD HH:MM:SS.fff` or RFC3339, `DECIMAL`
-preferably a **string** so precision survives, `VARIANT` any JSON value.
+The temporal types encode as [`language.md`](language.md#value-types) says —
+`YYYY-MM-DD`, `HH:MM:SS` and `YYYY-MM-DD HH:MM:SS`, with a microsecond fraction
+where there is one — and RFC 3339 is not read. Feldera's `DECIMAL` and `VARIANT`
+conventions apply to types this crate does not have.
 
 Two further Feldera formats are not implemented: `raw`, where a bare object
 means an insert, and the `update` operation for keyed partial updates, which
