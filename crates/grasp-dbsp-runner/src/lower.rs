@@ -661,7 +661,7 @@ macro_rules! operator_arms {
                         FpAcc::default(),
                         move |acc: &mut FpAcc, v: &DynValue, w: ZWeight| {
                             if let DynValue::F64(x) = eval(&proj, &[v]) {
-                                acc.sum = acc.sum + F64::new(x.into_inner() * w as f64);
+                                acc.sum += F64::new(x.into_inner() * w as f64);
                                 acc.rows += w;
                             }
                         },

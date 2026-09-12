@@ -26,10 +26,11 @@
 //! and the rest of that declaration types as [`Ty::Error`], which composes with
 //! everything and settles to nothing.
 //!
-//! Not implemented yet: the runtime filters of phase 4. `v :: T` reports
-//! unimplemented, because a filter is the one statement the compiler adds and
-//! *where* it goes is the optimizer's discipline — inserting it before `plan`
-//! exists would mean deciding that twice.
+//! The runtime filters of phase 4 are *decided* here and *placed* in `plan`:
+//! an assertion or a partial call that needs one becomes an [`Assert`], and a
+//! filter is the one statement the compiler adds, so where it goes is the
+//! optimizer's discipline rather than this pass's. The one narrowing nothing
+//! can yet write — under two wrappers — is reported as unimplemented.
 
 use crate::ast::{Aggregator, BinOp, Lit, Type, UnOp};
 use crate::core;

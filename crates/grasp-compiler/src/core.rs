@@ -15,10 +15,13 @@
 //!   be rejected loudly; `Field` would not. An invariant whose violation cannot
 //!   be observed is the one worth making unrepresentable.
 //! - `BinOp::Concat` and `UnOp::Not` — both become calls.
-//! - `Pattern::{Array, Dict, Record}` and `Rest` — the destructures expand into
-//!   a binding and the filters that make them exact, so [`Pattern`] here is
-//!   `Var` or `Unnest` and nothing else. The unnests stay: they are generative
-//!   rather than sugar, and become a `flat_map`.
+//! - `Pattern::{Array, Dict, Record}` and `Rest` are **not** expanded here,
+//!   though they are sugar: each becomes a binding and the filters that make
+//!   the pattern exact, and two of those need types — the narrowing after a
+//!   dict `get` has to name the value type, and a bound record remainder is a
+//!   literal over the fields left. So all five [`Pattern`] forms survive into
+//!   the core; `infer` types the destructures and `plan` expands them. The
+//!   unnests are generative rather than sugar, and become a `flat_map`.
 //!
 //! Callables are a [`Builtin`] rather than a `String`, so the three spellings
 //! desugaring writes — `record:get`, `dict:get`, `boolean:not` — are variants

@@ -17,7 +17,7 @@
 //! as [`core::Pattern::Dict`] and [`core::Pattern::Record`], are typed in
 //! `infer`, and are expanded in `plan` — the same route an unnest takes, for
 //! the same reason. What this pass does to them is put their fields in a
-//! canonical order and refuse the two that grasp-dbsp cannot express.
+//! canonical order, and nothing else: none of the three is refused here.
 
 use crate::ast;
 use crate::ast::Shape;

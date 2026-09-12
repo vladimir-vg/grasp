@@ -723,7 +723,7 @@ fn convert(conv: &Conv, v: DynValue) -> DynValue {
         (Conv::IntToFloat, I64(n)) => F64(Flt::new(n as f64)),
         (Conv::FloatToInt, F64(f)) => {
             let x = f.into_inner();
-            if x.is_finite() && x >= -TWO_63 && x < TWO_63 {
+            if x.is_finite() && (-TWO_63..TWO_63).contains(&x) {
                 I64(x as i64)
             } else {
                 None
