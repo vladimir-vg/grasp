@@ -320,6 +320,25 @@ pub struct Runner {
     dbsp: DBSPHandle,
     inputs: HashMap<String, ZSetHandle<DynValue>>,
     outputs: Vec<(String, Out)>,
+    transaction: Transaction,
+}
+
+/// Where a `Runner` is in `dbsp`'s transaction lifecycle.
+///
+/// `dbsp` draws the machine itself (`dbsp/src/circuit/dbsp_handle.rs:1673-1689`)
+/// and does **not** keep it: `start_transaction` twice, or
+/// `start_commit_transaction` with nothing open, broadcasts a command to every
+/// worker and lets the workers decide what that means. This crate's rule is
+/// that no reachable path produces an internal error, so the state is tracked
+/// here and misuse is a [`RunError`] before any command is sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Transaction {
+    /// No transaction is open. [`Runner::step`] is the only thing that runs.
+    Idle,
+    /// Open: inputs accumulate, and no output is visible until a commit.
+    Open,
+    /// Committing: the operators are draining, and `step` reports when done.
+    Committing,
 }
 
 impl Runner {
@@ -462,6 +481,7 @@ impl Runner {
             // operators that need placement re-shard anyway.
             inputs: inputs.into_iter().collect(),
             outputs: outs,
+            transaction: Transaction::Idle,
         })
     }
 
@@ -480,10 +500,124 @@ impl Runner {
     /// A transaction is the semantic unit: the logical clock advances between
     /// transactions, not within them.
     pub fn step(&mut self) -> Result<Vec<(String, Vec<Delta>)>, RunError> {
+        if self.transaction != Transaction::Idle {
+            return Err(RunError(
+                "a transaction is already open: `step` runs a whole transaction of its own, \
+                 so finish this one with `commit_transaction` first"
+                    .to_string(),
+            ));
+        }
         self.dbsp
             .transaction()
             .map_err(|e| RunError(format!("running a transaction: {e}")))?;
+        Ok(self.drain())
+    }
 
+    /// Opens a transaction that spans more than one call.
+    ///
+    /// [`Self::step`] is one whole transaction — start, run, commit — and is
+    /// what every fixture uses, because a transaction that begins and ends
+    /// inside one call is the semantic unit the language is written against.
+    /// This is the same unit taken apart, for the one caller that cannot use
+    /// the short form: a server, where the rows of a transaction arrive in
+    /// several requests and the client says when it is finished.
+    ///
+    /// While a transaction is open, [`Self::push`] keeps working and **no
+    /// output is visible**. That is `dbsp`'s guarantee rather than this
+    /// crate's: `DBSPHandle::step` returns `false` for the whole in-progress
+    /// phase (`dbsp/src/circuit/dbsp_handle.rs:1706-1711`), and the
+    /// accumulating sinks this module builds publish once per transaction
+    /// (`dbsp/src/operator/accumulator.rs:21-31`), so a half-finished
+    /// transaction has nothing to read rather than something partial.
+    pub fn begin_transaction(&mut self) -> Result<(), RunError> {
+        if self.transaction != Transaction::Idle {
+            return Err(RunError(
+                "a transaction is already open: transactions do not nest".to_string(),
+            ));
+        }
+        self.dbsp
+            .start_transaction()
+            .map_err(|e| RunError(format!("starting a transaction: {e}")))?;
+        self.transaction = Transaction::Open;
+        Ok(())
+    }
+
+    /// Lets an open transaction make progress without committing it.
+    ///
+    /// A long transaction is the case this exists for. Rows pushed into an open
+    /// transaction sit in an input mailbox that has no bound
+    /// (`dbsp/src/operator/dynamic/input.rs:719-724`), so a caller that
+    /// accumulates a great many rows before committing needs the circuit to
+    /// chew through them as they arrive — which is what a step in the
+    /// in-progress phase does, and why `dbsp` calls the accumulating sink "a
+    /// key part of efficient processing of long transactions"
+    /// (`dbsp/src/operator/accumulator.rs:26-30`). Without it the whole
+    /// transaction is held in memory and nothing can spill.
+    ///
+    /// Returns whether the transaction has finished committing, which is
+    /// always `false` before [`Self::commit_transaction`] has been asked for.
+    pub fn advance(&mut self) -> Result<bool, RunError> {
+        match self.transaction {
+            Transaction::Idle => Err(RunError(
+                "no transaction is open to advance: `begin_transaction` opens one".to_string(),
+            )),
+            _ => {
+                let done = self
+                    .dbsp
+                    .step()
+                    .map_err(|e| RunError(format!("advancing a transaction: {e}")))?;
+                if done {
+                    self.transaction = Transaction::Idle;
+                }
+                Ok(done)
+            }
+        }
+    }
+
+    /// Commits the open transaction and drains what it produced.
+    ///
+    /// The deltas are the ones the whole transaction produced, not the ones
+    /// since the last [`Self::advance`]: the sinks accumulate and publish once,
+    /// so committing a transaction that took a hundred steps gives what one
+    /// [`Self::step`] over the same rows would have given.
+    pub fn commit_transaction(&mut self) -> Result<Vec<(String, Vec<Delta>)>, RunError> {
+        match self.transaction {
+            Transaction::Idle => {
+                return Err(RunError(
+                    "no transaction is open to commit: `begin_transaction` opens one".to_string(),
+                ));
+            }
+            Transaction::Open => {
+                self.dbsp
+                    .start_commit_transaction()
+                    .map_err(|e| RunError(format!("committing a transaction: {e}")))?;
+                self.transaction = Transaction::Committing;
+            }
+            Transaction::Committing => {}
+        }
+
+        // `start_commit_transaction`'s own instruction: "The caller must invoke
+        // `step` repeatedly until the commit is complete"
+        // (`dbsp/src/circuit/dbsp_handle.rs:1745-1747`). A bound on the loop
+        // would be a guess about how long an operator takes to drain, and
+        // guessing wrong is a lost transaction rather than a slow one.
+        while !self.advance()? {}
+        Ok(self.drain())
+    }
+
+    /// Whether a transaction opened by [`Self::begin_transaction`] is still
+    /// open — including while it is committing.
+    pub fn in_transaction(&self) -> bool {
+        self.transaction != Transaction::Idle
+    }
+
+    /// Reads every selected output's deltas for the transaction that just ended.
+    ///
+    /// Called once per transaction, however many steps that took. Each handle
+    /// is read with `concat().consolidate()`, which merges the workers into one
+    /// key-ordered batch — the read-side merge that makes a transaction's
+    /// output whole whatever the placement.
+    fn drain(&self) -> Vec<(String, Vec<Delta>)> {
         let mut out = Vec::new();
         for (name, handle) in &self.outputs {
             let deltas = match handle {
@@ -510,7 +644,7 @@ impl Runner {
             };
             out.push((name.clone(), deltas));
         }
-        Ok(out)
+        out
     }
 
     /// Builds this plan's circuit a second time in every worker and requires
