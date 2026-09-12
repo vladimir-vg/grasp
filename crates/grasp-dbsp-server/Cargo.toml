@@ -18,7 +18,7 @@ path = "src/main.rs"
 # Every dependency is declared once in the workspace root, where the comments
 # explaining the awkward ones live.
 [dependencies]
-grasp-dbsp-runner = { path = "../grasp-dbsp-runner" }
+grasp-dbsp = { path = "../grasp-dbsp" }
 dbsp = { workspace = true }
 actix-web = { workspace = true }
 tokio = { workspace = true }

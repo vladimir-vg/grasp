@@ -28,9 +28,9 @@
 
 use dbsp::ZWeight;
 use dbsp::circuit::{CircuitStorageConfig, StorageCacheConfig, StorageConfig, StorageOptions};
-use grasp_dbsp_runner::json::decode_value;
-use grasp_dbsp_runner::lower::{Delta, Runner, RunnerConfig};
-use grasp_dbsp_runner::value::BatchType;
+use grasp_dbsp::json::decode_value;
+use grasp_dbsp::lower::{Delta, Runner, RunnerConfig};
+use grasp_dbsp::value::BatchType;
 use serde_json::{Value as J, json};
 use tempfile::TempDir;
 
@@ -90,8 +90,8 @@ fn run(
     epochs: &[Epoch],
     storage: Option<&CircuitStorageConfig>,
 ) -> Ran {
-    let plan = grasp_dbsp_runner::compile(source)
-        .unwrap_or_else(|d| panic!("compiles: {}", grasp_dbsp_runner::diag::render(&d)));
+    let plan = grasp_dbsp::compile(source)
+        .unwrap_or_else(|d| panic!("compiles: {}", grasp_dbsp::diag::render(&d)));
     let usage = storage.map(|s| s.backend.usage());
     let files_before = files_created();
     let mut runner = Runner::build(
@@ -102,7 +102,7 @@ fn run(
             ..RunnerConfig::default()
         },
     )
-    .unwrap_or_else(|d| panic!("builds: {}", grasp_dbsp_runner::diag::render(&d)));
+    .unwrap_or_else(|d| panic!("builds: {}", grasp_dbsp::diag::render(&d)));
 
     let mut produced = Vec::new();
     let mut peak = 0;
@@ -370,8 +370,8 @@ fn a_configuration_naming_a_checkpoint_is_refused() {
     let _lock = ONE_AT_A_TIME.lock().expect("the storage lock");
     let (_dir, config) = forced(0);
     let config = config.with_init_checkpoint(Some(uuid::Uuid::nil()));
-    let plan = grasp_dbsp_runner::compile("t := input(\"t\")\nt :: zset(record(v: i64))\n")
-        .expect("compiles");
+    let plan =
+        grasp_dbsp::compile("t := input(\"t\")\nt :: zset(record(v: i64))\n").expect("compiles");
     let err = Runner::build(
         &plan,
         &["t".to_string()],
@@ -382,7 +382,7 @@ fn a_configuration_naming_a_checkpoint_is_refused() {
     )
     .err()
     .expect("refused");
-    let text = grasp_dbsp_runner::diag::render(&err);
+    let text = grasp_dbsp::diag::render(&err);
     assert!(
         text.contains("naming an initial checkpoint"),
         "the refusal names the checkpoint: {text}"

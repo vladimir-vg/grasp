@@ -6,7 +6,7 @@
 //! lists are also in `src/parse.rs`, and two copies of a list drift. This reads
 //! the documents and compares.
 //!
-//! It is the same guarantee `grasp-dbsp-runner`'s `tests/reserved.rs` gives
+//! It is the same guarantee `grasp-dbsp`'s `tests/reserved.rs` gives
 //! `docs/grasp-dbsp/language.md`.
 
 use grasp_compiler::parse::{AGGREGATORS, DECL_KINDS, KEYWORDS, RESERVED_NAMESPACES, TYPE_NAMES};

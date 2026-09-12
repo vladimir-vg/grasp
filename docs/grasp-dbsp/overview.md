@@ -8,7 +8,7 @@ changes are emitted as they are produced.
 
 ## What it is
 
-- Executed by one Rust crate, `grasp-dbsp-runner`, linking against `dbsp`;
+- Executed by one Rust crate, `grasp-dbsp`, linking against `dbsp`;
   `feldera-sqllib`, for the value types behind `json`, `dynamic`, `bytes` and
   the temporal family; and `feldera-macros`, for the `IsNone` derive `dbsp`'s
   `DBData` bound requires.
@@ -217,17 +217,17 @@ spill.
   types, and semantics come from `dbsp`. Where the rest of these documents say
   grasp-dbsp unqualified, they mean the language specified here; the Erlang
   project is always named as such.
-- **dbsp** — the computational engine. `grasp-dbsp-runner` relies on `dbsp` for
+- **dbsp** — the computational engine. `grasp-dbsp` relies on `dbsp` for
   all execution and state management. The design documents describe only *how
   the language is mapped onto* `dbsp`.
 - **Feldera's SQL compiler** — solves the same lowering problem by generating
-  Rust. `grasp-dbsp-runner` does the same lowering at runtime instead, so the
+  Rust. `grasp-dbsp` does the same lowering at runtime instead, so the
   two agree on operator vocabulary and on the shape of aggregation, but share no
   code.
 
 ## Architecture
 
-`grasp-dbsp-runner` has these logical layers:
+`grasp-dbsp` has these logical layers:
 
 | module | responsibility |
 |---|---|

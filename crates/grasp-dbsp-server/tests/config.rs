@@ -8,7 +8,7 @@
 //! acceptances are the smaller half.
 //!
 //! **Fixtures rather than hand-written cases**, in the shape
-//! `grasp-dbsp-runner/tests/cases/` established, because the interesting axis
+//! `grasp-dbsp/tests/cases/` established, because the interesting axis
 //! is *many inputs, one assertion*: each case is a file and either the
 //! diagnostic it must produce or the settings it must become. A new rejected
 //! key is then a fixture, not a function.
@@ -94,7 +94,7 @@ fn run(case: Case) -> Result<(), String> {
     // checked. Its diagnostics join the file's.
     let parsed = match (parsed, &case.program) {
         (Ok(config), Some(source)) => {
-            let plan = grasp_dbsp_runner::compile(source)
+            let plan = grasp_dbsp::compile(source)
                 .map_err(|d| format!("the case's own program does not compile: {d:?}"))?;
             match config.check_against(&plan) {
                 Ok(()) => Ok(config),
@@ -131,12 +131,9 @@ fn run(case: Case) -> Result<(), String> {
             Ok(())
         }
         (Ok(_), Some(want)) => Err(format!("accepted, but should have said: {want:?}")),
-        (Err(diags), None) => Err(format!(
-            "rejected: {}",
-            grasp_dbsp_runner::diag::render(&diags)
-        )),
+        (Err(diags), None) => Err(format!("rejected: {}", grasp_dbsp::diag::render(&diags))),
         (Err(diags), Some(want)) => {
-            let rendered = grasp_dbsp_runner::diag::render(&diags);
+            let rendered = grasp_dbsp::diag::render(&diags);
             for substring in want {
                 if !rendered.contains(substring.as_str()) {
                     return Err(format!("wanted `{substring}` in:\n{rendered}"));

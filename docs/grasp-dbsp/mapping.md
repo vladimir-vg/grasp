@@ -452,7 +452,7 @@ Two operators that look like they belong in this table but do not:
   It is not needed. A left join is `join ∪ (antijoin × null)`, three operators
   that already exist, now that the mapping family accepts an indexed stream and
   `cast` can widen the matched side to `optional`. See
-  [`language.md`](language.md); `crates/grasp-dbsp-runner/tests/cases/joins.yaml`
+  [`language.md`](language.md); `crates/grasp-dbsp/tests/cases/joins.yaml`
   has it end to end, including the retraction when a missing match later
   arrives.
 
@@ -762,7 +762,7 @@ either way: `dbsp` aliases `FallbackWSet` as `OrdWSet`
 (`dbsp/src/trace/ord.rs:20-23`), and a `FallbackWSet` is an `enum { Vec, File }`
 that decides per batch. Setting storage changes which arm a batch is built in
 and nothing else — the same rows, the same order, the same answer, which is what
-[`tests/storage.rs`](../../crates/grasp-dbsp-runner/tests/storage.rs) exists to
+[`tests/storage.rs`](../../crates/grasp-dbsp/tests/storage.rs) exists to
 hold up.
 
 It is configured, not inferred: `RunnerConfig::storage` is `dbsp`'s own

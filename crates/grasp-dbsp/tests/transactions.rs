@@ -29,10 +29,10 @@
 //! sent. Those four calls are the last four tests.
 
 use dbsp::ZWeight;
-use grasp_dbsp_runner::json::decode_value;
-use grasp_dbsp_runner::lower::{Delta, Runner, RunnerConfig};
-use grasp_dbsp_runner::typecheck::Plan;
-use grasp_dbsp_runner::value::{BatchType, DynValue};
+use grasp_dbsp::json::decode_value;
+use grasp_dbsp::lower::{Delta, Runner, RunnerConfig};
+use grasp_dbsp::typecheck::Plan;
+use grasp_dbsp::value::{BatchType, DynValue};
 use serde_json::{Value as J, json};
 
 /// A join and a distinct, so the answer depends on state carried across
@@ -53,14 +53,14 @@ out := distinct(j)
 type Rows = Vec<(&'static str, J, ZWeight)>;
 
 fn program() -> (Plan, Vec<String>) {
-    let plan = grasp_dbsp_runner::compile(SOURCE)
-        .unwrap_or_else(|d| panic!("compiles: {}", grasp_dbsp_runner::diag::render(&d)));
+    let plan = grasp_dbsp::compile(SOURCE)
+        .unwrap_or_else(|d| panic!("compiles: {}", grasp_dbsp::diag::render(&d)));
     (plan, vec!["out".to_string()])
 }
 
 fn built(plan: &Plan, outputs: &[String]) -> Runner {
     Runner::build(plan, outputs, RunnerConfig::default())
-        .unwrap_or_else(|d| panic!("builds: {}", grasp_dbsp_runner::diag::render(&d)))
+        .unwrap_or_else(|d| panic!("builds: {}", grasp_dbsp::diag::render(&d)))
 }
 
 fn push_all(runner: &Runner, plan: &Plan, rows: &Rows) {

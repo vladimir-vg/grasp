@@ -1,7 +1,7 @@
 //! The command line.
 
 use clap::{Parser, Subcommand};
-use grasp_dbsp_runner::diag::render;
+use grasp_dbsp::diag::render;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -92,7 +92,7 @@ fn serve(
 
     let source = std::fs::read_to_string(program)
         .map_err(|e| format!("reading `{}`: {e}", program.display()))?;
-    let plan = grasp_dbsp_runner::compile(&source).map_err(|d| render(&d))?;
+    let plan = grasp_dbsp::compile(&source).map_err(|d| render(&d))?;
 
     let config = match config_file {
         Some(path) => PipelineConfig::read(path).map_err(|d| render(&d))?,
@@ -106,12 +106,12 @@ fn serve(
     // them all is an accumulator and a sink each, and the benefit is that
     // `/egress/{anything the program named}` works without configuration.
     let views: Vec<String> = plan.views().into_iter().map(str::to_string).collect();
-    let runner = grasp_dbsp_runner::lower::Runner::build(&plan, &views, runner_config)
-        .map_err(|d| render(&d))?;
+    let runner =
+        grasp_dbsp::lower::Runner::build(&plan, &views, runner_config).map_err(|d| render(&d))?;
 
-    let shapes: HashMap<String, grasp_dbsp_runner::value::BatchType> = views
+    let shapes: HashMap<String, grasp_dbsp::value::BatchType> = views
         .iter()
-        .filter_map(|v| grasp_dbsp_runner::lower::shape(&plan, v).map(|t| (v.clone(), t.clone())))
+        .filter_map(|v| grasp_dbsp::lower::shape(&plan, v).map(|t| (v.clone(), t.clone())))
         .collect();
     let tables: Vec<String> = plan
         .inputs()
@@ -167,7 +167,7 @@ fn validate(program: &std::path::Path, config_file: Option<&std::path::Path>) ->
             eprintln!("reading `{}`: {e}", program.display());
             failed = true;
         }
-        Ok(source) => match grasp_dbsp_runner::compile(&source) {
+        Ok(source) => match grasp_dbsp::compile(&source) {
             Err(diags) => {
                 eprintln!("{}", render(&diags));
                 failed = true;

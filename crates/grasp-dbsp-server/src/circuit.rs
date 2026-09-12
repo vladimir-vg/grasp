@@ -31,8 +31,8 @@
 //! is multiplexing. Each library is on the side of the boundary it belongs to.
 
 use crossbeam_channel::{Receiver, Sender};
-use grasp_dbsp_runner::lower::{Delta, Runner};
-use grasp_dbsp_runner::value::{BatchType, DynValue};
+use grasp_dbsp::lower::{Delta, Runner};
+use grasp_dbsp::value::{BatchType, DynValue};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -591,7 +591,7 @@ impl Circuit {
     }
 
     /// One whole transaction, in continuous mode.
-    fn transaction(&mut self) -> Result<(), grasp_dbsp_runner::lower::RunError> {
+    fn transaction(&mut self) -> Result<(), grasp_dbsp::lower::RunError> {
         self.shared.initiated_steps.fetch_add(1, Ordering::Relaxed);
         let deltas = self.runner.step()?;
         self.published(deltas);

@@ -16,7 +16,7 @@ edition = "2024"
 # dev-dependency and must stay one: the two crates meet at grasp-dbsp text, and
 # a normal dependency would put `dbsp`, `rkyv` and `feldera-sqllib` into the
 # graph of a crate that only manipulates strings.
-grasp-dbsp-runner = { path = "../grasp-dbsp-runner" }
+grasp-dbsp = { path = "../grasp-dbsp" }
 libtest-mimic = { workspace = true }
 # `tests/fuzz.rs` mutates the corpus and asserts the compiler never panics.
 proptest = { workspace = true }

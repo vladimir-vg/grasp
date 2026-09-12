@@ -76,10 +76,10 @@ uuid = "1"
 # --- The server ---------------------------------------------------------------
 # These belong to `grasp-dbsp-server` alone. They are declared here because
 # every dependency in this workspace is, and they are kept out of
-# `grasp-dbsp-runner` deliberately: `grasp-compiler` dev-depends on the runner,
-# and its own manifest argues that the dependency "must stay one … a normal
+# `grasp-dbsp` deliberately: `grasp-compiler` dev-depends on that crate, and
+# its own manifest argues that the dependency "must stay one … a normal
 # dependency would put `dbsp`, `rkyv` and `feldera-sqllib` into the graph of a
-# crate that only manipulates strings". An HTTP stack in the runner would land
+# crate that only manipulates strings". An HTTP stack in `grasp-dbsp` would land
 # in that same graph.
 
 # The HTTP surface. actix-web because this server is a drop-in for Feldera's,

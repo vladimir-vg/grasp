@@ -7,7 +7,7 @@
 //!
 //! The format is documented in `tests/cases/README.md`.
 //!
-//! Two things distinguish this from `grasp-dbsp-runner`'s otherwise identical
+//! Two things distinguish this from `grasp-dbsp`'s otherwise identical
 //! harness, and both come from grasp-compiler being a pipeline under
 //! construction:
 //!
@@ -16,15 +16,15 @@
 //!   than as a failure. The compiler is what says so, through
 //!   `Diagnostic::unimplemented`; see [`first_unimplemented`].
 //! - **What it emits must be executable.** Any case that reaches emission hands
-//!   the text to `grasp_dbsp_runner::compile`, whatever it asserts, so a
+//!   the text to `grasp_dbsp::compile`, whatever it asserts, so a
 //!   program the target rejects is caught without a fixture having to ask.
 
 use common::{assert_every_directory_was_walked, fixture_files, label};
 use grasp_compiler::diag::{Diagnostic, Pass};
-use grasp_dbsp_runner::json::{decode_value, encode_value};
-use grasp_dbsp_runner::lower::{Runner, RunnerConfig};
-use grasp_dbsp_runner::typecheck::Plan;
-use grasp_dbsp_runner::value::{BatchType, TypeDesc};
+use grasp_dbsp::json::{decode_value, encode_value};
+use grasp_dbsp::lower::{Runner, RunnerConfig};
+use grasp_dbsp::typecheck::Plan;
+use grasp_dbsp::value::{BatchType, TypeDesc};
 use libtest_mimic::{Arguments, Failed, Trial};
 use serde::Deserialize;
 use serde_json::Value as J;
@@ -715,7 +715,7 @@ fn no_such_rule(
 }
 
 /// Compile, and hold the result to the always-on invariant: whatever grasp-dbsp
-/// this produced, `grasp-dbsp-runner` must accept it. That catches the whole
+/// this produced, `grasp-dbsp` must accept it. That catches the whole
 /// class of "emitted something the target rejects" without any fixture asking.
 fn emit(source: &str, what: &str, where_: &str) -> Result<(String, Plan), String> {
     let text = grasp_compiler::compile(source).map_err(|d| {
@@ -724,11 +724,11 @@ fn emit(source: &str, what: &str, where_: &str) -> Result<(String, Plan), String
             indent(&render(&d))
         )
     })?;
-    let plan = grasp_dbsp_runner::compile(&text).map_err(|d| {
+    let plan = grasp_dbsp::compile(&text).map_err(|d| {
         format!(
-            "{where_}: the emitted grasp-dbsp was rejected by grasp-dbsp-runner:\n{}\n  \
+            "{where_}: the emitted grasp-dbsp was rejected by grasp-dbsp:\n{}\n  \
              emitted:\n{}",
-            indent(&grasp_dbsp_runner::diag::render(&d)),
+            indent(&grasp_dbsp::diag::render(&d)),
             indent(&capped(&text)),
         )
     })?;
@@ -744,11 +744,11 @@ fn emit(source: &str, what: &str, where_: &str) -> Result<(String, Plan), String
 fn check_ok(case: &Case, where_: &str) -> Result<(), String> {
     match grasp_compiler::compile(&case.source) {
         Ok(text) => {
-            grasp_dbsp_runner::compile(&text).map_err(|d| {
+            grasp_dbsp::compile(&text).map_err(|d| {
                 format!(
                     "{where_}: the emitted grasp-dbsp was rejected by \
-                     grasp-dbsp-runner:\n{}\n  emitted:\n{}",
-                    indent(&grasp_dbsp_runner::diag::render(&d)),
+                     grasp-dbsp:\n{}\n  emitted:\n{}",
+                    indent(&grasp_dbsp::diag::render(&d)),
                     indent(&capped(&text)),
                 )
             })?;
@@ -899,7 +899,7 @@ fn check_output(case: &Case, expected: &[Epoch], exact: bool, where_: &str) -> R
     let mut runner = Runner::build(&plan, &outputs, RunnerConfig::default()).map_err(|d| {
         format!(
             "{where_}: building the circuit failed:\n{}\n  emitted:\n{}",
-            indent(&grasp_dbsp_runner::diag::render(&d)),
+            indent(&grasp_dbsp::diag::render(&d)),
             emitted(),
         )
     })?;
@@ -1016,7 +1016,7 @@ fn check_output(case: &Case, expected: &[Epoch], exact: bool, where_: &str) -> R
 fn decode_input_row(
     row: &Row,
     ty: &TypeDesc,
-) -> Result<(grasp_dbsp_runner::value::DynValue, i64), String> {
+) -> Result<(grasp_dbsp::value::DynValue, i64), String> {
     let row = row
         .as_sequence()
         .ok_or_else(|| "an input row is [weight, value]".to_string())?;

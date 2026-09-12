@@ -38,7 +38,7 @@ Where a case goes follows from what it asserts:
 
 The last row is the one that needs saying. `expected_ok` is **not** a
 parser-level assertion — it compiles the program and hands the result to
-`grasp-dbsp-runner` — so it belongs with the subject it illustrates rather than
+`grasp-dbsp` — so it belongs with the subject it illustrates rather than
 with a stage. An operator-precedence case that happens to be accepted is a
 syntax case; a case about what a fact means is a program case.
 
@@ -161,7 +161,7 @@ Everything else is not: a diagnostic the compiler *means* fails the case.
 
 So the claim tightens on its own as the compiler grows, from "nothing rejects
 this" to "nothing rejects this and the emitted grasp-dbsp is accepted by
-`grasp-dbsp-runner`", without the fixture changing.
+`grasp-dbsp`", without the fixture changing.
 
 There is no `expected_ok: false` — a case that expects rejection should say which
 diagnostics it expects.
@@ -360,7 +360,7 @@ of the flat-versus-indexed arity distinction the runner's own fixtures have.
 ```
 
 Scalars are written as native YAML values (`src: 1`, not `src: "1"`). Values go
-through `grasp-dbsp-runner`'s own codec, so there is no second decoder here and a
+through `grasp-dbsp`'s own codec, so there is no second decoder here and a
 fixture cannot drift from the real wire format; a value that does not match the
 declared column is an error rather than being quietly coerced.
 
@@ -417,7 +417,7 @@ must typecheck.
 ## Always on
 
 Whatever a case asserts, if it reaches emission the text is handed to
-`grasp_dbsp_runner::compile` and the case fails if the runner rejects it. That
+`grasp_dbsp::compile` and the case fails if the runner rejects it. That
 covers the whole class of "emitted something the target does not accept" without
 any fixture having to ask, which is what an emission snapshot would really have
 been guarding — and unlike a snapshot it cannot rot.

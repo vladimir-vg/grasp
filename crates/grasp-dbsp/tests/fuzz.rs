@@ -241,6 +241,6 @@ proptest! {
         let seeds = seeds(&["../../docs/grasp-dbsp", "../../docs/grasp"], "tests/cases", "grasp-dbsp");
         let source = apply(seeds[pick % seeds.len()].clone(), &ops);
         // Either answer is fine; a panic is the one thing that is not.
-        let _ = grasp_dbsp_runner::compile(&source);
+        let _ = grasp_dbsp::compile(&source);
     }
 }

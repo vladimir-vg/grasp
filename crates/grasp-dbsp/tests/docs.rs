@@ -22,10 +22,10 @@
 //! looks like code": a block either carries the tag or it does not, and the
 //! grammar blocks beside these carry none.
 
-use grasp_dbsp_runner::diag::Diagnostic;
-use grasp_dbsp_runner::expr::Builtin;
-use grasp_dbsp_runner::lang::{self, Arg, Decl, DictLit, Expr, ExprKind, OpCall, Rhs};
-use grasp_dbsp_runner::typecheck::OPERATORS;
+use grasp_dbsp::diag::Diagnostic;
+use grasp_dbsp::expr::Builtin;
+use grasp_dbsp::lang::{self, Arg, Decl, DictLit, Expr, ExprKind, OpCall, Rhs};
+use grasp_dbsp::typecheck::OPERATORS;
 use std::path::{Path, PathBuf};
 
 /// Every ```` ```grasp-dbsp ```` block, with the document it came from.
@@ -246,7 +246,7 @@ fn is_the_language(text: &str, elsewhere: &[String]) -> Result<(), String> {
                 unknown.join(", ")
             ));
         } else {
-            match grasp_dbsp_runner::compile(text) {
+            match grasp_dbsp::compile(text) {
                 Ok(_) => return Ok(()),
                 Err(diags) if diags.iter().all(is_excerpt) => return Ok(()),
                 Err(diags) => {
@@ -349,10 +349,10 @@ fn the_language_example_compiles() {
         .into_iter()
         .find(|(_, b)| b.contains("input(\"emp\")") && b.contains("aggregate("))
         .expect("the worked example");
-    if let Err(diags) = grasp_dbsp_runner::compile(&block) {
+    if let Err(diags) = grasp_dbsp::compile(&block) {
         panic!(
             "the example in language.md does not compile: {}",
-            grasp_dbsp_runner::diag::render(&diags)
+            grasp_dbsp::diag::render(&diags)
         );
     }
 }
@@ -366,10 +366,10 @@ fn the_mapping_example_compiles() {
         .into_iter()
         .find(|(_, b)| b.contains("circuit path_scc") && b.contains("fixpoint("))
         .expect("the worked example");
-    if let Err(diags) = grasp_dbsp_runner::compile(&block) {
+    if let Err(diags) = grasp_dbsp::compile(&block) {
         panic!(
             "the worked example in docs/grasp/mapping.md does not compile: {}",
-            grasp_dbsp_runner::diag::render(&diags)
+            grasp_dbsp::diag::render(&diags)
         );
     }
 }

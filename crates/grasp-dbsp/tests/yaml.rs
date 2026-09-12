@@ -10,12 +10,12 @@
 //! runner's own codec in `src/json.rs` — there is deliberately no second
 //! decoder here, so a fixture cannot drift from the real wire format.
 
-use grasp_dbsp_runner::diag::Diagnostic;
-use grasp_dbsp_runner::json::{
+use grasp_dbsp::diag::Diagnostic;
+use grasp_dbsp::json::{
     Format, decode_delta_insert_delete, decode_value, encode_delta_insert_delete, encode_value,
 };
-use grasp_dbsp_runner::lower::{Runner, RunnerConfig};
-use grasp_dbsp_runner::value::{BatchType, TypeDesc};
+use grasp_dbsp::lower::{Runner, RunnerConfig};
+use grasp_dbsp::value::{BatchType, TypeDesc};
 use libtest_mimic::{Arguments, Failed, Trial};
 use serde::Deserialize;
 use serde_json::Value as J;
@@ -218,7 +218,7 @@ fn check_diagnostics(
     expected: &[ExpectedDiagnostic],
     where_: &str,
 ) -> Result<(), String> {
-    let actual = match grasp_dbsp_runner::compile(&case.source) {
+    let actual = match grasp_dbsp::compile(&case.source) {
         Ok(_) => {
             return Err(format!(
                 "{where_}: expected compilation to fail, but it succeeded"
@@ -265,7 +265,7 @@ fn check_output(case: &Case, expected: &[Epoch], exact: bool, where_: &str) -> R
         ));
     }
 
-    let plan = grasp_dbsp_runner::compile(&case.source).map_err(|d| {
+    let plan = grasp_dbsp::compile(&case.source).map_err(|d| {
         format!(
             "{where_}: compilation failed:\n{}",
             indent(&render_diags(&d))
@@ -432,7 +432,7 @@ fn decode_input_row(
     row: &Row,
     ty: &TypeDesc,
     format: Format,
-) -> Result<(grasp_dbsp_runner::value::DynValue, i64), String> {
+) -> Result<(grasp_dbsp::value::DynValue, i64), String> {
     if format == Format::InsertDelete {
         return decode_delta_insert_delete(&yaml_to_json(row), ty).map_err(|e| e.to_string());
     }

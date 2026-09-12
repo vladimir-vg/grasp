@@ -2,7 +2,7 @@
 //!
 //! The documents are the specification, and an example that does not compile
 //! teaches a program that does not compile. This is the same guarantee
-//! `grasp-dbsp-runner`'s `tests/docs.rs` gives its half of the workspace.
+//! `grasp-dbsp`'s `tests/docs.rs` gives its half of the workspace.
 //!
 //! Some blocks are whole programs and some are fragments — a couple of body
 //! statements shown on their own. Rather than curating a list that would drift,

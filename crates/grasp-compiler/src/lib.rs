@@ -2,7 +2,7 @@
 //!
 //! grasp is a Datalog dialect with no runtime of its own. This crate reads it,
 //! checks it, and emits [grasp-dbsp](../../../docs/grasp-dbsp/language.md) —
-//! text, which `grasp-dbsp-runner` executes. It does not run anything, hold
+//! text, which `grasp-dbsp` executes. It does not run anything, hold
 //! state, or exist at runtime.
 //!
 //! grasp is specified in `docs/grasp/`: the surface language in `syntax.md`,
@@ -46,7 +46,7 @@ pub fn check(source: &str) -> Result<infer::Typed, Vec<Diagnostic>> {
 
 /// Compile a grasp program to grasp-dbsp.
 ///
-/// The one door to grasp-dbsp, as `grasp_dbsp_runner::compile` is for the
+/// The one door to grasp-dbsp, as `grasp_dbsp::compile` is for the
 /// runner: as passes are added they go here, and every caller picks them up.
 /// Returns a vector because a pass will eventually report more than one
 /// problem — today it always holds exactly one.

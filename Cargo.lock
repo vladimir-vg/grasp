@@ -1736,7 +1736,7 @@ dependencies = [
 name = "grasp-compiler"
 version = "0.1.0"
 dependencies = [
- "grasp-dbsp-runner",
+ "grasp-dbsp",
  "libtest-mimic",
  "proptest",
  "serde",
@@ -1745,7 +1745,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "grasp-dbsp-runner"
+name = "grasp-dbsp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1776,7 +1776,7 @@ dependencies = [
  "clap",
  "crossbeam-channel",
  "dbsp",
- "grasp-dbsp-runner",
+ "grasp-dbsp",
  "libtest-mimic",
  "serde",
  "serde_json",

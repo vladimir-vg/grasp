@@ -1444,13 +1444,13 @@ mod tests {
     fn the_reserved_list_is_grasp_dbsp_s() {
         for word in super::RESERVED {
             assert!(
-                grasp_dbsp_runner::lang::is_reserved(word),
+                grasp_dbsp::lang::is_reserved(word),
                 "`{word}` is reserved here but not by grasp-dbsp"
             );
         }
         // The direction that actually breaks a program: a word grasp-dbsp
         // reserves and this list omits is one `mangle` does not escape.
-        for word in grasp_dbsp_runner::lang::reserved_words() {
+        for word in grasp_dbsp::lang::reserved_words() {
             assert!(
                 super::RESERVED.contains(&word),
                 "grasp-dbsp reserves `{word}` and `mangle` would not escape it"

@@ -16,11 +16,11 @@ use crate::circuit::{self, Command, Fault, Handle};
 use crate::token::Token;
 use crate::wire::{ApiError, parse_error};
 use actix_web::{HttpResponse, Responder, web};
-use grasp_dbsp_runner::json::{
+use grasp_dbsp::json::{
     Format, decode_delta, decode_delta_insert_delete, encode_delta, encode_delta_insert_delete,
 };
-use grasp_dbsp_runner::lower::Delta;
-use grasp_dbsp_runner::value::BatchType;
+use grasp_dbsp::lower::Delta;
+use grasp_dbsp::value::BatchType;
 use serde::Deserialize;
 use serde_json::{Value as J, json};
 use std::sync::atomic::Ordering;

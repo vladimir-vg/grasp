@@ -21,7 +21,7 @@
 //! exercise chunked transfer at all.
 
 use actix_web::{App, test, web};
-use grasp_dbsp_runner::lower::{Runner, RunnerConfig};
+use grasp_dbsp::lower::{Runner, RunnerConfig};
 use grasp_dbsp_server::circuit;
 use grasp_dbsp_server::http::{self, State};
 use serde_json::Value as J;
@@ -37,14 +37,14 @@ big := filter(orders, function((r) -> r.total > 100.0))
 /// Builds the application over a real circuit, with the keepalive pushed past
 /// any test's lifetime so nothing arrives that a test did not cause.
 fn state(materialized: &[&str]) -> (web::Data<State>, std::thread::JoinHandle<()>) {
-    let plan = grasp_dbsp_runner::compile(SOURCE)
-        .unwrap_or_else(|d| panic!("compiles: {}", grasp_dbsp_runner::diag::render(&d)));
+    let plan = grasp_dbsp::compile(SOURCE)
+        .unwrap_or_else(|d| panic!("compiles: {}", grasp_dbsp::diag::render(&d)));
     let views: Vec<String> = plan.views().into_iter().map(str::to_string).collect();
     let runner = Runner::build(&plan, &views, RunnerConfig::default())
-        .unwrap_or_else(|d| panic!("builds: {}", grasp_dbsp_runner::diag::render(&d)));
+        .unwrap_or_else(|d| panic!("builds: {}", grasp_dbsp::diag::render(&d)));
     let shapes: HashMap<_, _> = views
         .iter()
-        .filter_map(|v| grasp_dbsp_runner::lower::shape(&plan, v).map(|t| (v.clone(), t.clone())))
+        .filter_map(|v| grasp_dbsp::lower::shape(&plan, v).map(|t| (v.clone(), t.clone())))
         .collect();
     let tables: Vec<String> = plan
         .inputs()

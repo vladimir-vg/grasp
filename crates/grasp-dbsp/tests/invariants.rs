@@ -5,8 +5,8 @@
 //! tested rather than merely documented.
 
 use dbsp::default_hash;
-use grasp_dbsp_runner::json::{decode_value, encode_value};
-use grasp_dbsp_runner::value::{DynValue, TypeDesc};
+use grasp_dbsp::json::{decode_value, encode_value};
+use grasp_dbsp::value::{DynValue, TypeDesc};
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use rkyv::Deserialize;
@@ -263,7 +263,7 @@ fn every_variant_that_owns_something_reports_it() {
         DynValue::I64(1),
         DynValue::F64(dbsp::algebra::F64::new(1.0)),
         DynValue::Date(feldera_sqllib::make_date___(2024, 1, 15).expect("valid")),
-        grasp_dbsp_runner::value::parse_time("14:30:00").expect("a valid time"),
+        grasp_dbsp::value::parse_time("14:30:00").expect("a valid time"),
         DynValue::Timestamp(feldera_sqllib::Timestamp::from_microseconds(1)),
         DynValue::Interval(feldera_sqllib::ShortInterval::from_microseconds(1)),
     ];
@@ -328,7 +328,7 @@ fn the_shard_hash_is_pinned() {
             15361640281678058060,
         ),
         (
-            grasp_dbsp_runner::value::parse_time("14:30:00").expect("a valid time"),
+            grasp_dbsp::value::parse_time("14:30:00").expect("a valid time"),
             8576659017415314607,
         ),
         (
@@ -645,7 +645,7 @@ fn any_time() -> impl Strategy<Value = DynValue> {
     (0i64..86_400_000_000).prop_map(|micros| {
         let (h, m) = (micros / 3_600_000_000, micros / 60_000_000 % 60);
         let (s, us) = (micros / 1_000_000 % 60, micros % 1_000_000);
-        grasp_dbsp_runner::value::parse_time(&format!("{h:02}:{m:02}:{s:02}.{us:06}"))
+        grasp_dbsp::value::parse_time(&format!("{h:02}:{m:02}:{s:02}.{us:06}"))
             .expect("a valid time")
     })
 }

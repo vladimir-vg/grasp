@@ -28,8 +28,8 @@
 //! here, and inventing a temporary directory would mean a restart silently lost
 //! whatever had spilled — so a file that says nothing about storage gets none.
 
-use grasp_dbsp_runner::diag::{Diagnostic, Pass, Span};
-use grasp_dbsp_runner::lower::RunnerConfig;
+use grasp_dbsp::diag::{Diagnostic, Pass, Span};
+use grasp_dbsp::lower::RunnerConfig;
 use serde::Deserialize;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -206,10 +206,7 @@ impl PipelineConfig {
     /// compiled plan to read it against. A view named here that the program
     /// does not have is the mistake this catches, and it is an easy one: a
     /// renamed node leaves the configuration behind.
-    pub fn check_against(
-        &self,
-        plan: &grasp_dbsp_runner::typecheck::Plan,
-    ) -> Result<(), Vec<Diagnostic>> {
+    pub fn check_against(&self, plan: &grasp_dbsp::typecheck::Plan) -> Result<(), Vec<Diagnostic>> {
         let views = plan.views();
         let diags: Vec<Diagnostic> = self
             .materialized

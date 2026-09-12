@@ -25,9 +25,9 @@
 //! and not added here has none.
 
 use dbsp::ZWeight;
-use grasp_dbsp_runner::json::decode_value;
-use grasp_dbsp_runner::lower::{Delta, Runner, RunnerConfig};
-use grasp_dbsp_runner::value::BatchType;
+use grasp_dbsp::json::decode_value;
+use grasp_dbsp::lower::{Delta, Runner, RunnerConfig};
+use grasp_dbsp::value::BatchType;
 use serde_json::{Value as J, json};
 use std::num::NonZeroUsize;
 
@@ -46,15 +46,15 @@ fn run(
     epochs: &[Epoch],
     workers: usize,
 ) -> Vec<Vec<(String, Vec<Delta>)>> {
-    let plan = grasp_dbsp_runner::compile(source)
-        .unwrap_or_else(|d| panic!("compiles: {}", grasp_dbsp_runner::diag::render(&d)));
+    let plan = grasp_dbsp::compile(source)
+        .unwrap_or_else(|d| panic!("compiles: {}", grasp_dbsp::diag::render(&d)));
     let outs: Vec<String> = outputs.iter().map(|s| (*s).to_string()).collect();
     let config = RunnerConfig {
         workers: NonZeroUsize::new(workers).expect("a worker count"),
         ..RunnerConfig::default()
     };
     let mut runner = Runner::build(&plan, &outs, config)
-        .unwrap_or_else(|d| panic!("builds: {}", grasp_dbsp_runner::diag::render(&d)));
+        .unwrap_or_else(|d| panic!("builds: {}", grasp_dbsp::diag::render(&d)));
 
     // `dbsp` does not check that the workers built the same circuit; this is
     // where we ask it to. Only worth asking where there is more than one.
@@ -291,7 +291,7 @@ total := aggregate(idx, sum, function((v) -> v.x))
 
     // And the answer is the one cursor order gives, not the one arrival order
     // would have.
-    let want = grasp_dbsp_runner::value::DynValue::F64(dbsp::algebra::F64::new(1.0000000000000002));
+    let want = grasp_dbsp::value::DynValue::F64(dbsp::algebra::F64::new(1.0000000000000002));
     for epoch in [forward, backward] {
         for workers in [1, 3] {
             for (_, deltas) in run(source, &["total"], std::slice::from_ref(&epoch), workers)

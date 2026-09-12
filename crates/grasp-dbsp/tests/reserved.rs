@@ -2,9 +2,9 @@
 //! builtin names. A list that drifts from the real ones is worse than none, so
 //! these tests pin the correspondence.
 
-use grasp_dbsp_runner::expr::Builtin;
-use grasp_dbsp_runner::lang::is_reserved;
-use grasp_dbsp_runner::typecheck::{AGGREGATORS, OPERATORS};
+use grasp_dbsp::expr::Builtin;
+use grasp_dbsp::lang::is_reserved;
+use grasp_dbsp::typecheck::{AGGREGATORS, OPERATORS};
 
 /// Every name in `OPERATORS` must be one `check_op` actually knows.
 ///
@@ -15,8 +15,7 @@ use grasp_dbsp_runner::typecheck::{AGGREGATORS, OPERATORS};
 fn every_listed_operator_is_recognised() {
     for op in OPERATORS {
         let src = format!("x := {op}()");
-        let diags =
-            grasp_dbsp_runner::compile(&src).expect_err("no operator accepts zero arguments");
+        let diags = grasp_dbsp::compile(&src).expect_err("no operator accepts zero arguments");
         let text = diags
             .iter()
             .map(|d| d.message.as_str())
@@ -38,8 +37,7 @@ fn unlisted_names_are_unknown_operators() {
             !OPERATORS.contains(&name),
             "test needs a name that is not an operator"
         );
-        let diags =
-            grasp_dbsp_runner::compile(&format!("x := {name}()")).expect_err("not an operator");
+        let diags = grasp_dbsp::compile(&format!("x := {name}()")).expect_err("not an operator");
         assert!(
             diags.iter().any(|d| d.message.contains("unknown operator")),
             "`{name}` should be an unknown operator"
@@ -129,7 +127,7 @@ fn every_construct_appears_in_a_fixture() {
                 serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
             for case in parsed {
                 let runs = case.expected_output.is_some() || case.expected_exact_output.is_some();
-                if runs && grasp_dbsp_runner::compile(&case.source).is_ok() {
+                if runs && grasp_dbsp::compile(&case.source).is_ok() {
                     corpus.push_str(&case.source);
                     corpus.push('\n');
                 }
@@ -186,7 +184,7 @@ fn every_construct_appears_in_a_fixture() {
 /// the list, and nothing noticed.
 #[test]
 fn the_reserved_words_match_language_md() {
-    use grasp_dbsp_runner::lang::{KEYWORDS, TYPE_NAMES};
+    use grasp_dbsp::lang::{KEYWORDS, TYPE_NAMES};
     let text = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/grasp-dbsp/language.md"),
     )

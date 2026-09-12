@@ -1,6 +1,6 @@
 //! Diagnostics: one type for every problem any compilation pass reports.
 //!
-//! This is deliberately a near-copy of `grasp-dbsp-runner`'s `src/diag.rs`, and
+//! This is deliberately a near-copy of `grasp-dbsp`'s `src/diag.rs`, and
 //! the two are kept in step by hand rather than shared. The reason is [`Pass`]:
 //! the two crates compile different languages through different stages, and a
 //! shared enum would be the union of both vocabularies, giving every `match` in

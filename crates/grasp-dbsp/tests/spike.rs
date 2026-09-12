@@ -14,7 +14,7 @@
 use dbsp::operator::{Max, Min};
 use dbsp::{DBData, OutputHandle, Runtime, ZWeight};
 use dbsp::{OrdIndexedZSet, OrdZSet};
-use grasp_dbsp_runner::value::DynValue;
+use grasp_dbsp::value::DynValue;
 
 /// The bet, as a compile-time assertion. Everything else depends on this.
 #[test]

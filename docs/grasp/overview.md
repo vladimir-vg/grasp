@@ -5,7 +5,7 @@ from other relations; the compiler turns them into a
 [grasp-dbsp](../grasp-dbsp/language.md) program, which is what actually runs.
 
 grasp has **no runtime of its own**. Everything it can express, it expresses by
-emitting grasp-dbsp, and everything that executes is `grasp-dbsp-runner` over the
+emitting grasp-dbsp, and everything that executes is `grasp-dbsp` over the
 `dbsp` crate. That is the whole architecture: one compiler, no engine.
 
 ## What it is

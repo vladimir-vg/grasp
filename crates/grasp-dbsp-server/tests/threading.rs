@@ -19,10 +19,10 @@
 //! claim is about batching, which is normally a timing property and here is an
 //! arithmetic one.
 
-use grasp_dbsp_runner::json::decode_value;
-use grasp_dbsp_runner::lower::{Runner, RunnerConfig};
-use grasp_dbsp_runner::typecheck::Plan;
-use grasp_dbsp_runner::value::{BatchType, DynValue};
+use grasp_dbsp::json::decode_value;
+use grasp_dbsp::lower::{Runner, RunnerConfig};
+use grasp_dbsp::typecheck::Plan;
+use grasp_dbsp::value::{BatchType, DynValue};
 use grasp_dbsp_server::circuit::{self, Command, Fault, Handle};
 use serde_json::json;
 use std::collections::HashMap;
@@ -44,16 +44,16 @@ struct Fixture {
 
 impl Fixture {
     fn new(materialized: &[&str], running: bool) -> Fixture {
-        let plan = grasp_dbsp_runner::compile(SOURCE)
-            .unwrap_or_else(|d| panic!("compiles: {}", grasp_dbsp_runner::diag::render(&d)));
+        let plan = grasp_dbsp::compile(SOURCE)
+            .unwrap_or_else(|d| panic!("compiles: {}", grasp_dbsp::diag::render(&d)));
         let views: Vec<String> = plan.views().into_iter().map(str::to_string).collect();
         let runner = Runner::build(&plan, &views, RunnerConfig::default())
-            .unwrap_or_else(|d| panic!("builds: {}", grasp_dbsp_runner::diag::render(&d)));
+            .unwrap_or_else(|d| panic!("builds: {}", grasp_dbsp::diag::render(&d)));
 
         let shapes: HashMap<String, BatchType> = views
             .iter()
             .map(|v| {
-                let ty = grasp_dbsp_runner::lower::shape(&plan, v)
+                let ty = grasp_dbsp::lower::shape(&plan, v)
                     .expect("a named view has a shape")
                     .clone();
                 (v.clone(), ty)

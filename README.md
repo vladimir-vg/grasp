@@ -16,7 +16,7 @@ declared. It has no runtime of its own.
 
 | crate | |
 |---|---|
-| [`grasp-dbsp-runner`](crates/grasp-dbsp-runner) | parses grasp-dbsp and executes it as a `dbsp` circuit |
+| [`grasp-dbsp`](crates/grasp-dbsp) | parses grasp-dbsp and executes it as a `dbsp` circuit |
 | [`grasp-compiler`](crates/grasp-compiler) | compiles grasp down to grasp-dbsp — parse, desugar, infer, plan, emit — and its fixtures run what it emits |
 
 grasp-dbsp is the contract between them, which is why the design documents live

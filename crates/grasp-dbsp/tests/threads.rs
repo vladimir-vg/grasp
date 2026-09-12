@@ -28,9 +28,9 @@
 //! server actually uses.
 
 use dbsp::ZWeight;
-use grasp_dbsp_runner::json::decode_value;
-use grasp_dbsp_runner::lower::{Delta, Runner, RunnerConfig};
-use grasp_dbsp_runner::value::{BatchType, DynValue};
+use grasp_dbsp::json::decode_value;
+use grasp_dbsp::lower::{Delta, Runner, RunnerConfig};
+use grasp_dbsp::value::{BatchType, DynValue};
 use serde_json::{Value as J, json};
 
 /// One transaction: `(table, row, weight)`.
@@ -95,7 +95,7 @@ fn drive(mut runner: Runner, epochs: &[Epoch], rows: &[(String, BatchType)]) -> 
 }
 
 /// Everything `drive` needs that is not the `Runner`, resolved before the move.
-fn tables(plan: &grasp_dbsp_runner::typecheck::Plan) -> Vec<(String, BatchType)> {
+fn tables(plan: &grasp_dbsp::typecheck::Plan) -> Vec<(String, BatchType)> {
     plan.inputs()
         .into_iter()
         .map(|(i, t)| (t.to_string(), plan.nodes[i].ty.clone()))
@@ -104,14 +104,14 @@ fn tables(plan: &grasp_dbsp_runner::typecheck::Plan) -> Vec<(String, BatchType)>
 
 #[test]
 fn a_circuit_computes_the_same_thing_on_a_thread_it_was_not_built_on() {
-    let plan = grasp_dbsp_runner::compile(SOURCE)
-        .unwrap_or_else(|d| panic!("compiles: {}", grasp_dbsp_runner::diag::render(&d)));
+    let plan = grasp_dbsp::compile(SOURCE)
+        .unwrap_or_else(|d| panic!("compiles: {}", grasp_dbsp::diag::render(&d)));
     let outputs = vec!["out".to_string()];
     let epochs = epochs();
 
     let here = {
         let runner = Runner::build(&plan, &outputs, RunnerConfig::default())
-            .unwrap_or_else(|d| panic!("builds: {}", grasp_dbsp_runner::diag::render(&d)));
+            .unwrap_or_else(|d| panic!("builds: {}", grasp_dbsp::diag::render(&d)));
         drive(runner, &epochs, &tables(&plan))
     };
 
@@ -120,7 +120,7 @@ fn a_circuit_computes_the_same_thing_on_a_thread_it_was_not_built_on() {
     // anything worth spawning a thread for.
     let there = {
         let runner = Runner::build(&plan, &outputs, RunnerConfig::default())
-            .unwrap_or_else(|d| panic!("builds: {}", grasp_dbsp_runner::diag::render(&d)));
+            .unwrap_or_else(|d| panic!("builds: {}", grasp_dbsp::diag::render(&d)));
         let rows = tables(&plan);
         let epochs = epochs.clone();
         std::thread::spawn(move || drive(runner, &epochs, &rows))

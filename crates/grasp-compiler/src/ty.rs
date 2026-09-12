@@ -6,7 +6,7 @@
 //! unknown, because "an integer literal is not an `i64` until something says
 //! so".
 //!
-//! **The holes go all the way down.** `grasp-dbsp-runner` has an analogous
+//! **The holes go all the way down.** `grasp-dbsp` has an analogous
 //! lattice whose open cases sit only at the root, which is enough for a language
 //! that declares its types; it cannot express `[1, 2, 3]`, an array whose
 //! *element* is what has no type yet. grasp reaches that in the first fixture

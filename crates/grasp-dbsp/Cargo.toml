@@ -1,5 +1,5 @@
 [package]
-name = "grasp-dbsp-runner"
+name = "grasp-dbsp"
 version = "0.1.0"
 edition = "2024"
 

@@ -6,7 +6,7 @@ separately and meet at exactly one file.
 ## [`grasp-dbsp/`](grasp-dbsp/) — the target language
 
 Declarative dataflow, executed incrementally as a DBSP circuit. Implemented by
-[`grasp-dbsp-runner`](../crates/grasp-dbsp-runner), which parses it and builds
+[`grasp-dbsp`](../crates/grasp-dbsp), which parses it and builds
 the circuit at startup with no code generation.
 
 - [`overview.md`](grasp-dbsp/overview.md) — goals, design principles, scope, future work, architecture
@@ -30,7 +30,7 @@ rules become grasp-dbsp, and grasp-dbsp is what runs.
 ## Where the two meet
 
 [`grasp-dbsp/language.md`](grasp-dbsp/language.md), and nowhere else. It is what
-`grasp-compiler` emits and what `grasp-dbsp-runner` accepts, which is why these
+`grasp-compiler` emits and what `grasp-dbsp` accepts, which is why these
 documents live at the workspace root rather than inside either crate. A change
 to that file is a change to the contract between them.
 
