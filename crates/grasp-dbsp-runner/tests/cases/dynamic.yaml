@@ -172,3 +172,22 @@
     - out:
         - [1, {same: true}]
         - [1, {same: false}]
+
+# "*anything* → `dynamic`" is total, and a document is a value like any other:
+# it goes in as the lenient thing it is and comes back out through the one
+# fallible reading that is about shape, `optional(json)`.
+- name: a document is a dynamic too
+  source: |
+    t := input("t")
+    t :: zset(record(j: json))
+
+    out := map(t, function((r) -> record(
+        back: cast(cast(r.j, dynamic), optional(json)))))
+
+  input:
+    - t:
+        - [1, {j: {"a": [1, "x"]}}]
+
+  expected_exact_output:
+    - out:
+        - [1, {back: {"a": [1, "x"]}}]

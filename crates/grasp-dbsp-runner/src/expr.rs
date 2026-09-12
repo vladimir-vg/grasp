@@ -943,9 +943,13 @@ fn json_able(v: &Variant) -> bool {
         Variant::SqlNull
         | Variant::VariantNull
         | Variant::Boolean(_)
-        | Variant::BigInt(_)
         | Variant::Double(_)
+        | Variant::Real(_)
         | Variant::String(_) => true,
+        // A document's own decoder narrows an integer to the smallest tag that
+        // holds it, so `1` in a document is a `TinyInt` and not a `BigInt`;
+        // every width is one logical number here, as `json_i64` already says.
+        v if json_i64(v).is_some() => true,
         Variant::Array(items) => items.iter().all(json_able),
         Variant::Map(entries) => entries.iter().all(|(_, v)| json_able(v)),
         _ => false,
@@ -964,8 +968,13 @@ fn from_dynamic(fv: &FlatVariant, ty: &TypeDesc) -> Option<DynValue> {
     let value = match (&decoded, target) {
         (Variant::VariantNull, _) => return ty.is_optional().then_some(DynValue::None),
         (Variant::Boolean(b), TypeDesc::Bool) => DynValue::Bool(*b),
-        (Variant::BigInt(n), TypeDesc::I64) => DynValue::I64(*n),
+        // Every integer width is one `i64`: a dynamic built from a document
+        // carries whatever width the document's decoder chose.
+        (v, TypeDesc::I64) if json_i64(v).is_some() => {
+            DynValue::I64(json_i64(v).expect("checked"))
+        }
         (Variant::Double(f), TypeDesc::F64) => DynValue::F64(*f),
+        (Variant::Real(r), TypeDesc::F64) => DynValue::F64(Flt::new(r.into_inner() as f64)),
         (Variant::String(s), TypeDesc::String) => DynValue::String(s.str().to_string()),
         (Variant::Date(d), TypeDesc::Date) => DynValue::Date(*d),
         (Variant::Time(t), TypeDesc::Time) => DynValue::Time(*t),
