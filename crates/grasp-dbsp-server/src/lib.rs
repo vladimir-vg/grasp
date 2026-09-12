@@ -8,4 +8,6 @@
 //! that same graph, and `cargo test -p grasp-compiler` would link actix to run
 //! a fixture that compiles a string.
 
+pub mod circuit;
 pub mod config;
+pub mod token;
