@@ -696,6 +696,20 @@ impl<'a> Parser<'a> {
                     .eat(&Tok::Eq)
                     .then(|| self.default_literal())
                     .transpose()?;
+                // A default is what a call means when it leaves the parameter
+                // out, so it has to be a value the parameter can hold:
+                // `start: i64 = NONE` promises an `i64` and supplies none.
+                if let Some(lit) = &default
+                    && !literal_inhabits(lit, &ty)
+                {
+                    return Err(self.error(
+                        self.previous_span(),
+                        format!(
+                            "the default `{}` is not a `{ty}`, which is what `{param}` takes",
+                            crate::key::lit(lit)
+                        ),
+                    ));
+                }
                 keyword.push(Parameter {
                     name: param,
                     ty,
@@ -1942,6 +1956,24 @@ fn check_one_typespec_each(decls: &[Decl]) -> Result<(), Diagnostic> {
         }
     }
     Ok(())
+}
+
+/// Whether a literal is a value of the type, for a parameter's default.
+///
+/// An integer literal inhabits either numeric type, as it does everywhere
+/// else; `NONE` inhabits an `optional`; and a type variable admits anything,
+/// since it stands for a type the typespec has not named.
+fn literal_inhabits(lit: &Lit, ty: &Type) -> bool {
+    match (lit, ty) {
+        (_, Type::Var(_)) => true,
+        (Lit::None, Type::Optional(_)) => true,
+        (_, Type::Optional(inner)) => literal_inhabits(lit, inner),
+        (Lit::Int(_), Type::I64 | Type::F64) => true,
+        (Lit::Float(_), Type::F64) => true,
+        (Lit::Str(_), Type::String) => true,
+        (Lit::Bool(_), Type::Boolean) => true,
+        _ => false,
+    }
 }
 
 /// `semantics.md`, "External relations": "`input` must be the only body

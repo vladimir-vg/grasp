@@ -141,9 +141,10 @@ array:at :: function
 # Python's slice: negative indices count from the end, the bounds clamp rather
 # than fail, and a negative step reverses. Three optional keywords, so eight
 # ways to call it — `NONE` for a bound means "no bound here", whose end depends
-# on the sign of the step and so is not a number.
+# on the sign of the step and so is not a number; which is why a bound is an
+# `optional(i64)`, and a default has to be a value its parameter can hold.
 array:slice :: function
-    (array(T), start: i64 = NONE, stop: i64 = NONE, step: i64 = 1) -> array(T)
+    (array(T), start: optional(i64) = NONE, stop: optional(i64) = NONE, step: i64 = 1) -> array(T)
 
 array:contains :: function
     (array(T), element: T) -> boolean

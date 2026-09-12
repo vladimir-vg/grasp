@@ -51,13 +51,13 @@
 - name: defaults collapse the variants into one line
   source: |
     array:slice :: function
-        (array(T), start: i64 = NONE, stop: i64 = NONE, step: i64 = 1) -> array(T)
+        (array(T), start: optional(i64) = NONE, stop: optional(i64) = NONE, step: i64 = 1) -> array(T)
   expected_ok: true
 
 - name: a default may be any literal, negative included
   source: |
     string:f :: function
-        (a: i64 = -1, b: f64 = 1.5, c: string = "x", d: boolean = false, e: i64 = NONE) -> i64
+        (a: i64 = -1, b: f64 = 1.5, c: string = "x", d: boolean = false, e: optional(i64) = NONE) -> i64
   expected_ok: true
 
 # A default is what a call means when it leaves the parameter out, and an
@@ -328,3 +328,22 @@
     - severity: error
       pass: parse
       message: "unexpected end of input; expected `->`"
+
+# A default is what a call means when it leaves the parameter out, so it must
+# be a value the parameter can hold. `= NONE` needs an `optional`, which is how
+# `array:slice`'s bounds are declared.
+- name: a default must inhabit its parameter's type
+  source: |
+    array:slice :: function
+        (array(T), start: i64 = NONE) -> array(T)
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "the default `NONE` is not a `i64`, which is what `start` takes"
+      line: 2
+
+- name: an integer default inhabits either numeric type
+  source: |
+    float:pow :: function
+        (f64, exponent: f64 = 2) -> f64
+  expected_ok: true
