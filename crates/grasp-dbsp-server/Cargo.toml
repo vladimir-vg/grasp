@@ -30,6 +30,10 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 base64 = { workspace = true }
 uuid = { workspace = true }
+# The saved contents of materialized views, with a checksum in front: see
+# `src/snapshot.rs` for why rkyv and not the JSON codec.
+rkyv = { workspace = true }
+xxhash-rust = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -74,6 +74,9 @@ fn routes() -> actix_web::Scope {
         .route("/completion_status", web::get().to(completion_status))
         .route("/stats", web::get().to(stats))
         .route("/metadata", web::get().to(metadata))
+        .route("/checkpoint", web::post().to(checkpoint))
+        .route("/checkpoint_status", web::get().to(checkpoint_status))
+        .route("/checkpoints", web::get().to(checkpoints))
 }
 
 /// A request under `/v0/pipelines/{name}/` for a name this process does not
@@ -524,6 +527,98 @@ async fn stats(
 /// What this pipeline holds. Feldera has a `/metadata` that returns an opaque
 /// blob given at startup; this one answers the question a client of *this*
 /// server actually has, which is what it may ingest into and watch.
+/// `POST /checkpoint`: starts one, and answers before it is durable.
+///
+/// Feldera's contract (`adapters/src/server.rs:2544`): the response carries a
+/// sequence number and the incarnation, and `/checkpoint_status` says when that
+/// number has landed. Both refusals below are Feldera's 409, checked here so
+/// that an overlapping request never queues behind a transaction to be told no.
+async fn checkpoint(
+    state: web::Data<State>,
+    req: actix_web::HttpRequest,
+) -> Result<impl Responder, ApiError> {
+    named(&state, &req)?;
+    let shared = &state.handle.shared;
+    if shared.transaction_open.load(Ordering::Relaxed) {
+        return Err(ApiError::Conflict(
+            "a checkpoint is taken between transactions, and one is open. Commit it first."
+                .to_string(),
+        ));
+    }
+    if shared.checkpoint_in_progress.load(Ordering::Relaxed) {
+        return Err(ApiError::Conflict(
+            "a checkpoint is already being written. Poll `/checkpoint_status` and ask again \
+             once it has finished."
+                .to_string(),
+        ));
+    }
+    let sequence = state
+        .handle
+        .ask(|reply| Command::Checkpoint { reply })
+        .await??;
+    Ok(HttpResponse::Ok().json(json!({
+        "checkpoint_sequence_number": sequence,
+        "incarnation_uuid": shared.incarnation,
+    })))
+}
+
+#[derive(Deserialize)]
+struct CheckpointStatusArgs {
+    #[serde(default)]
+    incarnation_uuid: Option<uuid::Uuid>,
+}
+
+/// `GET /checkpoint_status`: the last sequence number that committed, and the
+/// last that did not.
+///
+/// Read from `Shared` rather than asked of the circuit thread, for the same
+/// reason as `/completion_status`: a client polling for progress is exactly the
+/// one that must not queue behind the work it is waiting for.
+async fn checkpoint_status(
+    state: web::Data<State>,
+    req: actix_web::HttpRequest,
+    args: web::Query<CheckpointStatusArgs>,
+) -> Result<impl Responder, ApiError> {
+    named(&state, &req)?;
+    let shared = &state.handle.shared;
+    if let Some(requested) = args.incarnation_uuid
+        && requested != shared.incarnation
+    {
+        return Err(ApiError::IncarnationMismatch {
+            requested: requested.to_string(),
+            expected: shared.incarnation.to_string(),
+        });
+    }
+    let outcome = shared
+        .checkpoint
+        .lock()
+        .map_err(|_| ApiError::Gone("the checkpoint status was lost to a panic".to_string()))?;
+    let failure = outcome.failure.as_ref().map(|f| {
+        json!({
+            "sequence_number": f.sequence_number,
+            "error": f.error,
+            "failed_at": f.failed_at,
+        })
+    });
+    Ok(HttpResponse::Ok().json(json!({
+        "success": outcome.success,
+        "failure": failure,
+    })))
+}
+
+/// `GET /checkpoints`: `dbsp`'s catalog, as Feldera returns it.
+async fn checkpoints(
+    state: web::Data<State>,
+    req: actix_web::HttpRequest,
+) -> Result<impl Responder, ApiError> {
+    named(&state, &req)?;
+    let list = state
+        .handle
+        .ask(|reply| Command::ListCheckpoints { reply })
+        .await??;
+    Ok(HttpResponse::Ok().json(list))
+}
+
 async fn metadata(
     state: web::Data<State>,
     req: actix_web::HttpRequest,

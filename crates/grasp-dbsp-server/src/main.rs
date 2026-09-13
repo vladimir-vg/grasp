@@ -31,6 +31,12 @@ enum Command {
         /// pipeline accepts rows and does not compute them.
         #[arg(long)]
         paused: bool,
+        /// Restore a checkpoint before serving: its uuid, or `latest` for the
+        /// newest one in `storage_config.path` that this server can vouch for.
+        /// Refused, before a port is bound, if it was written at another worker
+        /// count, by another build's value format, or by another program.
+        #[arg(long = "resume-from")]
+        resume_from: Option<String>,
     },
     /// Compile a program and a configuration, and report what is wrong with
     /// either. Nothing is started.
@@ -56,12 +62,14 @@ fn main() -> ExitCode {
             bind_address,
             port,
             paused,
+            resume_from,
         } => match serve(
             &program,
             config_file.as_deref(),
             &bind_address,
             port,
             !paused,
+            resume_from.as_deref(),
         ) {
             Ok(()) => ExitCode::SUCCESS,
             Err(message) => {
@@ -86,6 +94,7 @@ fn serve(
     bind_address: &str,
     port: u16,
     running: bool,
+    resume_from: Option<&str>,
 ) -> Result<(), String> {
     use grasp_dbsp_server::{circuit, config::PipelineConfig, http};
     use std::collections::HashMap;
@@ -100,6 +109,10 @@ fn serve(
     };
     config.check_against(&plan).map_err(|d| render(&d))?;
     let runner_config = config.runner().map_err(|d| render(&d))?;
+    let (runner_config, resumed) = match resume_from {
+        None => (runner_config, None),
+        Some(which) => resume(runner_config, which)?,
+    };
 
     // Every declared name is a view. Nodes that are not selected are built
     // anyway — there is no dead-code elimination — so the cost of selecting
@@ -119,7 +132,32 @@ fn serve(
         .map(|(_, t)| t.to_string())
         .collect();
 
-    let (handle, thread) = circuit::start(runner, shapes, &config.materialized, tables, running);
+    // After `Runner::build`, deliberately: it has already accepted the
+    // checkpoint's manifest, which is what establishes the saved rows are in this
+    // build's value format before anything reads them.
+    let restored = match (&resumed, &config.storage_config) {
+        (Some(uuid), Some(storage)) => grasp_dbsp_server::snapshot::load(
+            std::path::Path::new(&storage.path),
+            uuid,
+            &config.materialized,
+        )?,
+        _ => HashMap::new(),
+    };
+    let (handle, thread) = circuit::start_restored(
+        runner,
+        shapes,
+        &config.materialized,
+        tables,
+        running,
+        restored,
+    );
+    handle.shared.checkpoint_retention.store(
+        config.checkpoint_retention,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    if let Some(uuid) = &resumed {
+        eprintln!("grasp-dbsp-server: restored checkpoint {uuid}");
+    }
 
     let name = config.name.clone();
     eprintln!(
@@ -151,6 +189,43 @@ fn serve(
     // seconds for a pidlock nobody holds.
     let _ = thread.join();
     result.map_err(|e| format!("serving: {e}"))
+}
+
+/// Points the storage configuration at a checkpoint to restore.
+///
+/// Only the *choice* happens here. Whether the checkpoint may be restored into
+/// this circuit — worker count, value format, program — is decided by
+/// `Runner::build`, which reads the manifest before `dbsp` reads anything, so
+/// a mismatch is a diagnostic here and never a half-restored circuit.
+fn resume(
+    mut config: grasp_dbsp::lower::RunnerConfig,
+    which: &str,
+) -> Result<(grasp_dbsp::lower::RunnerConfig, Option<String>), String> {
+    let Some(storage) = config.storage.take() else {
+        return Err(
+            "`--resume-from` restores a checkpoint from the storage directory, and this \
+             configuration has none. Set `storage` and `storage_config`."
+                .to_string(),
+        );
+    };
+    let uuid = if which == "latest" {
+        match grasp_dbsp::checkpoint::latest(&storage).map_err(|d| render(&d))? {
+            Some(uuid) => uuid,
+            None => {
+                return Err(format!(
+                    "`--resume-from latest`: `{}` holds no checkpoint this server can restore.",
+                    storage.config.path
+                ));
+            }
+        }
+    } else {
+        which.to_string()
+    };
+    let parsed: uuid::Uuid = uuid.parse().map_err(|e| {
+        format!("`--resume-from {which}` is neither a checkpoint uuid nor `latest`: {e}")
+    })?;
+    config.storage = Some(storage.with_init_checkpoint(Some(parsed)));
+    Ok((config, Some(uuid)))
 }
 
 /// Both halves are checked even when the first fails, because a person fixing a

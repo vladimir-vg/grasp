@@ -1361,18 +1361,32 @@ impl PendingCheckpoint {
     /// this crate refuses to restore for want of a manifest — the safe side to
     /// fail on, since refusing is recoverable and a blind restore is not.
     pub fn commit(self) -> Result<CheckpointMetadata, RunError> {
+        self.commit_with(|_| Ok(()))
+    }
+
+    /// [`PendingCheckpoint::commit`], writing a host's own files into the
+    /// checkpoint's directory first.
+    ///
+    /// Between `dbsp`'s commit and the manifest, and that position is the
+    /// point: the manifest is what marks a checkpoint complete — `latest`
+    /// skips any without one, and a restore refuses them — so whatever `extra`
+    /// writes is covered by the same guarantee as `dbsp`'s own state. Written
+    /// after the manifest, a crash could leave a checkpoint that looks whole
+    /// and is not.
+    pub fn commit_with(
+        self,
+        extra: impl FnOnce(&std::path::Path) -> Result<(), String>,
+    ) -> Result<CheckpointMetadata, RunError> {
         let metadata = self
             .committer
             .commit()
             .map_err(|e| RunError(format!("committing a checkpoint: {e}")))?;
-        crate::checkpoint::Manifest::new(
-            metadata.uuid.to_string(),
-            self.workers,
-            self.digest,
-            self.steps,
-        )
-        .write(&self.root)
-        .map_err(|d| RunError(crate::diag::render(&d)))?;
+        let uuid = metadata.uuid.to_string();
+        extra(&self.root.join(&uuid))
+            .map_err(|e| RunError(format!("writing checkpoint {uuid}: {e}")))?;
+        crate::checkpoint::Manifest::new(uuid, self.workers, self.digest, self.steps)
+            .write(&self.root)
+            .map_err(|d| RunError(crate::diag::render(&d)))?;
         Ok(metadata)
     }
 }

@@ -98,6 +98,17 @@ pub struct PipelineConfig {
     /// it is opt-in and named per view rather than on for everything.
     #[serde(default)]
     pub materialized: Vec<String>,
+
+    /// How many checkpoints to keep in `storage_config.path`; older ones are
+    /// removed after each new one commits.
+    ///
+    /// **Feldera has no such key**: its manager decides what to keep. Without
+    /// one here a directory grows by a checkpoint per request for ever. The
+    /// default is `dbsp`'s own floor — it never removes below two
+    /// (`Checkpointer::MIN_CHECKPOINT_THRESHOLD`) — so a smaller number is not
+    /// refused, only not honoured below that.
+    #[serde(default = "default_checkpoint_retention")]
+    pub checkpoint_retention: usize,
 }
 
 fn default_name() -> String {
@@ -106,6 +117,10 @@ fn default_name() -> String {
 
 fn default_workers() -> u16 {
     1
+}
+
+fn default_checkpoint_retention() -> usize {
+    2
 }
 
 impl PipelineConfig {
@@ -279,11 +294,16 @@ fn unsupported(key: &str) -> Option<String> {
              `POST /egress/{view}`, so there is nothing for a connector configuration to \
              configure"
         }
-        "fault_tolerance" | "checkpoint_during_suspend" => {
-            "needs checkpoints, and this runner starts a circuit from nothing. `Runner::build` \
-             refuses a storage configuration naming an initial checkpoint for the same reason: \
-             restoring one would pin the worker count it was written at and freeze `DynValue`'s \
-             archived variant order"
+        "fault_tolerance" => {
+            "replays *input* after a crash, from each connector's journaled offsets. This \
+             server has no connectors and journals nothing — rows arrive over \
+             `POST /ingress` — so there is nothing to replay. Checkpoints themselves are \
+             supported: `POST /checkpoint`, and `serve --resume-from`"
+        }
+        "checkpoint_during_suspend" => {
+            "is deprecated in Feldera and has no effect there \
+             (`feldera-types/src/config.rs:1014-1015`), and this server has no `/suspend` \
+             for it to apply to"
         }
         "hosts" | "multihost" => {
             "is a multi-host `dbsp` layout. This runner names a worker count and nothing else"

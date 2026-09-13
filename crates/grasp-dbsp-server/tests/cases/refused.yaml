@@ -14,12 +14,12 @@
   expected_diagnostics:
     - "there is nothing for a connector configuration to configure"
 
-- name: fault tolerance names the checkpoint this runner does not take
+- name: fault tolerance is refused because there is no input to replay
   config: |
     fault_tolerance:
       model: exactly_once
   expected_diagnostics:
-    - "needs checkpoints"
+    - "nothing to replay"
 
 - name: a multihost layout is refused rather than ignored
   config: |

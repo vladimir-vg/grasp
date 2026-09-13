@@ -35,7 +35,7 @@ use grasp_dbsp::lower::{Delta, Runner};
 use grasp_dbsp::value::{BatchType, DynValue};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::{mpsc, oneshot};
 
 /// How many chunks a subscriber may fall behind before it starts losing them.
@@ -134,6 +134,16 @@ pub enum Command {
     CommitTransaction {
         reply: oneshot::Sender<Result<(), Fault>>,
     },
+    /// Prepares a checkpoint on the circuit thread and commits it on another.
+    /// Answers with the sequence number `/checkpoint_status` reports against.
+    Checkpoint {
+        reply: oneshot::Sender<Result<u64, Fault>>,
+    },
+    /// `dbsp`'s own catalog, already serialised, so this crate need not name
+    /// `feldera-types` to pass it through.
+    ListCheckpoints {
+        reply: oneshot::Sender<Result<serde_json::Value, Fault>>,
+    },
     Shutdown {
         reply: oneshot::Sender<()>,
     },
@@ -178,6 +188,20 @@ pub struct Shared {
     /// is exactly the client that would be blocked. The critical sections are
     /// a few map operations.
     pub progress: std::sync::Mutex<Progress>,
+    /// How many checkpoints to keep. Set by the host after `start`, because it
+    /// is configuration and `start` has no business taking a configuration.
+    pub checkpoint_retention: AtomicUsize,
+    /// The last checkpoint sequence number handed out.
+    pub checkpoint_sequence: AtomicU64,
+    /// True from the moment a checkpoint is prepared until its commit returns.
+    /// Read by the HTTP handler so that an overlapping request is a 409 before
+    /// it ever queues behind a transaction.
+    pub checkpoint_in_progress: AtomicBool,
+    /// Feldera's `CheckpointStatus`, in the shape `/checkpoint_status` returns.
+    pub checkpoint: std::sync::Mutex<CheckpointOutcome>,
+    /// Set by the commit thread on success; old checkpoints are removed on the
+    /// circuit thread when it next looks, since only it owns the `Runner`.
+    pub checkpoint_gc_due: AtomicBool,
 }
 
 /// How far ingestion has got, and what is still in flight.
@@ -221,6 +245,11 @@ impl Shared {
             committing: AtomicBool::new(false),
             fatal: std::sync::Mutex::new(None),
             progress: std::sync::Mutex::new(Progress::default()),
+            checkpoint_retention: AtomicUsize::new(2),
+            checkpoint_sequence: AtomicU64::new(0),
+            checkpoint_in_progress: AtomicBool::new(false),
+            checkpoint: std::sync::Mutex::new(CheckpointOutcome::default()),
+            checkpoint_gc_due: AtomicBool::new(false),
         }
     }
 
@@ -316,6 +345,10 @@ struct Circuit {
     /// there is anything to step for.
     pending: u64,
     next_transaction_id: i64,
+    /// The thread committing the current checkpoint, joined before the circuit
+    /// is killed so that a shutdown right after `POST /checkpoint` still leaves
+    /// the checkpoint it acknowledged.
+    committing_checkpoint: Option<std::thread::JoinHandle<()>>,
 }
 
 /// Starts the circuit thread and returns the handle to it.
@@ -332,6 +365,30 @@ pub fn start(
     tables: Vec<String>,
     running: bool,
 ) -> (Handle, std::thread::JoinHandle<()>) {
+    start_restored(
+        runner,
+        shapes,
+        materialized,
+        tables,
+        running,
+        HashMap::new(),
+    )
+}
+
+/// [`start`], for a circuit restored from a checkpoint.
+///
+/// Each materialized view's fold begins from the rows saved with the checkpoint
+/// rather than empty. A restored circuit replays nothing, so a fold that started
+/// empty would answer every snapshot with a view that has no rows; see
+/// `crate::snapshot`.
+pub fn start_restored(
+    runner: Runner,
+    shapes: HashMap<String, BatchType>,
+    materialized: &[String],
+    tables: Vec<String>,
+    running: bool,
+    mut restored: HashMap<String, Rows>,
+) -> (Handle, std::thread::JoinHandle<()>) {
     let (commands, rx) = crossbeam_channel::unbounded();
     let shared = Arc::new(Shared::new());
     shared.running.store(running, Ordering::Relaxed);
@@ -346,11 +403,12 @@ pub fn start(
         subscribers: HashMap::new(),
         materialized: materialized
             .iter()
-            .map(|v| (v.clone(), Arc::new(Rows::new())))
+            .map(|v| (v.clone(), Arc::new(restored.remove(v).unwrap_or_default())))
             .collect(),
         shapes,
         pending: 0,
         next_transaction_id: 1,
+        committing_checkpoint: None,
     };
 
     let thread = std::thread::Builder::new()
@@ -425,6 +483,7 @@ impl Circuit {
             for reply in deferred {
                 reply();
             }
+            self.collect_checkpoint_garbage();
             if stop || failed {
                 break;
             }
@@ -432,8 +491,11 @@ impl Circuit {
         self.finish(guard)
     }
 
-    fn finish(self, mut guard: FatalGuard) {
+    fn finish(mut self, mut guard: FatalGuard) {
         guard.armed = false;
+        if let Some(committing) = self.committing_checkpoint.take() {
+            let _ = committing.join();
+        }
         self.runner.kill();
     }
 
@@ -482,6 +544,21 @@ impl Circuit {
             }
             Command::CommitTransaction { reply } => {
                 let answer = self.commit();
+                let _ = reply.send(answer);
+            }
+            Command::Checkpoint { reply } => {
+                let answer = self.checkpoint();
+                let _ = reply.send(answer);
+            }
+            Command::ListCheckpoints { reply } => {
+                let answer = self
+                    .runner
+                    .list_checkpoints()
+                    .map_err(|e| Fault::Refused(e.to_string()))
+                    .and_then(|list| {
+                        serde_json::to_value(&list)
+                            .map_err(|e| Fault::Refused(format!("encoding checkpoints: {e}")))
+                    });
                 let _ = reply.send(answer);
             }
             Command::Shutdown { reply } => {
@@ -576,6 +653,112 @@ impl Circuit {
             snapshot,
             shape,
         })
+    }
+
+    /// Prepares a checkpoint here and commits it on a thread of its own.
+    ///
+    /// The circuit thread does only `prepare`, which is the part that has to
+    /// see a consistent circuit; the fsyncs happen elsewhere so that pushes and
+    /// steps do not wait on a disk. This is Feldera's shape too
+    /// (`adapters/src/controller.rs:9668-9675`, its `feldera-checkpoint`
+    /// thread), and the same reason `dbsp` makes the committer `Send`.
+    ///
+    /// One at a time. `dbsp` itself would accept overlapping checkpoints, but a
+    /// sequence number that can complete out of order is a status endpoint
+    /// that can lie, and nothing is gained by writing two at once.
+    fn checkpoint(&mut self) -> Result<u64, Fault> {
+        if self.shared.checkpoint_in_progress.load(Ordering::Relaxed) {
+            return Err(Fault::Refused(
+                "a checkpoint is already being written".to_string(),
+            ));
+        }
+        if let Some(previous) = self.committing_checkpoint.take() {
+            let _ = previous.join();
+        }
+        self.collect_checkpoint_garbage();
+
+        let steps = self.shared.completed_steps.load(Ordering::Relaxed);
+        let pending = self
+            .runner
+            .checkpoint(steps)
+            .map_err(|e| Fault::Refused(e.to_string()))?;
+        // Captured here — on the thread that folds deltas, between transactions,
+        // beside the `prepare` above — so the saved rows describe the same
+        // instant as `dbsp`'s state. An `Arc` clone: a later publish copies on
+        // write rather than changing these.
+        let mut views: Vec<(String, Arc<Rows>)> = self
+            .materialized
+            .iter()
+            .map(|(name, rows)| (name.clone(), Arc::clone(rows)))
+            .collect();
+        views.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let sequence = self
+            .shared
+            .checkpoint_sequence
+            .fetch_add(1, Ordering::Relaxed)
+            + 1;
+        self.shared
+            .checkpoint_in_progress
+            .store(true, Ordering::Relaxed);
+
+        let shared = Arc::clone(&self.shared);
+        let committing = std::thread::Builder::new()
+            .name("grasp-checkpoint".to_string())
+            .spawn(move || {
+                let result = pending.commit_with(|dir| crate::snapshot::save(dir, &views));
+                if let Ok(mut outcome) = shared.checkpoint.lock() {
+                    match result {
+                        Ok(_) => {
+                            outcome.success = Some(sequence);
+                            shared.checkpoint_gc_due.store(true, Ordering::Relaxed);
+                        }
+                        // Not cleared by a later success, matching Feldera:
+                        // `failure` is the *last* failure, not the current state.
+                        Err(e) => {
+                            outcome.failure = Some(CheckpointFailure {
+                                sequence_number: sequence,
+                                error: e.to_string(),
+                                failed_at: iso8601_now(),
+                            })
+                        }
+                    }
+                }
+                shared
+                    .checkpoint_in_progress
+                    .store(false, Ordering::Relaxed);
+            });
+        match committing {
+            Ok(handle) => {
+                self.committing_checkpoint = Some(handle);
+                Ok(sequence)
+            }
+            Err(e) => {
+                self.shared
+                    .checkpoint_in_progress
+                    .store(false, Ordering::Relaxed);
+                Err(Fault::Refused(format!(
+                    "starting the checkpoint thread: {e}"
+                )))
+            }
+        }
+    }
+
+    /// Removes checkpoints beyond the retention count, once one has landed.
+    ///
+    /// Lazily, on this thread, because only this thread owns the `Runner` —
+    /// and the commit thread cannot tell it directly without holding a command
+    /// sender, which would keep the channel open and this thread alive past the
+    /// point where the server has let go of it. A failure is reported rather
+    /// than fatal: a directory with one checkpoint too many is still correct.
+    fn collect_checkpoint_garbage(&mut self) {
+        if !self.shared.checkpoint_gc_due.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        let keep = self.shared.checkpoint_retention.load(Ordering::Relaxed);
+        if let Err(e) = self.runner.gc_checkpoints(keep) {
+            eprintln!("grasp-dbsp-server: {e}");
+        }
     }
 
     fn commit(&mut self) -> Result<(), Fault> {
@@ -729,4 +912,50 @@ impl Drop for FatalGuard {
 /// `total_completed_steps >= n`.
 pub fn is_complete(shared: &Shared, step: u64) -> bool {
     shared.completed_steps.load(Ordering::Relaxed) >= step
+}
+
+/// Feldera's `CheckpointStatus` (`feldera-types/src/checkpoint.rs:12-22`).
+#[derive(Debug, Default)]
+pub struct CheckpointOutcome {
+    /// The most recent checkpoint that committed.
+    pub success: Option<u64>,
+    /// The most recent one that did not. Never cleared by a later success.
+    pub failure: Option<CheckpointFailure>,
+}
+
+/// Feldera's `CheckpointFailure` (`feldera-types/src/checkpoint.rs:51-60`).
+#[derive(Debug, Clone)]
+pub struct CheckpointFailure {
+    pub sequence_number: u64,
+    pub error: String,
+    /// ISO 8601, as Feldera serialises its `DateTime<Utc>`.
+    pub failed_at: String,
+}
+
+/// The current time as `YYYY-MM-DDTHH:MM:SSZ`.
+///
+/// By hand, to avoid a date library for one field. The calendar arithmetic is
+/// Howard Hinnant's `civil_from_days`, which is exact for every day since the
+/// epoch.
+fn iso8601_now() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rem / 3_600,
+        rem % 3_600 / 60,
+        rem % 60
+    )
 }

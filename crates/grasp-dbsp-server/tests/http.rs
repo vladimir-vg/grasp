@@ -359,3 +359,313 @@ async fn metadata_lists_what_may_be_written_to_and_watched() {
     assert_eq!(body["views"], serde_json::json!(["big", "orders"]));
     assert_eq!(body["materialized"], serde_json::json!(["big"]));
 }
+
+/// Tests that open a storage directory run one at a time, as
+/// `grasp-dbsp`'s `tests/storage.rs` does.
+static STORAGE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// `state`, over a circuit with a storage directory to checkpoint into.
+fn state_with_storage(path: &std::path::Path) -> (web::Data<State>, std::thread::JoinHandle<()>) {
+    use dbsp::circuit::{CircuitStorageConfig, StorageCacheConfig, StorageConfig, StorageOptions};
+    let plan = grasp_dbsp::compile(SOURCE)
+        .unwrap_or_else(|d| panic!("compiles: {}", grasp_dbsp::diag::render(&d)));
+    let views: Vec<String> = plan.views().into_iter().map(str::to_string).collect();
+    let storage = CircuitStorageConfig::for_config(
+        StorageConfig {
+            path: path.to_string_lossy().into_owned(),
+            cache: StorageCacheConfig::default(),
+        },
+        StorageOptions::default(),
+    )
+    .expect("a storage backend");
+    let runner = Runner::build(
+        &plan,
+        &views,
+        RunnerConfig {
+            storage: Some(storage),
+            ..RunnerConfig::default()
+        },
+    )
+    .unwrap_or_else(|d| panic!("builds: {}", grasp_dbsp::diag::render(&d)));
+    let shapes: HashMap<_, _> = views
+        .iter()
+        .filter_map(|v| grasp_dbsp::lower::shape(&plan, v).map(|t| (v.clone(), t.clone())))
+        .collect();
+    let tables: Vec<String> = plan
+        .inputs()
+        .into_iter()
+        .map(|(_, t)| t.to_string())
+        .collect();
+    let (handle, thread) = circuit::start(runner, shapes, &[], tables, true);
+    (
+        web::Data::new(State {
+            handle,
+            pipeline: "shop".to_string(),
+            keepalive: Duration::from_secs(3600),
+        }),
+        thread,
+    )
+}
+
+/// The whole checkpoint conversation, in Feldera's shapes: the request answers
+/// with a sequence number before anything is durable, the status reports that
+/// number once it has landed, and the catalog then lists it.
+#[actix_web::test]
+async fn a_checkpoint_is_acknowledged_then_reported_then_listed() {
+    let _lock = STORAGE.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::TempDir::new().expect("a storage directory");
+    let (state, _t) = state_with_storage(dir.path());
+    let app = app!(state);
+
+    let req = test::TestRequest::post()
+        .uri("/ingress/orders?format=json")
+        .set_payload(r#"{"insert": {"id": 1, "total": 250.0}}"#)
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status(), 200);
+
+    let req = test::TestRequest::post().uri("/checkpoint").to_request();
+    let body: J = test::call_and_read_body_json(&app, req).await;
+    assert_eq!(body["checkpoint_sequence_number"], 1);
+    let incarnation = body["incarnation_uuid"]
+        .as_str()
+        .expect("an incarnation")
+        .to_string();
+
+    let mut landed = false;
+    for _ in 0..200 {
+        let req = test::TestRequest::get()
+            .uri(&format!(
+                "/checkpoint_status?incarnation_uuid={incarnation}"
+            ))
+            .to_request();
+        let status: J = test::call_and_read_body_json(&app, req).await;
+        assert!(
+            status["failure"].is_null(),
+            "the checkpoint failed: {status}"
+        );
+        if status["success"] == 1 {
+            landed = true;
+            break;
+        }
+        actix_web::rt::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(landed, "checkpoint 1 never reported success");
+
+    let req = test::TestRequest::get().uri("/checkpoints").to_request();
+    let list: J = test::call_and_read_body_json(&app, req).await;
+    let list = list.as_array().expect("a list");
+    assert_eq!(list.len(), 1, "{list:?}");
+    assert!(list[0]["uuid"].is_string(), "{list:?}");
+}
+
+/// A client polling across a restart is told so, in Feldera's words, rather
+/// than being shown a status that belongs to a different run.
+#[actix_web::test]
+async fn a_status_asked_of_another_incarnation_is_refused() {
+    let (state, _t) = state(&[]);
+    let app = app!(state);
+    let req = test::TestRequest::get()
+        .uri("/checkpoint_status?incarnation_uuid=00000000-0000-0000-0000-000000000000")
+        .to_request();
+    let response = test::call_service(&app, req).await;
+    assert_eq!(response.status(), 400);
+    let body: J = test::read_body_json(response).await;
+    assert_eq!(body["error_code"], "IncarnationUuidMismatch");
+}
+
+/// Without storage there is nowhere to write one, and the refusal says what to
+/// configure — a 400, not the 409 that means "not now".
+#[actix_web::test]
+async fn a_checkpoint_without_storage_says_what_to_configure() {
+    let (state, _t) = state(&[]);
+    let app = app!(state);
+    let req = test::TestRequest::post().uri("/checkpoint").to_request();
+    let response = test::call_service(&app, req).await;
+    assert_eq!(response.status(), 400);
+    let body: J = test::read_body_json(response).await;
+    let message = body["message"].as_str().expect("a message");
+    assert!(message.contains("storage_config"), "{message}");
+}
+
+/// A checkpoint is a snapshot between transactions, so one requested inside a
+/// transaction is Feldera's 409.
+#[actix_web::test]
+async fn a_checkpoint_inside_a_transaction_is_a_conflict() {
+    let _lock = STORAGE.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::TempDir::new().expect("a storage directory");
+    let (state, _t) = state_with_storage(dir.path());
+    let app = app!(state);
+
+    let req = test::TestRequest::post()
+        .uri("/start_transaction")
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status(), 200);
+
+    let req = test::TestRequest::post().uri("/checkpoint").to_request();
+    let response = test::call_service(&app, req).await;
+    assert_eq!(response.status(), 409);
+    let body: J = test::read_body_json(response).await;
+    assert_eq!(body["error_code"], "TransactionInProgress");
+}
+
+/// A circuit over a storage directory, materializing `materialized`, and — given
+/// a checkpoint uuid — restored from it the way `main.rs` does: build first, so
+/// the manifest is accepted before the saved rows are read.
+fn storage_state(
+    path: &std::path::Path,
+    materialized: &[&str],
+    resume: Option<&str>,
+) -> (web::Data<State>, std::thread::JoinHandle<()>) {
+    use dbsp::circuit::{CircuitStorageConfig, StorageCacheConfig, StorageConfig, StorageOptions};
+    let plan = grasp_dbsp::compile(SOURCE)
+        .unwrap_or_else(|d| panic!("compiles: {}", grasp_dbsp::diag::render(&d)));
+    let views: Vec<String> = plan.views().into_iter().map(str::to_string).collect();
+    let mut storage = CircuitStorageConfig::for_config(
+        StorageConfig {
+            path: path.to_string_lossy().into_owned(),
+            cache: StorageCacheConfig::default(),
+        },
+        StorageOptions::default(),
+    )
+    .expect("a storage backend");
+    if let Some(uuid) = resume {
+        storage = storage.with_init_checkpoint(Some(uuid.parse().expect("a uuid")));
+    }
+    let runner = Runner::build(
+        &plan,
+        &views,
+        RunnerConfig {
+            storage: Some(storage),
+            ..RunnerConfig::default()
+        },
+    )
+    .unwrap_or_else(|d| panic!("builds: {}", grasp_dbsp::diag::render(&d)));
+    let materialized: Vec<String> = materialized.iter().map(|s| s.to_string()).collect();
+    let restored = match resume {
+        Some(uuid) => grasp_dbsp_server::snapshot::load(path, uuid, &materialized)
+            .expect("loads the saved views"),
+        None => HashMap::new(),
+    };
+    let shapes: HashMap<_, _> = views
+        .iter()
+        .filter_map(|v| grasp_dbsp::lower::shape(&plan, v).map(|t| (v.clone(), t.clone())))
+        .collect();
+    let tables: Vec<String> = plan
+        .inputs()
+        .into_iter()
+        .map(|(_, t)| t.to_string())
+        .collect();
+    let (handle, thread) =
+        circuit::start_restored(runner, shapes, &materialized, tables, true, restored);
+    (
+        web::Data::new(State {
+            handle,
+            pipeline: "shop".to_string(),
+            keepalive: Duration::from_secs(3600),
+        }),
+        thread,
+    )
+}
+
+/// Takes a checkpoint through the API, waits for it to land, and returns its
+/// uuid from the catalog.
+macro_rules! take_checkpoint {
+    ($app:expr) => {{
+        let req = test::TestRequest::post().uri("/checkpoint").to_request();
+        let body: J = test::call_and_read_body_json(&$app, req).await;
+        let sequence = body["checkpoint_sequence_number"].clone();
+        let mut landed = false;
+        for _ in 0..200 {
+            let req = test::TestRequest::get()
+                .uri("/checkpoint_status")
+                .to_request();
+            let status: J = test::call_and_read_body_json(&$app, req).await;
+            assert!(
+                status["failure"].is_null(),
+                "the checkpoint failed: {status}"
+            );
+            if status["success"] == sequence {
+                landed = true;
+                break;
+            }
+            actix_web::rt::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(landed, "the checkpoint never landed");
+        let req = test::TestRequest::get().uri("/checkpoints").to_request();
+        let list: J = test::call_and_read_body_json(&$app, req).await;
+        list.as_array()
+            .and_then(|l| l.last())
+            .and_then(|c| c["uuid"].as_str())
+            .expect("a checkpoint uuid")
+            .to_string()
+    }};
+}
+
+/// A snapshot of a restored view starts from the rows the checkpoint held.
+///
+/// The fold behind `send_snapshot=true` lives outside the circuit, and a
+/// restored circuit replays nothing — so before the rows were saved with the
+/// checkpoint, this snapshot came back empty while the circuit held a row.
+#[actix_web::test]
+async fn a_restored_snapshot_starts_from_the_rows_the_checkpoint_held() {
+    let _lock = STORAGE.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::TempDir::new().expect("a storage directory");
+
+    let uuid = {
+        let (state, thread) = storage_state(dir.path(), &["big"], None);
+        let app = app!(state);
+        for row in [
+            r#"{"insert": {"id": 1, "total": 250.0}}"#,
+            r#"{"insert": {"id": 2, "total": 50.0}}"#,
+        ] {
+            let req = test::TestRequest::post()
+                .uri("/ingress/orders?format=json")
+                .set_payload(row)
+                .to_request();
+            assert_eq!(test::call_service(&app, req).await.status(), 200);
+        }
+        let uuid = take_checkpoint!(app);
+        // Every handle to the circuit dropped, so its thread exits and releases
+        // the storage directory for the restored one.
+        drop(app);
+        drop(state);
+        thread.join().expect("the circuit thread exits");
+        uuid
+    };
+
+    let (state, _t) = storage_state(dir.path(), &["big"], Some(&uuid));
+    let subscription = state
+        .handle
+        .ask(|reply| circuit::Command::Subscribe {
+            view: "big".to_string(),
+            snapshot: true,
+            backpressure: false,
+            reply,
+        })
+        .await
+        .expect("asks")
+        .expect("subscribes");
+    let rows = subscription.snapshot.expect("a snapshot");
+    assert_eq!(rows.len(), 1, "only the order over 100 is big: {rows:?}");
+}
+
+/// A view materialized now and not saved then is refused, not started empty.
+#[actix_web::test]
+async fn a_view_the_checkpoint_did_not_save_is_refused_on_resume() {
+    let _lock = STORAGE.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::TempDir::new().expect("a storage directory");
+
+    let uuid = {
+        let (state, thread) = storage_state(dir.path(), &[], None);
+        let app = app!(state);
+        let uuid = take_checkpoint!(app);
+        drop(app);
+        drop(state);
+        thread.join().expect("the circuit thread exits");
+        uuid
+    };
+
+    let err = grasp_dbsp_server::snapshot::load(dir.path(), &uuid, &["big".to_string()])
+        .expect_err("refused");
+    assert!(err.contains("taken without `big`"), "{err}");
+}

@@ -45,6 +45,13 @@ pub enum ApiError {
     /// to commit. 409 where Feldera uses it, 400 otherwise.
     Conflict(String),
     Refused(String),
+    /// A client polling `/checkpoint_status` across a restart. 400, and
+    /// Feldera's code and message (`adapters/src/server/error.rs:304`, `:361`):
+    /// the checkpoint it is waiting for belonged to a run that no longer exists.
+    IncarnationMismatch {
+        requested: String,
+        expected: String,
+    },
 }
 
 impl std::fmt::Display for ApiError {
@@ -70,6 +77,7 @@ impl ApiError {
             ApiError::Gone(_) => "Terminating",
             ApiError::Conflict(_) => "TransactionInProgress",
             ApiError::Refused(_) => "InvalidParam",
+            ApiError::IncarnationMismatch { .. } => "IncarnationUuidMismatch",
         }
     }
 
@@ -94,6 +102,13 @@ impl ApiError {
                 (m.clone(), json!({}))
             }
             ApiError::Gone(m) => (m.clone(), json!({})),
+            ApiError::IncarnationMismatch {
+                requested,
+                expected,
+            } => (
+                format!("Incarnation UUID mismatch ({requested} in request, expected {expected})"),
+                json!({}),
+            ),
             ApiError::ParseErrors { total, errors } => (
                 format!(
                     "failed to parse {total} {}",
@@ -114,9 +129,10 @@ impl ResponseError for ApiError {
     fn status_code(&self) -> StatusCode {
         match self {
             ApiError::UnknownName { .. } => StatusCode::NOT_FOUND,
-            ApiError::InvalidParam(_) | ApiError::ParseErrors { .. } | ApiError::Refused(_) => {
-                StatusCode::BAD_REQUEST
-            }
+            ApiError::InvalidParam(_)
+            | ApiError::ParseErrors { .. }
+            | ApiError::Refused(_)
+            | ApiError::IncarnationMismatch { .. } => StatusCode::BAD_REQUEST,
             ApiError::Gone(_) => StatusCode::GONE,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
         }
