@@ -53,7 +53,7 @@ pub const TYPE_NAMES: &[&str] = &[
 /// `function` would make `f :: function` two readings.
 pub const DECL_KINDS: &[&str] = &["relation", "function"];
 
-pub const AGGREGATORS: &[&str] = &["sum", "count", "min", "max", "avg"];
+pub const AGGREGATORS: &[&str] = &["sum", "count", "min", "max", "avg", "argmin", "argmax"];
 
 /// "They are held now so that the standard library can grow into them without
 /// taking names a program was already using."
@@ -1105,10 +1105,11 @@ impl<'a> Parser<'a> {
                     ));
                 }
                 self.check_variable_name(&column, col_span)?;
-                let (function, arg, span) = self.aggregate()?;
+                let (function, arg, by, span) = self.aggregate()?;
                 Arg::Aggregate {
                     function,
                     arg,
+                    by,
                     span,
                 }
             } else {
@@ -1364,10 +1365,11 @@ impl<'a> Parser<'a> {
     /// aggregate, or an ordinary expression.
     fn rhs(&mut self) -> Result<Rhs, Diagnostic> {
         if self.at_aggregate() {
-            let (function, arg, span) = self.aggregate()?;
+            let (function, arg, by, span) = self.aggregate()?;
             return Ok(Rhs::Aggregate {
                 function,
                 arg,
+                by,
                 span,
             });
         }
@@ -1375,7 +1377,8 @@ impl<'a> Parser<'a> {
         Ok(Rhs::Expr(self.expr()?.expr))
     }
 
-    /// Whether an `aggregate ::= aggregator "<" [expr] ">"` begins here.
+    /// Whether an `aggregate ::= aggregator "<" [expr ["," "by" ":" expr]] ">"`
+    /// begins here.
     ///
     /// Peeks only, so a caller can refuse the form on the grounds of *where* it
     /// is before committing to reading it.
@@ -1384,9 +1387,14 @@ impl<'a> Parser<'a> {
             && self.kind_at(1) == Some(&Tok::Lt)
     }
 
-    /// `aggregate ::= aggregator "<" [expr] ">"`, which two places read: the
-    /// right of a `:=`, and a head argument.
-    fn aggregate(&mut self) -> Result<(Aggregator, Option<Expr>, Span), Diagnostic> {
+    /// `aggregate ::= aggregator "<" [expr ["," "by" ":" expr]] ">"`, which two
+    /// places read: the right of a `:=`, and a head argument.
+    ///
+    /// `by:` is read for any aggregator. Whether one may take it is inference's
+    /// to say, beside its other argument rules — so `sum<x, by: y>` parses and
+    /// is refused there, as `count<x>` is.
+    #[allow(clippy::type_complexity)]
+    fn aggregate(&mut self) -> Result<(Aggregator, Option<Expr>, Option<Expr>, Span), Diagnostic> {
         let Some(Tok::Ident(name)) = self.kind() else {
             unreachable!("`at_aggregate` said there was one")
         };
@@ -1402,8 +1410,24 @@ impl<'a> Parser<'a> {
         } else {
             Some(self.cat_expr()?.expr)
         };
+        // One named argument, and only that one: an aggregate is not a call,
+        // and a second name would be a second meaning to invent.
+        let by = if arg.is_some() && self.at(&Tok::Comma) {
+            self.bump();
+            let (name, name_span) = self.expect_ident("`by`")?;
+            if name != "by" {
+                return Err(self.error(
+                    name_span,
+                    format!("an aggregate's only named argument is `by`, found `{name}`"),
+                ));
+            }
+            self.expect(&Tok::Colon, "`:`")?;
+            Some(self.cat_expr()?.expr)
+        } else {
+            None
+        };
         let close = self.expect(&Tok::Gt, "`>`")?;
-        Ok((agg, arg, start.to(close.span)))
+        Ok((agg, arg, by, start.to(close.span)))
     }
 
     // -- expressions ---------------------------------------------------------

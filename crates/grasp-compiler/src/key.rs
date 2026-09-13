@@ -261,9 +261,14 @@ fn destructure(fields: &[(String, String)], rest: &core::Rest) -> String {
 pub fn rhs(r: &core::Rhs) -> String {
     match r {
         core::Rhs::Expr(e) => expr(e),
-        core::Rhs::Aggregate { function, arg, .. } => match arg {
-            Some(a) => format!("{}<{}>", aggregator(*function), expr(a)),
-            None => format!("{}<>", aggregator(*function)),
+        core::Rhs::Aggregate {
+            function, arg, by, ..
+        } => match (arg, by) {
+            (Some(a), Some(b)) => {
+                format!("{}<{}, by: {}>", aggregator(*function), expr(a), expr(b))
+            }
+            (Some(a), None) => format!("{}<{}>", aggregator(*function), expr(a)),
+            (None, _) => format!("{}<>", aggregator(*function)),
         },
     }
 }
@@ -275,6 +280,8 @@ pub fn aggregator(a: Aggregator) -> &'static str {
         Aggregator::Min => "min",
         Aggregator::Max => "max",
         Aggregator::Avg => "avg",
+        Aggregator::ArgMin => "argmin",
+        Aggregator::ArgMax => "argmax",
     }
 }
 

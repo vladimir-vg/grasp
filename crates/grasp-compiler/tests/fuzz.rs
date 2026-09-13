@@ -79,6 +79,8 @@ const TOKENS: &[&str] = &[
     "min",
     "max",
     "avg",
+    "argmin",
+    "argmax",
     "function",
     "circuit",
     "fixpoint",

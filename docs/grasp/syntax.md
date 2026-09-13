@@ -13,7 +13,7 @@ keywords     not  and  or  input  true  false  NONE
 types        boolean  i64  f64  string  json  dynamic  bytes  date  time
              timestamp  interval  optional  record  array  dict
 declarations relation  function
-aggregators  sum  count  min  max  avg
+aggregators  sum  count  min  max  avg  argmin  argmax
 operators    +  -  *  /  %  ++
 comparison   =  !=  <  <=  >  >=
 binding      :=
@@ -130,8 +130,8 @@ dict_key       ::= name | STRING        -- quoted only when not an identifier
 rest           ::= "*" [variable]       -- ignore, or bind, the remainder
 dict_rest      ::= "**" [variable]
 
-aggregate      ::= aggregator "<" [expr] ">"
-aggregator     ::= "sum" | "count" | "min" | "max" | "avg"
+aggregate      ::= aggregator "<" [expr ["," "by" ":" expr]] ">"
+aggregator     ::= "sum" | "count" | "min" | "max" | "avg" | "argmin" | "argmax"
 ```
 
 The names and literals those productions rest on, and the type grammar the two
@@ -454,7 +454,7 @@ These may not name a relation, a variable or a column:
   `interval`
 - **declaration kinds** — `relation`, `function`; the word a typespec uses to
   say what it declares
-- **aggregators** — `sum`, `count`, `min`, `max`, `avg`
+- **aggregators** — `sum`, `count`, `min`, `max`, `avg`, `argmin`, `argmax`
 
 Builtin names are *not* reserved as such; they are unavailable as relation names
 by the one-name rule above, but a column may be called `length`.
@@ -504,7 +504,7 @@ Pattern      = Var       { name }
 Rest         = None | Ignore | Bind { name }
 
 Rhs          = Expr
-             | Aggregate { fn: Aggregator, arg: Expr? }
+             | Aggregate { fn: Aggregator, arg: Expr?, by: Expr? }
 
 Expr         = Lit       { value }
              | Var       { name }

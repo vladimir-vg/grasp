@@ -208,6 +208,8 @@ pub enum Rhs {
     Aggregate {
         function: Aggregator,
         arg: Option<Expr>,
+        /// What `argmin` and `argmax` order by.
+        by: Option<Expr>,
         span: Span,
     },
 }

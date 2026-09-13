@@ -505,7 +505,7 @@ fn emit_aggregate(
 ) -> String {
     let mut projected: BTreeSet<String> = BTreeSet::new();
     for a in aggs {
-        if let Some(e) = &a.arg {
+        for e in a.arg.iter().chain(a.by.iter()) {
             crate::plan::collect_free(e, &mut projected);
         }
     }
@@ -524,9 +524,17 @@ fn emit_aggregate(
     let mut carried: Vec<String> = Vec::new();
     for a in aggs {
         let folded = names.intermediate(base);
-        let projection = match &a.arg {
-            Some(e) => expr_in(&Scope::row(VALUE), e, None),
-            None => "0".to_string(),
+        let projection = match (&a.arg, &a.by) {
+            // The pair grasp-dbsp's `argmin` and `argmax` read, by name — so the
+            // order written here is not load-bearing, but `by` first reads as
+            // what it is.
+            (Some(e), Some(b)) => format!(
+                "record(by: {}, value: {})",
+                expr_in(&Scope::row(VALUE), b, None),
+                expr_in(&Scope::row(VALUE), e, None)
+            ),
+            (Some(e), None) => expr_in(&Scope::row(VALUE), e, None),
+            (None, _) => "0".to_string(),
         };
         let _ = writeln!(
             out,
@@ -584,7 +592,7 @@ fn emit_aggregate(
 }
 
 fn aggregator_text(a: Aggregator) -> &'static str {
-    // grasp's five are grasp-dbsp's five, under the same names.
+    // grasp's seven are grasp-dbsp's seven, under the same names.
     key::aggregator(a)
 }
 

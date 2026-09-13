@@ -82,3 +82,19 @@
   expected_types:
     sizes:   {chars: i64, tags: i64}
     sizes:0: {t: string, g: "array(string)", a: i64, b: i64}
+
+# `argmin` and `argmax` give back the type of what they return, not of what they
+# order by — made optional when `by` may be absent, since a group whose every
+# `by` is absent reports with its value absent.
+- name: argmin and argmax keep the value's type, optional when by is
+  source: |
+    bid :: relation(item: string, who: string, price: i64, placed: optional(i64))
+    bid(item:, who:, price:, placed:) <- input
+
+    winner(item: i, first: f, best: b) <-
+        bid(item: i, who: w, price: p, placed: t)
+        f := argmin<w, by: t>
+        b := argmax<w, by: p>
+  expected_types:
+    winner:   {item: string, first: optional(string), best: string}
+    winner:0: {i: string, w: string, p: i64, t: optional(i64), f: optional(string), b: string}

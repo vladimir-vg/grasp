@@ -152,6 +152,8 @@ pub struct Agg {
     pub function: Aggregator,
     /// `None` for `count<>`, which "takes no argument and counts rows".
     pub arg: Option<core::Expr>,
+    /// What `argmin` and `argmax` order by; `None` for the others.
+    pub by: Option<core::Expr>,
 }
 
 /// One field of an output row.
@@ -902,11 +904,14 @@ fn plan_rule(
                 // come after everything contributing to it.
                 let e = match rhs {
                     core::Rhs::Expr(e) => e,
-                    core::Rhs::Aggregate { function, arg, .. } => {
+                    core::Rhs::Aggregate {
+                        function, arg, by, ..
+                    } => {
                         aggs.push(Agg {
                             out: name.clone(),
                             function: *function,
                             arg: arg.clone(),
+                            by: by.clone(),
                         });
                         continue;
                     }
@@ -1735,7 +1740,17 @@ fn lower(
                         }
                         None => None,
                     };
-                    lifted.push(Agg { arg, ..a });
+                    // On the same terms: a zero divisor in `by` removes the
+                    // assignment before it is ordered, not after.
+                    let by = match a.by {
+                        Some(e) => {
+                            let (pre, e) = total(partials, fresh, e);
+                            steps.extend(pre);
+                            Some(e)
+                        }
+                        None => None,
+                    };
+                    lifted.push(Agg { arg, by, ..a });
                 }
                 steps.push(Step::Aggregate(lifted));
             }
@@ -1939,7 +1954,7 @@ fn lower(
             Step::Aggregate(aggs) => {
                 for a in aggs {
                     want.remove(&a.out);
-                    if let Some(e) = &a.arg {
+                    for e in a.arg.iter().chain(a.by.iter()) {
                         want.extend(free(e));
                     }
                 }

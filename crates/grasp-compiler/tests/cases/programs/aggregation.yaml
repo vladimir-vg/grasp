@@ -578,3 +578,107 @@
       pass: infer
       message: "`sum` needs an argument: the expression to fold"
       line: 5
+
+- name: argmin and argmax pick one column by another
+  source: |
+    vote :: relation(term: i64, cand: string, offset: i64)
+    vote(term:, cand:, offset:) <- input
+
+    pick(term: t, first: f, last: l) <-
+        vote(term: t, cand: c, offset: o)
+        f := argmin<c, by: o>
+        l := argmax<c, by: o>
+
+  input:
+    - vote:
+        - [1, {term: 1, cand: "b", offset: 7}]
+        - [1, {term: 1, cand: "a", offset: 3}]
+        - [1, {term: 1, cand: "c", offset: 9}]
+        - [1, {term: 2, cand: "z", offset: 4}]
+
+  expected_exact_output:
+    - pick:
+        - [1, {term: 1, first: "a", last: "c"}]
+        - [1, {term: 2, first: "z", last: "z"}]
+
+# For `argmax` this is not what the largest pair would give: among equal `by`s the
+# largest pair has the largest value.
+- name: a tie on by goes to the smallest value
+  source: |
+    vote :: relation(term: i64, cand: string, offset: i64)
+    vote(term:, cand:, offset:) <- input
+
+    pick(term: t, first: f, last: l) <-
+        vote(term: t, cand: c, offset: o)
+        f := argmin<c, by: o>
+        l := argmax<c, by: o>
+
+  input:
+    - vote:
+        - [1, {term: 1, cand: "q", offset: 1}]
+        - [1, {term: 1, cand: "b", offset: 1}]
+        - [1, {term: 1, cand: "m", offset: 5}]
+        - [1, {term: 1, cand: "d", offset: 5}]
+
+  expected_exact_output:
+    - pick:
+        - [1, {term: 1, first: "b", last: "d"}]
+
+- name: argmin may stand in a head argument
+  source: |
+    vote :: relation(term: i64, cand: string, offset: i64)
+    vote(term:, cand:, offset:) <- input
+
+    pick(term: t, first: argmin<c, by: o>) <-
+        vote(term: t, cand: c, offset: o)
+
+  input:
+    - vote:
+        - [1, {term: 1, cand: "b", offset: 7}]
+        - [1, {term: 1, cand: "a", offset: 3}]
+
+  expected_exact_output:
+    - pick:
+        - [1, {term: 1, first: "a"}]
+
+- name: argmin needs a by
+  source: |
+    t :: relation(g: string, x: i64)
+    t(g:, x:) <- input
+
+    q(g: g, v: m) <-
+        t(g: g, x: x)
+        m := argmin<x>
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "`argmin` needs `by:`"
+
+- name: by belongs to argmin and argmax alone
+  source: |
+    t :: relation(g: string, x: i64)
+    t(g:, x:) <- input
+
+    q(g: g, v: s) <-
+        t(g: g, x: x)
+        s := sum<x, by: x>
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "`sum` has no `by:`"
+
+- name: argmax cannot order by a document
+  source: |
+    t :: relation(g: string, x: i64, d: json)
+    t(g:, x:, d:) <- input
+
+    q(g: g, v: m) <-
+        t(g: g, x: x, d: d)
+        m := argmax<x, by: d>
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "ordering is not defined on `json`, so `argmax` cannot order by it"

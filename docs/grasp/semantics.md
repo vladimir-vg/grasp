@@ -352,7 +352,7 @@ payroll(dept: d, total: s) <-
     s := sum<r>
 ```
 
-Aggregators are `sum`, `count`, `min`, `max` and `avg`.
+Aggregators are `sum`, `count`, `min`, `max`, `avg`, `argmin` and `argmax`.
 
 **An aggregate stands in two places and no others**: the right-hand side of a
 match, and a head argument. The second is sugar for the first —
@@ -432,12 +432,23 @@ not mention it.
   needs a second rule supplying it for the keys with nothing to count — which is
   an ordinary negated atom, and says what it means better than a default would.
 - **`count` is the only aggregator whose result type is fixed.** It is an `i64`;
-  every other one gives back its argument's type, `avg` included. So the mean of
+  every other one gives back its argument's type, `avg` included — for `argmin`
+  and `argmax`, the type of the value they return, made optional when `by` is. So the mean of
   `i64`s is an `i64`, and integer division **truncates toward zero**: the mean of
   `-1` and `-2` is `-1`, not `-2`. That is the direction `/` takes everywhere
   else in the language, which is the reason to prefer it.
+- **`argmin` and `argmax` return one value chosen by another.**
+  `f := argmin<c, by: o>` is the `c` of the assignment whose `o` is smallest, and
+  `argmax` of the one whose `o` is largest. `by:` is required on both and refused
+  on the other five.
+  - **A tie on `by` goes to the smallest value**, for both, so the answer depends
+    on the group alone and never on the order rows arrived in.
+  - **An absent `by` is skipped**, as absence is everywhere else here. A group
+    whose every `by` is absent reports with the value absent, which is why the
+    result is optional when `by` is.
 - **`sum` and `avg` need a numeric argument**, and **`min` and `max` need a
-  scalar one** — the same rule `<` obeys, for the same reason:
+  scalar one** — as do both of `argmin`'s and `argmax`'s expressions, since
+  a tie compares the value too — the same rule `<` obeys, for the same reason:
   [ordering](types.md#comparison-and-ordering) is defined on scalars only, and any invention
   would be arbitrary in a way that silently decides which row wins.
 - **An `optional` argument is looked through.** Absence is skipped rather than

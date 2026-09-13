@@ -112,11 +112,12 @@ fn head_aggregates(args: &[ast::KvArg]) -> Result<Vec<core::Stmt>, Diagnostic> {
             ast::Arg::Aggregate {
                 function,
                 arg,
+                by,
                 span,
-            } => Some((a, function, arg, span)),
+            } => Some((a, function, arg, by, span)),
             _ => None,
         })
-        .map(|(a, function, arg, span)| {
+        .map(|(a, function, arg, by, span)| {
             Ok(core::Stmt::Match {
                 lhs: core::Pattern::Var {
                     name: a.column.clone(),
@@ -125,6 +126,7 @@ fn head_aggregates(args: &[ast::KvArg]) -> Result<Vec<core::Stmt>, Diagnostic> {
                 rhs: core::Rhs::Aggregate {
                     function: *function,
                     arg: arg.as_ref().map(expr_of).transpose()?,
+                    by: by.as_ref().map(expr_of).transpose()?,
                     span: *span,
                 },
                 span: *span,
@@ -173,10 +175,12 @@ fn stmt_of(stmt: &ast::Stmt) -> Result<core::Stmt, Diagnostic> {
                 ast::Rhs::Aggregate {
                     function,
                     arg,
+                    by,
                     span,
                 } => core::Rhs::Aggregate {
                     function: *function,
                     arg: arg.as_ref().map(expr_of).transpose()?,
+                    by: by.as_ref().map(expr_of).transpose()?,
                     span: *span,
                 },
             },

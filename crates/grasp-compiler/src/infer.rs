@@ -960,10 +960,40 @@ impl Cx {
             core::Rhs::Aggregate {
                 function,
                 arg,
+                by,
                 span,
             } => {
                 let name = key::aggregator(*function);
                 let counting = *function == Aggregator::Count;
+                // `by:` is `argmin`'s and `argmax`'s alone, and neither means
+                // anything without it: it is what they order by.
+                let ordering = matches!(function, Aggregator::ArgMin | Aggregator::ArgMax);
+                match (ordering, by) {
+                    (true, None) => {
+                        return (
+                            Ty::Error,
+                            Some(Diagnostic::error(
+                                Pass::Infer,
+                                *span,
+                                format!("`{name}` needs `by:`, the expression it orders by"),
+                            )),
+                        );
+                    }
+                    (false, Some(b)) => {
+                        return (
+                            Ty::Error,
+                            Some(Diagnostic::error(
+                                Pass::Infer,
+                                b.span(),
+                                format!(
+                                    "`{name}` has no `by:`: only `argmin` and `argmax` order \
+                                     by one expression and return another"
+                                ),
+                            )),
+                        );
+                    }
+                    _ => {}
+                }
                 // "`count<>` takes no argument"; every other aggregator needs
                 // the expression it folds. Neither was checked, so `sum<>`
                 // quietly aggregated a literal and `count<e>` quietly meant
@@ -1010,10 +1040,15 @@ impl Cx {
                     // The same rule `<` enforces, and for the same reason:
                     // "any invention would be arbitrary in a way that silently
                     // decides `min` and `max`".
-                    Aggregator::Min | Aggregator::Max if !scalar(want) => Some(format!(
-                        "ordering is not defined on `{inner}`, so `{name}` has no meaning \
+                    // `argmin` and `argmax` too: a tie compares the value.
+                    Aggregator::Min | Aggregator::Max | Aggregator::ArgMin | Aggregator::ArgMax
+                        if !scalar(want) =>
+                    {
+                        Some(format!(
+                            "ordering is not defined on `{inner}`, so `{name}` has no meaning \
                          over it"
-                    )),
+                        ))
+                    }
                     _ => None,
                 };
                 if let Some(message) = wrong {
@@ -1022,10 +1057,39 @@ impl Cx {
                         Some(Diagnostic::error(Pass::Infer, e.span(), message)),
                     );
                 }
+                // What `argmin` and `argmax` order by must be orderable, and
+                // may be absent — a group whose every `by` is absent reports
+                // with its value absent, so the result then is too.
+                let mut optional_by = false;
+                if let Some(b) = by {
+                    let (by_ty, err) = self.expr_ty(b, vars);
+                    if err.is_some() {
+                        return (Ty::Error, err);
+                    }
+                    if !scalar(under_optional(&by_ty)) {
+                        return (
+                            Ty::Error,
+                            Some(Diagnostic::error(
+                                Pass::Infer,
+                                b.span(),
+                                format!(
+                                    "ordering is not defined on `{by_ty}`, so `{name}` cannot \
+                                     order by it"
+                                ),
+                            )),
+                        );
+                    }
+                    optional_by = matches!(by_ty, Ty::Optional(_));
+                }
                 // "Every aggregator but `count` gives back its argument's
                 //  type", `avg` included — the mean of `i64`s is an `i64`.
                 let ty = match function {
                     Aggregator::Count => Ty::I64,
+                    Aggregator::ArgMin | Aggregator::ArgMax
+                        if optional_by && !matches!(inner, Ty::Optional(_)) =>
+                    {
+                        Ty::Optional(Box::new(inner))
+                    }
                     _ => inner,
                 };
                 (ty, None)
@@ -2421,14 +2485,16 @@ impl Cx {
                 // an unbound name inside a call argument reached `plan`, which
                 // emitted a program reading a field that did not exist.
                 core::Stmt::Match { rhs, .. } => {
-                    let (expr, where_) = match rhs {
-                        core::Rhs::Expr(e) => (Some(e), "a match"),
-                        core::Rhs::Aggregate { arg, .. } => (arg.as_ref(), "an aggregate"),
+                    let (exprs, where_): (Vec<&core::Expr>, _) = match rhs {
+                        core::Rhs::Expr(e) => (vec![e], "a match"),
+                        core::Rhs::Aggregate { arg, by, .. } => {
+                            (arg.iter().chain(by.iter()).collect(), "an aggregate")
+                        }
                     };
-                    if let Some(e) = expr
-                        && let Some(d) = unbound(e, &bound, where_)
-                    {
-                        return Some(d);
+                    for e in exprs {
+                        if let Some(d) = unbound(e, &bound, where_) {
+                            return Some(d);
+                        }
                     }
                 }
                 // "An assertion binds nothing — the variable must already
@@ -2489,10 +2555,16 @@ fn check_aggregate_scope(rule: &core::Rule) -> Option<Diagnostic> {
             // invariant — "the aggregated column is in the input schema" — and
             // nothing enforced it.
             core::Stmt::Match {
-                rhs: core::Rhs::Aggregate { function, arg, .. },
+                rhs:
+                    core::Rhs::Aggregate {
+                        function, arg, by, ..
+                    },
                 ..
             } => {
                 if let Some(e) = arg
+                    .iter()
+                    .chain(by.iter())
+                    .find(|e| pick(&free(e), |v| after.contains(v)).is_some())
                     && let Some(v) = pick(&free(e), |v| after.contains(v))
                 {
                     return Some(Diagnostic::error(
@@ -2637,7 +2709,9 @@ fn statement_var_span(stmt: &core::Stmt, name: &str) -> Option<Span> {
         }),
         core::Stmt::Match { rhs, .. } => match rhs {
             core::Rhs::Expr(e) => var_span(e, name),
-            core::Rhs::Aggregate { arg, .. } => arg.as_ref().and_then(|e| var_span(e, name)),
+            core::Rhs::Aggregate { arg, by, .. } => {
+                arg.iter().chain(by.iter()).find_map(|e| var_span(e, name))
+            }
         },
         core::Stmt::Filter { expr, .. } => var_span(expr, name),
         core::Stmt::Assert { span, .. } => Some(*span),
@@ -2675,8 +2749,8 @@ fn reads(stmt: &core::Stmt) -> BTreeSet<String> {
         }
         core::Stmt::Match { rhs, .. } => match rhs {
             core::Rhs::Expr(e) => out.extend(free(e)),
-            core::Rhs::Aggregate { arg, .. } => {
-                if let Some(e) = arg {
+            core::Rhs::Aggregate { arg, by, .. } => {
+                for e in arg.iter().chain(by.iter()) {
                     out.extend(free(e));
                 }
             }
@@ -2815,7 +2889,7 @@ fn expressions(rule: &core::Rule) -> Vec<&core::Expr> {
             core::Stmt::Filter { expr, .. } => out.push(expr),
             core::Stmt::Match { rhs, .. } => match rhs {
                 core::Rhs::Expr(e) => out.push(e),
-                core::Rhs::Aggregate { arg, .. } => out.extend(arg.as_ref()),
+                core::Rhs::Aggregate { arg, by, .. } => out.extend(arg.iter().chain(by.iter())),
             },
             core::Stmt::Assert { .. } | core::Stmt::Input { .. } => {}
         }
@@ -2869,7 +2943,9 @@ fn expressions_mut(rule: &mut core::Rule) -> Vec<&mut core::Expr> {
             core::Stmt::Filter { expr, .. } => out.push(expr),
             core::Stmt::Match { rhs, .. } => match rhs {
                 core::Rhs::Expr(e) => out.push(e),
-                core::Rhs::Aggregate { arg, .. } => out.extend(arg.as_mut()),
+                core::Rhs::Aggregate { arg, by, .. } => {
+                    out.extend(arg.iter_mut().chain(by.iter_mut()))
+                }
             },
             core::Stmt::Assert { .. } | core::Stmt::Input { .. } => {}
         }

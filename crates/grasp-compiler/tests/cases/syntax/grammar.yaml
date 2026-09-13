@@ -386,3 +386,25 @@
         s(a: a)
         (not a)
   expected_ok: true
+
+- name: argmin and argmax take a by argument
+  source: |
+    vote :: relation(term: i64, cand: i64, offset: i64)
+
+    pick(term: t, first: f, last: l) <-
+        vote(term: t, cand: v, offset: o)
+        f := argmin<v, by: o>
+        l := argmax<v, by: o>
+  expected_ok: true
+
+- name: an aggregate's only named argument is by
+  source: |
+    t :: relation(g: string, x: i64)
+
+    q(g: g, v: m) <-
+        t(g: g, x: x)
+        m := argmin<x, over: x>
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "an aggregate's only named argument is `by`"

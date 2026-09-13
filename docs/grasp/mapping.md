@@ -603,8 +603,11 @@ is emitted over a projection that is never absent — `function((v) -> 0)` — a
 the two then mean the same thing. It is also why `count<>` takes no argument in
 grasp: there is nothing for one to be.
 
-The other four are grasp-dbsp's under the same names *and* the same types, `avg`
-included. Each gives back its argument's type, absent exactly where the argument
+The other six are grasp-dbsp's under the same names *and* the same types, `avg`
+included. `argmin` and `argmax` take a second expression, and grasp-dbsp's
+`aggregate` has room for only one projection. So each is emitted with the
+projection `record(by: …, value: …)`, which is exactly the pair grasp-dbsp's two
+read. Each gives back its argument's type, absent exactly where the argument
 could be — so nothing is narrowed on the way out, and a group whose values are
 all absent reports in both languages rather than being dropped by one of them.
 

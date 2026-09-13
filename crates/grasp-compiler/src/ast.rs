@@ -231,6 +231,9 @@ pub enum Arg {
         function: Aggregator,
         /// `None` for `count<>`, which takes no argument.
         arg: Option<Expr>,
+        /// `argmin<c, by: o>`'s `o`. `None` for every other aggregator, which
+        /// inference refuses one on.
+        by: Option<Expr>,
         span: Span,
     },
 }
@@ -322,10 +325,11 @@ pub enum Rest {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Rhs {
     Expr(Expr),
-    /// `sum<e>`; `count<>` has no argument.
+    /// `sum<e>`; `count<>` has no argument; `argmin<e, by: o>` has two.
     Aggregate {
         function: Aggregator,
         arg: Option<Expr>,
+        by: Option<Expr>,
         span: Span,
     },
 }
@@ -337,6 +341,8 @@ pub enum Aggregator {
     Min,
     Max,
     Avg,
+    ArgMin,
+    ArgMax,
 }
 
 impl Aggregator {
@@ -347,6 +353,8 @@ impl Aggregator {
             "min" => Some(Aggregator::Min),
             "max" => Some(Aggregator::Max),
             "avg" => Some(Aggregator::Avg),
+            "argmin" => Some(Aggregator::ArgMin),
+            "argmax" => Some(Aggregator::ArgMax),
             _ => None,
         }
     }
