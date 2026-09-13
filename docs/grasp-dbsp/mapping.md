@@ -802,11 +802,12 @@ same directory outright (`dbsp/src/storage/dirlock.rs:95-200`). Two live runners
 need two directories; `dbsp::storage::backend::tempdir_for_thread` is not a way
 around it, being per *thread* rather than per circuit.
 
-**A configuration naming `init_checkpoint` is refused** with a diagnostic rather
-than honoured. The field rides along on the type this crate passes through, but
-restoring is not what this runner does — a checkpoint pins the worker count it
-was written at and freezes `DynValue`'s archived variant order for good, neither
-of which is decided here. See [below](#checkpointing-and-parallelism).
+**A configuration naming `init_checkpoint` restores that checkpoint**, and
+`dbsp` does the restoring inside `Runtime::init_circuit`. Before that call,
+`Runner::build` reads the manifest `grasp-dbsp` writes beside every checkpoint
+and refuses one written at another worker count, by another value format, or by
+another program — three things `dbsp` does not check and each of which would
+otherwise corrupt quietly. See [below](#checkpointing-and-parallelism).
 
 ### What holds it up
 
@@ -842,6 +843,16 @@ thresholds deliberately ruin.
 [content id](#a-nodes-identity-is-its-content) — set through
 `Stream::set_persistent_id` as each node is built. Feldera's own dataflow IR
 carries one per node for the same reason (`crates/ir/src/mir.rs:21-46`).
+
+**They name nothing yet.** `dbsp` consults a compiler-assigned id only in its
+*persistent* mode (`dbsp/src/circuit/circuit_builder.rs:992-1003`). This runtime
+builds in the default *ephemeral* mode, where every state file is named by the
+node's position in the circuit and these ids are ignored — which is also the
+mode in which `dbsp` verifies its fingerprint on restore, and in which a missing
+state file aborts a restore rather than being backfilled. So a checkpoint
+restores only into the identical program today, and the ids are installed for
+the day restoring into an edited one is designed; see
+[`overview.md`](overview.md).
 
 Inside a `fixpoint` the requirement is stricter, and shapes the code rather than
 decorating it. In persistent mode a missing id fails the checkpoint outright with
@@ -895,9 +906,12 @@ placement — a program that only inserts gets the right answer even when a key'
 rows are scattered, and what a misplacement breaks is a retraction cancelling an
 insertion.
 
-**A checkpoint will be partitioned by worker.** Batch files are written under a
-`w{worker_index}-` prefix (`dbsp/src/storage/file/writer.rs:1161-1162`), and
-Feldera's own adapters refuse to change the worker count across a restore
-(`crates/adapters/src/controller.rs:5863-5866`). So whatever eventually sets the
-count has to record it with the checkpoint and reject a mismatch; it is not a
-free tuning knob once anything is stored.
+**A checkpoint is partitioned by worker.** Batch files are written under a
+`w{worker_index}-` prefix (`dbsp/src/storage/file/writer.rs:1161-1162`) and
+operator state under `{worker_index}-`, and `dbsp` does not check the count when
+it restores — a checkpoint read at another count leaves each worker holding rows
+the new hash places elsewhere, with no error. Feldera's adapters handle this by
+taking the count *from* the checkpoint (`crates/adapters/src/controller.rs:5863-5866`).
+This runtime records the count in each checkpoint's manifest and refuses a
+restore at any other, since silently overriding a number an operator wrote down
+is a surprise of its own. It is not a free tuning knob once anything is stored.

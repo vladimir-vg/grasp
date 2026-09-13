@@ -140,13 +140,16 @@ spill.
 
 ## Future work
 
-- **Checkpoint and restore.** The ids are in place — every operator carries its
-  node's content id as a `persistent_id` — but nothing takes or restores a
-  checkpoint yet. Storage landing does not change this: a spill directory holds
-  batches for a running circuit and is emptied when it stops, which is why a
-  storage configuration naming an `init_checkpoint` is refused rather than
-  half-honoured. Restoring one would pin the worker count it was written at and
-  freeze `DynValue`'s variant order for good. See [`mapping.md`](mapping.md).
+- **Restoring into a changed program.** A checkpoint restores into the identical
+  program or not at all: its manifest records a digest of every node's content
+  id, and a program that differs is refused. `dbsp` could do more — in its
+  persistent mode, operators keep their state across an edit when their
+  content id is unchanged, and new ones are backfilled — but that mode turns
+  off the fingerprint check this runtime relies on, and needs a policy for what
+  an edit may change that is not written yet. The content ids are already
+  installed as `persistent_id`s for it; in the ephemeral mode used today,
+  `dbsp` names state files by position and ignores them. See
+  [`mapping.md`](mapping.md).
 - **`left_join` is *not* planned.** `dbsp` has one, but its right-hand input is
   `OrdIndexedZSet<K, Option<V2>>` — a second Rust batch type, in a design whose
   leverage is that there is exactly one. It is not needed: a left join is
@@ -178,13 +181,15 @@ spill.
   1, which sorts backwards, and [`mapping.md`](mapping.md) requires the archived
   order to be the value order. Inexact arithmetic here is `f64`.
 
-  Adding a variant shifts `DynValue`'s archived discriminant, which is a
-  persisted storage format. A spilled batch is written in that form, but it is
-  read back by the process that wrote it and deleted with the directory, so the
-  discriminant has to be stable only within a run and the variant order is still
-  free to settle. That stops being true of the first batch expected to outlive
-  the process — a checkpoint, which is future work below. The freedom is what
-  let `SqlString` be removed rather than deprecated.
+  Adding, removing or reordering a variant changes `DynValue`'s archived
+  discriminant, which is a persisted storage format. A checkpoint outlives the
+  process that wrote it, so each one records `DynValue::format_digest` — a hash
+  of the variant names in declaration order — and a restore by a build whose
+  digest differs is refused rather than reading a value back as the wrong
+  variant. The order is still free to change, which is what let `SqlString` be
+  removed rather than deprecated; the price of every change is now every
+  existing checkpoint. `tests/invariants.rs` pins the list to the real
+  discriminants, so the digest cannot fall out of step with the enum.
 
 - **Document odds and ends.** A `shape(doc)` builtin — a program that must
   branch on what a document holds attempts casts in order today, which works and
@@ -244,6 +249,7 @@ spill.
 | `expr` | type-checked expressions and their tree-walking evaluator |
 | `json` | the Feldera JSON codec (`weighted`, `insert_delete`) |
 | `lower` | mapping the program onto `dbsp` operators; also circuit construction, input/output handles and transactions (`Runner`) |
+| `checkpoint` | the manifest recorded beside each checkpoint — worker count, value format, program — and the checks a restore must pass |
 
 This crate is a library: it has no binary. Serving a program over HTTP, and
 the `validate` and `serve` commands, belong to `grasp-dbsp-server` — see

@@ -28,6 +28,7 @@ grasp-dbsp-server serve program.gdbsp --config-file pipeline.yaml --port 8080
 | `--bind-address <addr>` | default `127.0.0.1` |
 | `--port <n>` | default `8080`; `0` asks the operating system and prints what it got |
 | `--paused` | start paused — rows are accepted and not computed, as Feldera's `--initial=paused` |
+| `--resume-from <uuid>` | restore a checkpoint before serving; `latest` for the newest restorable one — see [Checkpoints](#checkpoints) |
 
 Everything that can fail is built *before* a port is bound: the program is
 compiled, the configuration read and checked against it, the storage directory
@@ -69,6 +70,7 @@ materialized:
 | `storage` | *how* storage is used — Feldera's `StorageOptions`, verbatim | none |
 | `storage_config` | *where* it lives — Feldera's `StorageConfig`, verbatim | none |
 | `materialized` | views whose contents are kept, so `send_snapshot=true` has something to send | none |
+| `checkpoint_retention` | how many checkpoints to keep; older ones are removed once a newer one commits | `2` |
 
 ### Three departures from Feldera, each deliberate
 
@@ -109,7 +111,8 @@ expected:
 | keys | why not |
 |---|---|
 | `inputs`, `outputs` | configure Feldera connectors — Kafka, files, object stores. There is exactly one input transport here and one output transport, so there is nothing to configure |
-| `fault_tolerance`, `checkpoint_during_suspend` | need checkpoints, and this runtime starts a circuit from nothing. Restoring one would pin the worker count it was written at and freeze `DynValue`'s archived variant order |
+| `fault_tolerance` | replays *input* after a crash, from each connector's journaled offsets. There are no connectors here and nothing is journaled, so there is nothing to replay. Checkpoints themselves are supported — see [Checkpoints](#checkpoints) |
+| `checkpoint_during_suspend` | deprecated in Feldera, where it has no effect, and there is no `/suspend` here for it to apply to |
 | `hosts`, `multihost` | a multi-host `dbsp` layout. This runtime names a worker count and nothing else |
 | `clock_resolution_usecs`, `clock_timezone_offset` | pace Feldera's clock for SQL's `NOW()`. This language has no clock: a timestamp is a value a program is given, never one it reads |
 | `min_batch_size_records`, `max_buffering_delay_usecs` | tune how Feldera's controller batches input before stepping. This server steps once per drain of its command queue, so a burst of requests is already one transaction |
@@ -134,6 +137,9 @@ would say about a pipeline it had never heard of.
 | `/completion_status?token=…` | GET | has this ingestion been computed? |
 | `/stats` | GET | state, step counters, transaction status |
 | `/metadata` | GET | the tables, views and materialized views this program has |
+| `/checkpoint` | POST | start a checkpoint; answers before it is durable |
+| `/checkpoint_status` | GET | the last checkpoint that committed, and the last that did not |
+| `/checkpoints` | GET | the checkpoints the storage directory holds |
 
 ### Ingress
 
@@ -251,6 +257,77 @@ already grouped into one, and an explicit transaction is the knob for grouping
 more. Transactions do not nest: opening one while one is open is a 409, and
 committing with nothing open is a diagnostic rather than a panic.
 
+## Checkpoints
+
+A checkpoint is the circuit's state written to `storage_config.path`, so that a
+later run can start from it rather than from nothing. It needs `storage` and
+`storage_config`; without them a request for one is a 400 that says so.
+
+```bash
+curl -X POST localhost:8080/v0/pipelines/shop/checkpoint
+```
+
+```json
+{"checkpoint_sequence_number": 1, "incarnation_uuid": "1ee081fc-d119-44a5-bd40-06347812d3fd"}
+```
+
+The answer arrives before the checkpoint is durable. The circuit thread only
+*prepares* it — the part that has to see a consistent circuit — and the fsyncs
+run on a thread of their own, so ingestion does not wait on a disk. Poll for the
+sequence number:
+
+```bash
+curl 'localhost:8080/v0/pipelines/shop/checkpoint_status?incarnation_uuid=1ee081fc-d119-44a5-bd40-06347812d3fd'
+```
+
+```json
+{"success": 1, "failure": null}
+```
+
+`success` is the last sequence number that committed; `failure` is the last that
+did not, with its `sequence_number`, `error` and `failed_at` — and, as in
+Feldera, a later success does not clear it. Passing `incarnation_uuid` turns a
+poll that spans a restart into a 400 `IncarnationUuidMismatch`, rather than a
+status belonging to a run that no longer exists. `GET /checkpoints` lists what
+the directory holds.
+
+One checkpoint is written at a time, and never inside a transaction; either
+request is a 409. `checkpoint_retention` sets how many are kept — **Feldera has
+no such key**, its manager decides — and older ones are removed once a newer one
+has committed. `dbsp` never removes below two, so a smaller number is not
+refused, only not honoured below that.
+
+### Resuming
+
+```bash
+grasp-dbsp-server serve program.gdbsp --config-file pipeline.yaml --resume-from latest
+```
+
+`--resume-from` takes a checkpoint's uuid, or `latest` for the newest one that
+has a manifest; one a crash left half-written is passed over rather than chosen.
+Every restore is checked before a port is bound, against a manifest written
+beside `dbsp`'s own state. `dbsp` checks none of what a restore depends on, and
+each mismatch below would corrupt quietly rather than fail:
+
+| a checkpoint written… | is refused, because |
+|---|---|
+| at another worker count | every state file is named for the worker that wrote it, so a different count hands each worker rows another one is now responsible for |
+| by a build whose value format differs | `DynValue`'s variant order is the discriminant every stored value carries, so a value would come back as a different variant |
+| by another program, or by the same one observing different outputs | state is restored by position, so a mismatch is not a partial restore but a wrong one |
+| with no manifest | none of the above can be checked |
+
+Feldera adopts the worker count from the checkpoint instead of refusing. This
+server refuses, since silently overriding a number an operator wrote down is its
+own surprise, and the refusal names the count to set.
+
+**Snapshots survive a restart.** A restored circuit replays nothing, so the fold
+behind `send_snapshot=true` would otherwise start empty and report a restored
+view as having no rows. Each checkpoint therefore saves every materialized view's
+rows — captured between transactions, at the same instant as the circuit's
+state — and resuming reloads them. A view the configuration materializes that
+the checkpoint did not save is refused rather than started empty: remove it from
+`materialized`, or take a new checkpoint with it.
+
 ## Errors
 
 Feldera's envelope, because a drop-in server that invents its own is not one — a
@@ -267,5 +344,6 @@ client's error handling is as much part of the API as its success path:
 | `UnknownPipelineName` | 404 | a request for a pipeline this process does not serve |
 | `InvalidParam` | 400 | a query parameter, format or token this server does not implement — and anything else the runtime refuses, such as committing with no transaction open |
 | `ParseErrors` | 400 | rows that did not parse; `details` carries `num_errors` and each failure |
-| `TransactionInProgress` | 409 | a transaction is already open |
+| `TransactionInProgress` | 409 | a transaction is already open — or a checkpoint was asked for inside one, or while another is being written |
+| `IncarnationUuidMismatch` | 400 | a checkpoint status asked of a run that is not this one |
 | `Terminating` | 410 | the circuit is no longer running |
