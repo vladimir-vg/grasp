@@ -575,3 +575,44 @@ fn the_latest_checkpoint_is_the_newest_that_has_a_manifest() {
         "a checkpoint without a manifest is passed over"
     );
 }
+
+/// A checkpoint written by a build with another value format is refused — and
+/// for that reason alone.
+///
+/// Faked by rewriting the manifest's digest: the real case, a build with
+/// `DynValue`'s variants reordered, cannot exist inside one test binary. What
+/// this pins is that the check is made and says which of the three it was.
+#[test]
+fn a_checkpoint_from_another_value_format_is_refused() {
+    let _lock = ONE_AT_A_TIME.lock().expect("the storage lock");
+    let (dir, config) = forced(0);
+    let uuid = write_a_checkpoint(&config, 1);
+
+    let path = grasp_dbsp::checkpoint::Manifest::path(dir.path(), &uuid);
+    let mut manifest: grasp_dbsp::checkpoint::Manifest =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("reads the manifest"))
+            .expect("parses the manifest");
+    manifest.format_digest ^= 1;
+    manifest.write(dir.path()).expect("rewrites the manifest");
+
+    let plan = grasp_dbsp::compile(COUNTED).expect("compiles");
+    let err = Runner::build(
+        &plan,
+        &["d".to_string()],
+        RunnerConfig {
+            storage: Some(config.with_init_checkpoint(Some(uuid.parse().expect("a uuid")))),
+            ..RunnerConfig::default()
+        },
+    )
+    .err()
+    .expect("refused");
+    let text = grasp_dbsp::diag::render(&err);
+    assert!(
+        text.contains("value format differs"),
+        "names the format: {text}"
+    );
+    assert!(
+        !text.contains("worker(s)") && !text.contains("different program"),
+        "only the format differs, so only the format is named: {text}"
+    );
+}
