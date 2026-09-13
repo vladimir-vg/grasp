@@ -102,6 +102,159 @@ impl<T: dbsp::Timestamp> Aggregator<DynValue, T, ZWeight> for MinSkippingNone {
     }
 }
 
+/// `argmin` and `argmax`, over pairs the lowering has rebuilt as exactly
+/// `Record([by, value])`.
+///
+/// The accumulator is the pair rather than the value, so that the semigroup can
+/// compare two of them; `finalize` takes the `value` out. Pairs order by `by`
+/// and then by `value`, which is what settles a tie without code saying so.
+///
+/// A pair whose `by` is absent loses to any other and is only kept when nothing
+/// else is there. `finalize` turns that into `NONE`: the all-absent group,
+/// which reports rather than disappearing, as [`MinSkippingNone`] does.
+#[derive(Clone)]
+struct ArgMinSkippingNone;
+
+#[derive(Clone)]
+struct ArgMaxSkippingNone;
+
+/// The `by` of a rebuilt pair.
+fn pair_by(pair: &DynValue) -> &DynValue {
+    match pair {
+        DynValue::Record(fields) => &fields[0],
+        _ => unreachable!("the lowering builds every pair as Record([by, value])"),
+    }
+}
+
+/// The answer a pair stands for: its `value`, or `NONE` if its `by` is absent.
+fn pair_value(pair: &DynValue) -> DynValue {
+    match pair {
+        DynValue::Record(fields) if !fields[0].is_none() => fields[1].clone(),
+        _ => DynValue::None,
+    }
+}
+
+#[derive(Clone)]
+struct ArgMinSemigroup;
+
+impl Semigroup<DynValue> for ArgMinSemigroup {
+    fn combine(left: &DynValue, right: &DynValue) -> DynValue {
+        match (pair_by(left).is_none(), pair_by(right).is_none()) {
+            (true, _) => right.clone(),
+            (false, true) => left.clone(),
+            // The smaller pair has the smaller `by`, or on a tie the smaller
+            // `value` — both of which are the answer.
+            (false, false) => left.min(right).clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ArgMaxSemigroup;
+
+impl Semigroup<DynValue> for ArgMaxSemigroup {
+    fn combine(left: &DynValue, right: &DynValue) -> DynValue {
+        match (pair_by(left).is_none(), pair_by(right).is_none()) {
+            (true, _) => right.clone(),
+            (false, true) => left.clone(),
+            // Not `max` of the pairs: on a tie that picks the larger `value`.
+            (false, false) => match pair_by(left).cmp(pair_by(right)) {
+                std::cmp::Ordering::Greater => left.clone(),
+                std::cmp::Ordering::Less => right.clone(),
+                std::cmp::Ordering::Equal => left.min(right).clone(),
+            },
+        }
+    }
+}
+
+impl<T: dbsp::Timestamp> Aggregator<DynValue, T, ZWeight> for ArgMinSkippingNone {
+    type Accumulator = DynValue;
+    type Output = DynValue;
+    type Semigroup = ArgMinSemigroup;
+
+    fn aggregate<VTrait, RTrait>(
+        &self,
+        cursor: &mut dyn dbsp::trace::Cursor<VTrait, DynUnit, T, RTrait>,
+    ) -> Option<DynValue>
+    where
+        VTrait: DataTrait + ?Sized,
+        RTrait: WeightTrait + ?Sized,
+        DynValue: Erase<VTrait>,
+        ZWeight: Erase<RTrait>,
+    {
+        // Forward. Pairs with an absent `by` sort first and are passed over;
+        // the first present pair has the smallest `by`, and among those the
+        // smallest `value`.
+        let mut absent: Option<DynValue> = None;
+        while cursor.key_valid() {
+            let mut weight: ZWeight = HasZero::zero();
+            cursor.map_times(&mut |_, w| {
+                weight.add_assign_by_ref(unsafe { w.downcast() });
+            });
+            if !weight.is_zero() {
+                let pair = unsafe { cursor.key().downcast::<DynValue>() };
+                if pair_by(pair).is_none() {
+                    absent.get_or_insert_with(|| pair.clone());
+                } else {
+                    return Some(pair.clone());
+                }
+            }
+            cursor.step_key();
+        }
+        absent
+    }
+
+    fn finalize(&self, accumulator: DynValue) -> DynValue {
+        pair_value(&accumulator)
+    }
+}
+
+impl<T: dbsp::Timestamp> Aggregator<DynValue, T, ZWeight> for ArgMaxSkippingNone {
+    type Accumulator = DynValue;
+    type Output = DynValue;
+    type Semigroup = ArgMaxSemigroup;
+
+    fn aggregate<VTrait, RTrait>(
+        &self,
+        cursor: &mut dyn dbsp::trace::Cursor<VTrait, DynUnit, T, RTrait>,
+    ) -> Option<DynValue>
+    where
+        VTrait: DataTrait + ?Sized,
+        RTrait: WeightTrait + ?Sized,
+        DynValue: Erase<VTrait>,
+        ZWeight: Erase<RTrait>,
+    {
+        // Backward, as `Max` walks (`dbsp/src/operator/dynamic/aggregate/max.rs`).
+        // The first live pair has the largest `by` — but, of its ties, the
+        // largest `value`. So keep going while `by` is unchanged: the last pair
+        // passed has the smallest. An absent `by` sorts before every present
+        // one, so it is reached only after them, and differs, and stops the
+        // walk; a group with nothing but absent `by`s keeps the smallest.
+        cursor.fast_forward_keys();
+        let mut best: Option<DynValue> = None;
+        while cursor.key_valid() {
+            let mut weight: ZWeight = HasZero::zero();
+            cursor.map_times(&mut |_, w| {
+                weight.add_assign_by_ref(unsafe { w.downcast() });
+            });
+            if !weight.is_zero() {
+                let pair = unsafe { cursor.key().downcast::<DynValue>() };
+                let differs = best.as_ref().is_some_and(|b| pair_by(pair) != pair_by(b));
+                if differs {
+                    break;
+                }
+                best = Some(pair.clone());
+            }
+            cursor.step_key_reverse();
+        }
+        best
+    }
+
+    fn finalize(&self, accumulator: DynValue) -> DynValue {
+        pair_value(&accumulator)
+    }
+}
+
 /// A failure while *running* a built circuit, as distinct from a failure to
 /// build one. Compilation problems are [`Diagnostic`]s; these are not, because
 /// they have no source location — nothing in the program text caused them.
@@ -876,6 +1029,37 @@ macro_rules! operator_arms {
                     })
                 }
 
+                // A value chosen by another. Each row is rebuilt as exactly
+                // `Record([by, value])`, with both picked by name from the
+                // projection's type: a record literal's field order is its type's
+                // order, so trusting the projected record would let
+                // `record(value: …, by: …)` sort by `value` first.
+                Agg::ArgMin | Agg::ArgMax => {
+                    let (Some(by), Some(value)) =
+                        (projection.field_index("by"), projection.field_index("value"))
+                    else {
+                        return Err(shape_error($node, "a `record(by, value)` projection").into());
+                    };
+                    let f = f.clone();
+                    let pairs = $dep(*input).indexed($node)?.map_index(
+                        move |(k, v): (&DynValue, &DynValue)| {
+                            let pair = match eval(&f, &[v]) {
+                                DynValue::Record(fields) => {
+                                    DynValue::Record(vec![fields[by].clone(), fields[value].clone()])
+                                }
+                                other => unreachable!(
+                                    "the checker requires a record projection, found {other:?}"
+                                ),
+                            };
+                            (k.clone(), pair)
+                        },
+                    );
+                    Node::Indexed(match agg {
+                        Agg::ArgMin => pairs.aggregate(ArgMinSkippingNone),
+                        _ => pairs.aggregate(ArgMaxSkippingNone),
+                    })
+                }
+
                 // Floating-point `sum` and `avg` take the *non-linear* path: fp
                 // addition is not associative, so an incrementally maintained
                 // sum would depend on the order changes arrived in. A fold
@@ -976,7 +1160,9 @@ macro_rules! operator_arms {
                             // linear.
                             Agg::Avg => DynValue::I64(acc.sum / acc.rows),
                             Agg::Sum => DynValue::I64(acc.sum),
-                            Agg::Min | Agg::Max => unreachable!("handled above"),
+                            Agg::Min | Agg::Max | Agg::ArgMin | Agg::ArgMax => {
+                                unreachable!("handled above")
+                            }
                         },
                     ))
                 }

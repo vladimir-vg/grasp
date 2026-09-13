@@ -911,6 +911,8 @@ const RESERVED: &[&str] = &[
     "max",
     "count",
     "avg",
+    "argmin",
+    "argmax",
     "coalesce",
     "if",
     "abs",

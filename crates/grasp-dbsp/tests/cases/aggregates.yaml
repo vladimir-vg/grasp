@@ -444,3 +444,115 @@
     - n:
         - [1, "a", 1]
         - [1, "b", 0]
+
+# `argmin` and `argmax` return one value chosen by another: `by` is compared,
+# `value` is returned.
+- name: argmin and argmax return the value of the extreme row
+  source: |
+    t := input("t")
+    t :: zset(record(g: string, o: i64, c: string))
+    idx := map_index(t, function((r) -> record(key: r.g, value: r)))
+    lo  := aggregate(idx, argmin, function((v) -> record(by: v.o, value: v.c)))
+    hi  := aggregate(idx, argmax, function((v) -> record(by: v.o, value: v.c)))
+
+  input:
+    - t:
+        - [1, {g: "a", o: 3, c: "x"}]
+        - [1, {g: "a", o: 1, c: "y"}]
+        - [1, {g: "a", o: 2, c: "z"}]
+
+  expected_exact_output:
+    - lo:
+        - [1, "a", "y"]
+      hi:
+        - [1, "a", "x"]
+
+# A tie on `by` goes to the smallest `value` for both — which for `argmax` is not
+# what taking the largest pair would give, since among equal `by`s the largest
+# pair has the largest `value`.
+- name: a tie goes to the smallest value, for argmin and argmax alike
+  source: |
+    t := input("t")
+    t :: zset(record(g: string, o: i64, c: string))
+    idx := map_index(t, function((r) -> record(key: r.g, value: r)))
+    lo  := aggregate(idx, argmin, function((v) -> record(by: v.o, value: v.c)))
+    hi  := aggregate(idx, argmax, function((v) -> record(by: v.o, value: v.c)))
+
+  input:
+    - t:
+        - [1, {g: "a", o: 1, c: "q"}]
+        - [1, {g: "a", o: 1, c: "b"}]
+        - [1, {g: "a", o: 5, c: "m"}]
+        - [1, {g: "a", o: 5, c: "d"}]
+
+  expected_exact_output:
+    - lo:
+        - [1, "a", "b"]
+      hi:
+        - [1, "a", "d"]
+
+# The pair is rebuilt by name, so a literal that writes `value` first means the
+# same thing. Trusting the projected record would sort by `value` here.
+- name: the order the literal writes by and value in does not matter
+  source: |
+    t := input("t")
+    t :: zset(record(g: string, o: i64, c: string))
+    idx := map_index(t, function((r) -> record(key: r.g, value: r)))
+    lo  := aggregate(idx, argmin, function((v) -> record(value: v.c, by: v.o)))
+
+  input:
+    - t:
+        - [1, {g: "a", o: 9, c: "a"}]
+        - [1, {g: "a", o: 1, c: "z"}]
+
+  expected_exact_output:
+    - lo:
+        - [1, "a", "z"]
+
+# An absent `by` is skipped, as `min` skips absence. A group with no present
+# `by` still reports, with `NONE`, which is why the result is optional here.
+- name: an absent by is skipped, and an all-absent group reports NONE
+  source: |
+    t := input("t")
+    t :: zset(record(g: string, o: optional(i64), c: string))
+    idx := map_index(t, function((r) -> record(key: r.g, value: r)))
+    lo  := aggregate(idx, argmin, function((v) -> record(by: v.o, value: v.c)))
+    hi  := aggregate(idx, argmax, function((v) -> record(by: v.o, value: v.c)))
+
+  input:
+    - t:
+        - [1, {g: "a", o: null, c: "n"}]
+        - [1, {g: "a", o: 4, c: "k"}]
+        - [1, {g: "a", o: 2, c: "j"}]
+        - [1, {g: "b", o: null, c: "p"}]
+
+  expected_exact_output:
+    - lo:
+        - [1, "a", "j"]
+        - [1, "b", null]
+      hi:
+        - [1, "a", "k"]
+        - [1, "b", null]
+
+# The incremental case: retracting the winner hands the answer to the next row,
+# which a stale accumulator would miss.
+- name: retracting the winner moves argmin to the next row
+  source: |
+    t := input("t")
+    t :: zset(record(g: string, o: i64, c: string))
+    idx := map_index(t, function((r) -> record(key: r.g, value: r)))
+    lo  := aggregate(idx, argmin, function((v) -> record(by: v.o, value: v.c)))
+
+  input:
+    - t:
+        - [1, {g: "a", o: 1, c: "y"}]
+        - [1, {g: "a", o: 3, c: "x"}]
+    - t:
+        - [-1, {g: "a", o: 1, c: "y"}]
+
+  expected_exact_output:
+    - lo:
+        - [1, "a", "y"]
+    - lo:
+        - [-1, "a", "y"]
+        - [1, "a", "x"]

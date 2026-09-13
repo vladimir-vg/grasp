@@ -34,7 +34,7 @@ pub const OPERATORS: &[&str] = &[
 
 /// Every aggregator name. These appear as bare names in argument position, so a
 /// node named `min` would be silently shadowed if they were not reserved.
-pub const AGGREGATORS: &[&str] = &["min", "max", "sum", "avg", "count"];
+pub const AGGREGATORS: &[&str] = &["min", "max", "sum", "avg", "count", "argmin", "argmax"];
 
 /// Where the `key` and `value` fields sit in the record an indexing operator's
 /// function returns.
@@ -56,6 +56,16 @@ pub enum Agg {
     Sum,
     Avg,
     Count,
+    // Appended, and any new aggregator must be too: a node's content id hashes
+    // the discriminant (`content.rs`), so inserting one earlier would renumber
+    // the rest and change the identity of every program that uses them — and
+    // with it every checkpoint's program digest.
+    /// The `value` from the row whose `by` is smallest, ties to the smallest
+    /// `value`.
+    ArgMin,
+    /// The `value` from the row whose `by` is largest, ties to the smallest
+    /// `value`.
+    ArgMax,
 }
 
 #[derive(Debug, Clone, PartialEq)]

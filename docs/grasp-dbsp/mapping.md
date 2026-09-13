@@ -539,6 +539,25 @@ there is exactly one. All three cases matter: the smallest present value; `NONE`
 when the group has rows but none present; and no row at all when the group is
 empty.
 
+**`argmin` and `argmax` are hand-written too**, as `ArgMinSkippingNone` and
+`ArgMaxSkippingNone` in `lower.rs`.
+
+- **The pair is rebuilt, not trusted.** Each row is re-projected to exactly
+  `Record([by, value])`, with both fields picked by name from the projection's
+  type. A record literal's field order is its type's order, so
+  `record(value: …, by: …)` would otherwise sort by `value` first, and the
+  cursor would walk the wrong column.
+- **Ties need no code.** In the rebuilt pair, rows order by `by` and then by
+  `value`, so a tie on `by` is already sorted by `value`.
+- **`argmin` walks forward.** It passes every pair whose `by` is `NONE`, which
+  sort first, and returns the first present pair's `value`.
+- **`argmax` can't just take the last pair.** Among pairs sharing the largest
+  `by`, the last has the *largest* `value`. So it walks backward to that `by`,
+  keeps going while `by` is unchanged, and returns the `value` of the last pair
+  it passes.
+- **Both distinguish the three cases `MinSkippingNone` does:** a value, `NONE`
+  for a group whose every `by` is absent, and no row at all for an empty group.
+
 `Min`/`Max` have `Output = V`, so `aggregate(s, min|max, f)` produces
 `OrdIndexedZSet(K, A)` where `A` is the type `f` projects. They compare using
 `DynValue`'s `Ord` — see invariant 1 above, which is why that ordering matters

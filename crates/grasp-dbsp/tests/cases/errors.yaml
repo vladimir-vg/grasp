@@ -229,7 +229,7 @@
 
   expected_diagnostics:
     - pass: typecheck
-      message: "expected min, max, sum, avg or count"
+      message: "expected min, max, sum, avg, count, argmin or argmax"
 
 - name: sum needs a numeric projection
   source: |
@@ -982,3 +982,51 @@
   expected_diagnostics:
     - pass: typecheck
       message: "typespec for `b`, which is not declared"
+
+- name: argmin needs a projection with by and value
+  source: |
+    a := input("a")
+    a :: zset(record(k: i64, o: i64, c: string))
+    idx := map_index(a, function((r) -> record(key: r.k, value: r)))
+    out := aggregate(idx, argmin, function((v) -> record(value: v.c)))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "needs its projection to be `record(by: …, value: …)`"
+
+# Nothing but `by` and `value` is read, so a third field is a mistake rather than
+# something to ignore.
+- name: argmax refuses a projection with an extra field
+  source: |
+    a := input("a")
+    a :: zset(record(k: i64, o: i64, c: string))
+    idx := map_index(a, function((r) -> record(key: r.k, value: r)))
+    out := aggregate(idx, argmax, function((v) -> record(by: v.o, value: v.c, extra: v.k)))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "has fields other than `by` and `value`"
+
+- name: argmin cannot order by a document
+  source: |
+    a := input("a")
+    a :: zset(record(k: i64, payload: json))
+    idx := map_index(a, function((r) -> record(key: r.k, value: r)))
+    out := aggregate(idx, argmin, function((v) -> record(by: v.payload, value: v.k)))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "orders by `by`, and documents have no meaningful order"
+
+# `dynamic` sorts by type tag exactly as `json` does, and the comparison
+# operators already refuse it; `min` and `max` once accepted it.
+- name: max over dynamics is rejected
+  source: |
+    a := input("a")
+    a :: zset(record(k: i64, d: dynamic))
+    idx := map_index(a, function((r) -> record(key: r.k, value: r)))
+    out := aggregate(idx, max, function((v) -> v.d))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "has no meaning over dynamics"

@@ -760,12 +760,14 @@ fn check_aggregate(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Plan
                 "sum" => Agg::Sum,
                 "avg" => Agg::Avg,
                 "count" => Agg::Count,
+                "argmin" => Agg::ArgMin,
+                "argmax" => Agg::ArgMax,
                 other => {
                     return err(
                         span,
                         format!(
                             "unknown aggregator `{other}`; expected \
-                             min, max, sum, avg or count"
+                             min, max, sum, avg, count, argmin or argmax"
                         ),
                     );
                 }
@@ -790,16 +792,69 @@ fn check_aggregate(cx: &Ctx<'_>, plan: &Plan) -> TResult<Option<(BatchType, Plan
                 // Same reason `<` is rejected: the ordering is tag-first, so a
                 // `min` over documents returns the smallest by tag, which is a
                 // result nobody asked for.
-                Agg::Min | Agg::Max if out.non_null() == &TypeDesc::Json => {
+                //
+                // `dynamic` for the same reason, which the comparison operators
+                // already refuse (`infer.rs`) and this check once did not.
+                Agg::Min | Agg::Max if unordered(&out).is_some() => {
                     return err(
                         span,
                         format!(
-                            "`{agg_name}` has no meaning over documents: they sort by type \
-                             tag. Project a value out with `cast` and aggregate that."
+                            "`{agg_name}` has no meaning over {}: they sort by type \
+                             tag. Project a value out with `cast` and aggregate that.",
+                            unordered(&out).unwrap_or_default()
                         ),
                     );
                 }
                 Agg::Min | Agg::Max => out.clone(),
+                // A value chosen by another. The pair is a record because every
+                // aggregator is one name and one projection, and a fourth
+                // argument would make this the only exception.
+                Agg::ArgMin | Agg::ArgMax => {
+                    let (Some(by), Some(value), TypeDesc::Record(fields)) =
+                        (out.field_type("by"), out.field_type("value"), &out)
+                    else {
+                        return err(
+                            span,
+                            format!(
+                                "`{agg_name}` needs its projection to be \
+                                 `record(by: …, value: …)`, found `{out}`: `by` is what is \
+                                 compared, and `value` is what is returned"
+                            ),
+                        );
+                    };
+                    if fields.len() != 2 {
+                        return err(
+                            span,
+                            format!(
+                                "`{agg_name}`'s projection has fields other than `by` and \
+                                 `value`, found `{out}`. Nothing else is read, so an extra \
+                                 field is a mistake rather than something to ignore."
+                            ),
+                        );
+                    }
+                    // `value` is compared too, on a tie, so it is held to the
+                    // same rule as `by`.
+                    for (field, ty) in [("by", by), ("value", value)] {
+                        if let Some(what) = unordered(ty) {
+                            return err(
+                                span,
+                                format!(
+                                    "`{agg_name}` orders by `{field}`, and {what} have no \
+                                     meaningful order: they sort by type tag. Project a \
+                                     value out with `cast` and use that."
+                                ),
+                            );
+                        }
+                    }
+                    // A group whose every `by` is absent reports `NONE`, as `min`
+                    // does for an all-absent group, so the result may be absent
+                    // exactly when `by` may be — or when `value` already is.
+                    if by.is_optional() && !value.is_optional() {
+                        optional(value.clone())
+                    } else {
+                        value.clone()
+                    }
+                }
                 Agg::Count => TypeDesc::I64,
                 Agg::Sum | Agg::Avg => {
                     if !is_numeric(&out) {
@@ -982,4 +1037,14 @@ pub(super) fn resolve_pair(
     let l = materialize(&rargs[0], &ty, plan, span, op)?;
     let r = materialize(&rargs[1], &ty, plan, span, op)?;
     Ok((l, r))
+}
+
+/// What an ordering aggregator cannot order, named for a diagnostic: `json` and
+/// `dynamic` sort by type tag, so a smallest or largest of either is arbitrary.
+fn unordered(ty: &TypeDesc) -> Option<&'static str> {
+    match ty.non_null() {
+        TypeDesc::Json => Some("documents"),
+        TypeDesc::Dynamic => Some("dynamics"),
+        _ => None,
+    }
 }

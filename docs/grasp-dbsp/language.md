@@ -389,9 +389,12 @@ aggregate(idx, max, function((v) -> v.salary))
 | `sum` | the sum of the projected values |
 | `avg` | their mean |
 | `count` | the number of rows whose projected value is not absent, of whatever type |
+| `argmin` / `argmax` | the `value` of the row whose `by` is smallest/largest; `f` projects `record(by: B, value: C)` |
 
-**`count` is the only one whose result type is fixed.** It is an `i64`; every
-other aggregator gives back the projection's own type, `A`, wrapper and all.
+**`count` is the only one whose result type is fixed.** It is an `i64`. `argmin`
+and `argmax` give back `C`, the type of `value`, made optional when `by` is.
+Every other aggregator gives back the projection's own type, `A`, wrapper and
+all.
 
 So the mean of `i64`s is an `i64`, and integer division **truncates toward
 zero**: the mean of `-1` and `-2` is `-1`, not `-2`. That is the same direction
@@ -415,8 +418,25 @@ that merely *contains* an absent row, while `max` would be unaffected. See
 
 **`min` and `max` compare with the runtime value type's ordering**, which is
 therefore load-bearing for query results and not merely for batch layout — see
-the invariants section of [`mapping.md`](mapping.md). It is also why a `json`
-projection is rejected for them.
+the invariants section of [`mapping.md`](mapping.md). It is also why a `json` or
+`dynamic` projection is rejected for them: both sort by type tag first, so the
+smallest one is an accident of encoding.
+
+**`argmin` and `argmax` return one value chosen by another.** The projection is a
+record with exactly two fields: `by`, which is compared, and `value`, which is
+returned.
+
+```grasp-dbsp
+first := aggregate(idx, argmin, function((v) -> record(by: v.offset, value: v.candidate)))
+```
+
+- **A tie on `by` goes to the smallest `value`**, for both. The answer depends
+  on the group's contents alone, never on the order rows arrived in.
+- **A row whose `by` is absent is skipped**, as `min` skips absence. A group
+  whose every `by` is absent reports `NONE`, which is why the result is optional
+  when `by` is.
+- **Neither field may be `json` or `dynamic`**, for the reason above. `value`
+  is held to that as well, since a tie compares it.
 
 To count rows regardless of nullability, use the `weighted_count` operator
 rather than the `count` aggregator — it sums Z-weights directly and is exact.
@@ -1166,7 +1186,7 @@ each thing.
 ## Reserved words
 
 These may not name a node, a function or a parameter: the 21 operator names,
-the 5 aggregator names, the builtin names, the type constructors (`bool`,
+the 7 aggregator names, the builtin names, the type constructors (`bool`,
 `i64`, `f64`, `string`, `bytes`, `date`, `time`, `timestamp`, `interval`,
 `json`, `dynamic`, `optional`, `record`, `array`, `dict`, `sql`, `zset`,
 `indexed_zset`), `cast`, `map_array`, `filter_array`, and `true`,
