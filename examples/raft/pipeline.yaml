@@ -1,0 +1,11 @@
+# Each node's grasp-dbsp-server configuration.
+#
+# The launcher watches these three views, and a watcher that connects after a
+# row was derived would never see it: an egress stream carries only what changes
+# once it is open, and a row that is already there does not change. Materialized,
+# a view can be asked for its current contents first (`send_snapshot=true`), so
+# nothing derived before the watcher connected is lost.
+materialized:
+  - won
+  - voted
+  - leader_known

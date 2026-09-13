@@ -18,7 +18,7 @@ declared. It has no runtime of its own.
 |---|---|
 | [`grasp-dbsp`](crates/grasp-dbsp) | parses grasp-dbsp and executes it as a `dbsp` circuit |
 | [`grasp-compiler`](crates/grasp-compiler) | compiles grasp down to grasp-dbsp — parse, desugar, infer, plan, emit — and its fixtures run what it emits. `grasp compile` is its command line |
-| [`grasp-dbsp-server`](crates/grasp-dbsp-server) | runs one grasp-dbsp program and serves it over a subset of Feldera's HTTP API — the workspace's only binary |
+| [`grasp-dbsp-server`](crates/grasp-dbsp-server) | runs one grasp-dbsp program and serves it over a subset of Feldera's HTTP API |
 
 grasp-dbsp is the contract between them, which is why the design documents live
 at the workspace root rather than inside either crate. They are in
@@ -62,3 +62,11 @@ a release carries the APIs this crate needs — the design documents cite `dbsp`
 at revision `4a6744aa` (workspace version 0.343.0). `feldera-sqllib` supplies the
 `FlatVariant` behind the `json` type, and is where the `sql.*` value types will
 come from when they land.
+
+## Examples
+
+- [`examples/raft`](examples/raft) — Raft leader election, with each node its
+  own `grasp-dbsp-server` and every decision a rule in grasp. Run
+  `python3 examples/raft/launch.py` to take a three-node cluster through a
+  leader failure and a replacement node, checking that no term ever had two
+  leaders.

@@ -1,0 +1,202 @@
+# Raft leader election, as one node sees it.
+#
+# Every node runs this same program in its own grasp-dbsp-server. Nothing here
+# keeps state from one transaction to the next: a node's state is derived from
+# its inbox, the history of everything it has received, and the inbox's offsets
+# are the order it was received in. Python delivers messages and fires timers;
+# every decision is a rule below.
+#
+# A node's own decisions that change its state come back to it as messages: a
+# candidate sends itself a `campaign`. So nothing here has to read what it has
+# itself derived about the past, which would be recursion through an aggregate.
+
+me :: relation(node: i64)
+me(node:) <- input
+
+member :: relation(node: i64)
+member(node:) <- input
+
+# One table for every message kind, so that offsets order them against each
+# other. Fields a kind does not use are sent as 0.
+#
+#   timeout       from this node's own election timer
+#   hb_tick       from this node's own heartbeat timer
+#   campaign      this node, to itself: it stands in `term`
+#   request_vote  a candidate asks for a vote in `term`
+#   vote          a voter grants its vote in `term` to the recipient
+#   heartbeat     the leader of `term` says so
+inbox :: relation(partition: i64, offset: i64, kind: string, from: i64, term: i64, tick: i64)
+inbox(partition:, offset:, kind:, from:, term:, tick:) <- input partition_as: "partition", offset_as: "offset"
+
+# ---------------------------------------------------------------------------
+# What was known when
+# ---------------------------------------------------------------------------
+
+# The highest term any message carried before offset `o`: the term this node
+# knew when `o` arrived. Every decision below is made "as of" an offset, so a
+# message arriving later cannot reach back and change it.
+term_before(offset: o, term: max<u>) <-
+    inbox(partition: 0, offset: o)
+    inbox(partition: 0, offset: p, term: u)
+    p < o
+
+term_before(offset: 0, term: 0) <-
+    inbox(partition: 0, offset: 0)
+
+current_term(term: max<t>) <-
+    inbox(partition: 0, term: t)
+
+# ---------------------------------------------------------------------------
+# Heartbeats and timeouts
+# ---------------------------------------------------------------------------
+
+# A heartbeat counts if its term was current when it arrived.
+heartbeat(offset: h, from: f, term: t) <-
+    inbox(partition: 0, offset: h, kind: "heartbeat", from: f, term: t)
+    term_before(offset: h, term: known)
+    t >= known
+
+timeout(offset: o, tick: i) <-
+    inbox(partition: 0, offset: o, kind: "timeout", tick: i)
+
+has_earlier_timeout(offset: o) <-
+    timeout(offset: o)
+    timeout(offset: p)
+    p < o
+
+# The previous timeout's offset, or -1 before the first.
+since(offset: o, prev: max<p>) <-
+    timeout(offset: o)
+    timeout(offset: p)
+    p < o
+
+since(offset: o, prev: 0 - 1) <-
+    timeout(offset: o)
+    not has_earlier_timeout(offset: o)
+
+# ---------------------------------------------------------------------------
+# Voting
+# ---------------------------------------------------------------------------
+
+# A claim on this node's vote: a peer's request, or its own campaign.
+claim(offset: o, term: t, cand: c) <-
+    inbox(partition: 0, offset: o, kind: "request_vote", from: c, term: t)
+
+claim(offset: o, term: t, cand: c) <-
+    inbox(partition: 0, offset: o, kind: "campaign", from: c, term: t)
+
+# Eligible if its term was at least the term known when it arrived.
+eligible(offset: o, term: t, cand: c) <-
+    claim(offset: o, term: t, cand: c)
+    term_before(offset: o, term: known)
+    t >= known
+
+# One vote per term, to the earliest eligible claim. No later claim can have an
+# earlier offset, so once a vote is derived it stays: that is the promise Raft
+# needs kept, and it is kept by the order of arrival, not by stored state.
+voted(term: t, cand: argmin<c, by: o>) <-
+    eligible(offset: o, term: t, cand: c)
+
+# Granting a vote to a peer resets the election timer, as hearing a leader does.
+granted_at(offset: o) <-
+    eligible(offset: o, term: t, cand: c)
+    voted(term: t, cand: c)
+    me(node: n)
+    c != n
+
+# ---------------------------------------------------------------------------
+# Winning and leading
+# ---------------------------------------------------------------------------
+
+vote_for_me(term: t, voter: v) <-
+    inbox(partition: 0, kind: "vote", from: v, term: t)
+
+vote_for_me(term: t, voter: n) <-
+    voted(term: t, cand: n)
+    me(node: n)
+
+votes(term: t, n: count<>) <-
+    vote_for_me(term: t, voter: v)
+
+cluster(size: count<>) <-
+    member(node: m)
+
+won(term: t) <-
+    votes(term: t, n: k)
+    cluster(size: s)
+    k * 2 > s
+
+# ---------------------------------------------------------------------------
+# Campaigning
+# ---------------------------------------------------------------------------
+
+heard(offset: o) <-
+    since(offset: o, prev: p)
+    heartbeat(offset: h)
+    h > p
+    h < o
+
+heard(offset: o) <-
+    since(offset: o, prev: p)
+    granted_at(offset: g)
+    g > p
+    g < o
+
+leading(offset: o) <-
+    timeout(offset: o)
+    term_before(offset: o, term: t)
+    won(term: t)
+
+# A timeout with nothing heard since the previous one, while not leading, starts
+# a campaign in the next term.
+campaign(tick: i, term: t + 1) <-
+    timeout(offset: o, tick: i)
+    term_before(offset: o, term: t)
+    not heard(offset: o)
+    not leading(offset: o)
+
+leading_tick(tick: i, term: t) <-
+    inbox(partition: 0, offset: o, kind: "hb_tick", tick: i)
+    term_before(offset: o, term: t)
+    won(term: t)
+
+# ---------------------------------------------------------------------------
+# What to send. Python delivers each row that enters, and ignores rows leaving.
+# ---------------------------------------------------------------------------
+
+send :: relation(to: i64, kind: string, from: i64, term: i64, tick: i64)
+
+send(to: n, kind: "campaign", from: n, term: t, tick: i) <-
+    campaign(tick: i, term: t)
+    me(node: n)
+
+send(to: m, kind: "request_vote", from: n, term: t, tick: i) <-
+    campaign(tick: i, term: t)
+    me(node: n)
+    member(node: m)
+    m != n
+
+send(to: c, kind: "vote", from: n, term: t, tick: 0) <-
+    voted(term: t, cand: c)
+    me(node: n)
+    c != n
+
+send(to: m, kind: "heartbeat", from: n, term: t, tick: i) <-
+    leading_tick(tick: i, term: t)
+    me(node: n)
+    member(node: m)
+    m != n
+
+# ---------------------------------------------------------------------------
+# For whoever is watching
+# ---------------------------------------------------------------------------
+
+# Who this node believes leads the current term.
+leader_known(term: t, leader: n) <-
+    current_term(term: t)
+    won(term: t)
+    me(node: n)
+
+leader_known(term: t, leader: f) <-
+    current_term(term: t)
+    heartbeat(from: f, term: t)
