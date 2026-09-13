@@ -1212,6 +1212,16 @@ fn spanning_tree(atoms: &[Atom], comp: &[usize], root: usize) -> BTreeMap<usize,
 
 /// Post-order over the rooted tree, placing dependents as soon as their inputs
 /// are in one stream.
+///
+/// `avail` is what the stream on top of the stack carries: this node's
+/// variables and those of the children already joined to it, not everything
+/// entered so far. A child is entered as a stream of its own, so while its
+/// subtree is walked the parent's variables sit in a different stream. A
+/// dependent reading one of each, placed there, would rewrite a stream holding
+/// half of what it reads — which is what `t >= known` over two joined atoms once
+/// did, emitting a filter on a field that stream did not have. So each subtree
+/// is walked from an empty set of its own and merged into this one only at the
+/// `Join` that brings its stream here.
 #[allow(clippy::too_many_arguments)]
 fn walk(
     atoms: &[Atom],
@@ -1227,16 +1237,20 @@ fn walk(
     avail.extend(atoms[node].vars.iter().cloned());
     place_ready(avail, deps, own, placed, trace);
     for child in tree.get(&node).into_iter().flatten() {
-        walk(atoms, tree, *child, deps, own, placed, avail, trace);
+        let mut subtree = BTreeSet::new();
+        walk(atoms, tree, *child, deps, own, placed, &mut subtree, trace);
         trace.push(Item::Join);
+        avail.extend(subtree);
         place_ready(avail, deps, own, placed, trace);
     }
 }
 
 /// Every dependent whose inputs are now bound, until none is.
 ///
-/// "Each is placed at the earliest point where all its inputs are bound. Early
-/// is always right: a filter that runs sooner shrinks everything downstream."
+/// "Each is placed at the earliest point where all its inputs are bound in one
+/// stream. Early is always right: a filter that runs sooner shrinks everything
+/// downstream." `avail` must be what the top of the stack carries, which is
+/// what `walk` keeps it to.
 /// When several become ready together they go by kind, then by structural key.
 fn place_ready(
     avail: &mut BTreeSet<String>,

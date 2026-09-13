@@ -199,3 +199,62 @@
   expected_exact_output:
     - ready: []
       active: []
+
+# A filter reading a variable from each of two atoms can run only once they are
+# joined. Placed after the first atom alone, it reads a column that stream does
+# not have, and grasp-dbsp refuses the program.
+- name: a filter comparing two atoms waits for their join
+  source: |
+    a :: relation(k: i64, term: i64)
+    a(k:, term:) <- input
+    b :: relation(k: i64, level: i64)
+    b(k:, level:) <- input
+
+    q(k: x, t: t) <-
+        a(k: x, term: t)
+        b(k: x, level: known)
+        t >= known
+
+  input:
+    - a:
+        - [1, {k: 1, term: 5}]
+        - [1, {k: 2, term: 1}]
+      b:
+        - [1, {k: 1, level: 3}]
+        - [1, {k: 2, level: 4}]
+
+  expected_exact_output:
+    - q:
+        - [1, {k: 1, t: 5}]
+
+# The same, a level deeper: the filter reads the first atom and the last of a
+# chain, so it has to wait for both joins — not just the one nearer the leaf.
+- name: a filter over the ends of a chain waits for the whole chain
+  source: |
+    a :: relation(k: i64, term: i64)
+    a(k:, term:) <- input
+    b :: relation(k: i64, j: i64)
+    b(k:, j:) <- input
+    c :: relation(j: i64, level: i64)
+    c(j:, level:) <- input
+
+    q(k: x, t: t) <-
+        a(k: x, term: t)
+        b(k: x, j: y)
+        c(j: y, level: known)
+        t >= known
+
+  input:
+    - a:
+        - [1, {k: 1, term: 5}]
+        - [1, {k: 2, term: 1}]
+      b:
+        - [1, {k: 1, j: 10}]
+        - [1, {k: 2, j: 20}]
+      c:
+        - [1, {j: 10, level: 3}]
+        - [1, {j: 20, level: 4}]
+
+  expected_exact_output:
+    - q:
+        - [1, {k: 1, t: 5}]

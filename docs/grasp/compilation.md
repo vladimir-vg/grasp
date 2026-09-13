@@ -267,13 +267,25 @@ nodes of one kind that become ready at the same point.
 
 Filters, matches, negated atoms and aggregates are not in the spanning tree —
 only positive atoms are. Each is placed at the **earliest** point where all its
-inputs are bound:
+inputs are bound **in one stream**:
 
 ```
 for each dependent node N:
     k = the last position in the post-order that produces any input of N
+    while k lies in a subtree not yet joined to the stream holding N's
+          other inputs:
+        k = the Join that brings that subtree in
     insert N immediately after k
 ```
+
+**"In one stream" is the rule, and an earlier version of this section left it
+out.** The post-order is a stack machine: an atom is entered as a stream of its
+own, and meets its parent only at the `Join` after its subtree. So the position
+just after an input's producer is not always a point where a node can run. Under
+the old wording, a filter reading one variable from each of two joined atoms was
+placed after the second atom was entered and before the join. It rewrote a
+stream holding half of what it read, and grasp-dbsp refused the emitted program.
+`programs/joins.yaml` pins both the two-atom case and a chain.
 
 Early is always right: a filter that runs sooner shrinks everything downstream,
 and there is never a reason to carry a row that is going to be discarded.
