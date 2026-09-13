@@ -13,7 +13,7 @@ use crate::value::{Acc, BatchType, DynValue, FpAcc, FpAccSemigroup};
 use dbsp::Circuit;
 use dbsp::algebra::F64;
 use dbsp::algebra::{AddAssignByRef, HasZero, Semigroup};
-use dbsp::circuit::{CircuitConfig, CircuitStorageConfig};
+use dbsp::circuit::{CheckpointCommitter, CircuitConfig, CircuitStorageConfig};
 use dbsp::dynamic::{DataTrait, DynUnit, Erase, WeightTrait};
 use dbsp::operator::{Aggregator, ConstantGenerator, Fold, Generator, Max};
 use dbsp::typed_batch::SpineSnapshot;
@@ -22,6 +22,7 @@ use dbsp::{
     DBSPHandle, IndexedZSetReader, NestedCircuit, OrdIndexedZSet, OrdZSet, OutputHandle,
     RootCircuit, Runtime, Stream, ZSetHandle, ZWeight,
 };
+use feldera_types::checkpoint::CheckpointMetadata;
 use std::collections::HashMap;
 use std::fmt;
 use std::num::NonZeroUsize;
@@ -321,6 +322,11 @@ pub struct Runner {
     inputs: HashMap<String, ZSetHandle<DynValue>>,
     outputs: Vec<(String, Out)>,
     transaction: Transaction,
+    /// What a checkpoint taken from this circuit has to record, kept because
+    /// the manifest is written long after `build` has returned.
+    storage: Option<CircuitStorageConfig>,
+    workers: usize,
+    digest: u64,
 }
 
 /// Where a `Runner` is in `dbsp`'s transaction lifecycle.
@@ -375,21 +381,20 @@ impl Runner {
             }
         }
 
-        // The field comes with the type we pass through, and restoring is not
-        // what this runner does: a checkpoint pins the worker count it was
-        // written at and freezes `DynValue`'s variant order for good, neither
-        // of which is designed here. Refusing it is better than honouring it
-        // by accident.
+        let digest = crate::checkpoint::program_digest(&ids, outputs);
+
+        // A restore is checked *here*, before `Runtime::init_circuit`, because
+        // that call is where `dbsp` performs the restore — by the time it
+        // returns, a mismatched checkpoint has already been read into a live
+        // circuit. `dbsp` verifies its own fingerprint in this mode, but that
+        // fingerprint is FNV over node type names and knows nothing about the
+        // worker count, the value format, or which program this is.
         if let Some(storage) = &config.storage
-            && storage.init_checkpoint.is_some()
+            && let Some(uuid) = storage.init_checkpoint
         {
-            return Err(vec![Diagnostic::error(
-                Pass::Lower,
-                None,
-                "this runner starts a circuit from nothing: a storage configuration \
-                 naming an initial checkpoint asks it to restore one, which it does not do"
-                    .to_string(),
-            )]);
+            let root = std::path::Path::new(&storage.config.path);
+            let manifest = crate::checkpoint::Manifest::read(root, &uuid.to_string())?;
+            manifest.check(config.workers.get(), digest)?;
         }
 
         // Storage is one field on the circuit's configuration; the batch types
@@ -482,7 +487,78 @@ impl Runner {
             inputs: inputs.into_iter().collect(),
             outputs: outs,
             transaction: Transaction::Idle,
+            storage: config.storage,
+            workers: config.workers.get(),
+            digest,
         })
+    }
+
+    /// A digest of the program and output selection this circuit was built
+    /// from, as a checkpoint records it.
+    pub fn program_digest(&self) -> u64 {
+        self.digest
+    }
+
+    /// Begins a checkpoint, returning what still has to be made durable.
+    ///
+    /// Two phases, because `dbsp` offers two and the split is the point:
+    /// `prepare` broadcasts to the workers and collects what they wrote, and
+    /// committing fsyncs every file and publishes the checkpoint. The returned
+    /// value is `Send` so that a caller can commit it off the thread that owns
+    /// the circuit — otherwise every push and every step waits on a disk.
+    ///
+    /// Refused during a transaction: a checkpoint is a consistent snapshot
+    /// between transactions. `steps` is recorded, not interpreted.
+    pub fn checkpoint(&mut self, steps: u64) -> Result<PendingCheckpoint, RunError> {
+        if self.transaction != Transaction::Idle {
+            return Err(RunError(
+                "a checkpoint is taken between transactions, and one is open".to_string(),
+            ));
+        }
+        let Some(storage) = &self.storage else {
+            return Err(RunError(
+                "this pipeline has no storage configured, and a checkpoint is written to it. \
+                 Set `storage` and `storage_config`."
+                    .to_string(),
+            ));
+        };
+        let root = std::path::PathBuf::from(&storage.config.path);
+        let committer = self
+            .dbsp
+            .checkpoint()
+            .with_steps(steps)
+            .prepare()
+            .map_err(|e| RunError(format!("preparing a checkpoint: {e}")))?;
+        Ok(PendingCheckpoint {
+            committer,
+            root,
+            workers: self.workers,
+            digest: self.digest,
+            steps,
+        })
+    }
+
+    /// Every checkpoint this storage directory holds, newest last.
+    pub fn list_checkpoints(&mut self) -> Result<Vec<CheckpointMetadata>, RunError> {
+        self.dbsp
+            .list_checkpoints()
+            .map_err(|e| RunError(format!("listing checkpoints: {e}")))
+    }
+
+    /// Deletes every checkpoint but the most recent `keep`.
+    ///
+    /// Without this a directory grows without bound, one checkpoint per
+    /// request. `dbsp` keeps a floor of two of its own
+    /// (`Checkpointer::MIN_CHECKPOINT_THRESHOLD`), so asking for fewer is not
+    /// an error and not honoured either.
+    pub fn gc_checkpoints(&mut self, keep: usize) -> Result<(), RunError> {
+        let all = self.list_checkpoints()?;
+        let except: std::collections::HashSet<uuid::Uuid> =
+            all.iter().rev().take(keep).map(|c| c.uuid).collect();
+        self.dbsp
+            .gc_checkpoint(except)
+            .map(|_| ())
+            .map_err(|e| RunError(format!("removing old checkpoints: {e}")))
     }
 
     /// Queues a change to an input table. Applied at the next [`Self::step`].
@@ -1263,3 +1339,46 @@ fn build_nested(
 pub fn shape<'a>(plan: &'a Plan, name: &str) -> Option<&'a BatchType> {
     plan.node(name).map(|n| &n.ty)
 }
+
+/// A checkpoint `dbsp` has prepared and nobody has yet made durable.
+///
+/// One value rather than a commit followed by a separate call to write the
+/// manifest, because the commit happens on another thread and the `Runner`
+/// does not — and because an API with a second step is one a caller can forget.
+pub struct PendingCheckpoint {
+    committer: CheckpointCommitter,
+    root: std::path::PathBuf,
+    workers: usize,
+    digest: u64,
+    steps: u64,
+}
+
+impl PendingCheckpoint {
+    /// Publishes the checkpoint, then records what `dbsp` cannot.
+    ///
+    /// In that order, so that a manifest never describes a checkpoint that does
+    /// not exist. The window between the two is a checkpoint `dbsp` lists and
+    /// this crate refuses to restore for want of a manifest — the safe side to
+    /// fail on, since refusing is recoverable and a blind restore is not.
+    pub fn commit(self) -> Result<CheckpointMetadata, RunError> {
+        let metadata = self
+            .committer
+            .commit()
+            .map_err(|e| RunError(format!("committing a checkpoint: {e}")))?;
+        crate::checkpoint::Manifest::new(
+            metadata.uuid.to_string(),
+            self.workers,
+            self.digest,
+            self.steps,
+        )
+        .write(&self.root)
+        .map_err(|d| RunError(crate::diag::render(&d)))?;
+        Ok(metadata)
+    }
+}
+
+/// Committing on another thread is the reason the type exists.
+const _: () = {
+    const fn assert_send<T: Send>() {}
+    assert_send::<PendingCheckpoint>();
+};

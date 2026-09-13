@@ -362,21 +362,123 @@ kept := distinct(map(idx, function((k, v) -> v)))
     );
 }
 
-/// A storage configuration naming an initial checkpoint is refused, not
-/// half-honoured: this runner starts a circuit from nothing. Claimed by both
-/// `overview.md` and `mapping.md`, and until now pinned by neither.
+/// The program these checkpoint tests use: a distinct, so there is operator
+/// state worth restoring rather than a stateless map.
+const COUNTED: &str = "t := input(\"t\")\nt :: zset(record(v: i64))\nd := distinct(t)\n";
+
+/// Builds, pushes, steps, and takes a checkpoint; returns its uuid.
+fn write_a_checkpoint(config: &CircuitStorageConfig, workers: usize) -> String {
+    let plan = grasp_dbsp::compile(COUNTED).expect("compiles");
+    let mut runner = Runner::build(
+        &plan,
+        &["d".to_string()],
+        RunnerConfig {
+            storage: Some(config.clone()),
+            workers: std::num::NonZeroUsize::new(workers).expect("nonzero"),
+            ..RunnerConfig::default()
+        },
+    )
+    .expect("builds");
+
+    for v in [1i64, 2, 3] {
+        runner
+            .push(
+                "t",
+                decode_value(&json!({"v": v}), &row()).expect("a row"),
+                1,
+            )
+            .expect("pushes");
+    }
+    runner.step().expect("steps");
+
+    let metadata = runner
+        .checkpoint(1)
+        .expect("prepares")
+        .commit()
+        .expect("commits and writes a manifest");
+    let uuid = metadata.uuid.to_string();
+    runner.kill();
+    uuid
+}
+
+/// The shape of `t`'s rows, for `decode_value`.
+fn row() -> grasp_dbsp::value::TypeDesc {
+    let plan = grasp_dbsp::compile(COUNTED).expect("compiles");
+    match grasp_dbsp::lower::shape(&plan, "t").expect("a shape") {
+        BatchType::ZSet(ty) => ty.clone(),
+        BatchType::IndexedZSet(..) => panic!("`t` is not indexed"),
+    }
+}
+
+/// A checkpoint restores the state that was in the circuit, not merely a
+/// circuit that starts.
+///
+/// The assertion is about `distinct`: the three rows were consolidated before
+/// the checkpoint, so pushing them again into a *restored* circuit must produce
+/// no output at all. A circuit that came up empty would emit all three, which
+/// is why this is the test rather than "it built without erroring".
 #[test]
-fn a_configuration_naming_a_checkpoint_is_refused() {
+fn a_checkpoint_restores_the_state_that_was_in_it() {
     let _lock = ONE_AT_A_TIME.lock().expect("the storage lock");
     let (_dir, config) = forced(0);
-    let config = config.with_init_checkpoint(Some(uuid::Uuid::nil()));
-    let plan =
-        grasp_dbsp::compile("t := input(\"t\")\nt :: zset(record(v: i64))\n").expect("compiles");
+    let uuid = write_a_checkpoint(&config, 1);
+
+    let plan = grasp_dbsp::compile(COUNTED).expect("compiles");
+    let mut restored = Runner::build(
+        &plan,
+        &["d".to_string()],
+        RunnerConfig {
+            storage: Some(
+                config
+                    .clone()
+                    .with_init_checkpoint(Some(uuid.parse().expect("a uuid"))),
+            ),
+            ..RunnerConfig::default()
+        },
+    )
+    .expect("restores");
+
+    for v in [1i64, 2, 3] {
+        restored
+            .push(
+                "t",
+                decode_value(&json!({"v": v}), &row()).expect("a row"),
+                1,
+            )
+            .expect("pushes");
+    }
+    let deltas = restored.step().expect("steps");
+    let d: Vec<&Delta> = deltas
+        .iter()
+        .filter(|(name, _)| name == "d")
+        .flat_map(|(_, ds)| ds)
+        .collect();
+    assert!(
+        d.is_empty(),
+        "the rows were already distinct before the checkpoint, so a restored \
+         circuit should emit nothing: {d:?}"
+    );
+    restored.kill();
+}
+
+/// A checkpoint written at one worker count is refused at another.
+///
+/// `dbsp` does not check this and cannot be made to: every state file is named
+/// for the worker that wrote it, so restoring at another count hands each
+/// worker rows a different one is now responsible for, with no error anywhere.
+#[test]
+fn a_checkpoint_from_another_worker_count_is_refused() {
+    let _lock = ONE_AT_A_TIME.lock().expect("the storage lock");
+    let (_dir, config) = forced(0);
+    let uuid = write_a_checkpoint(&config, 1);
+
+    let plan = grasp_dbsp::compile(COUNTED).expect("compiles");
     let err = Runner::build(
         &plan,
-        &["t".to_string()],
+        &["d".to_string()],
         RunnerConfig {
-            storage: Some(config),
+            storage: Some(config.with_init_checkpoint(Some(uuid.parse().expect("a uuid")))),
+            workers: std::num::NonZeroUsize::new(3).expect("nonzero"),
             ..RunnerConfig::default()
         },
     )
@@ -384,7 +486,92 @@ fn a_configuration_naming_a_checkpoint_is_refused() {
     .expect("refused");
     let text = grasp_dbsp::diag::render(&err);
     assert!(
-        text.contains("naming an initial checkpoint"),
-        "the refusal names the checkpoint: {text}"
+        text.contains("written at 1 worker(s) and this circuit has 3"),
+        "the refusal names both counts: {text}"
+    );
+}
+
+/// A checkpoint written by one program is refused by another.
+#[test]
+fn a_checkpoint_from_another_program_is_refused() {
+    let _lock = ONE_AT_A_TIME.lock().expect("the storage lock");
+    let (_dir, config) = forced(0);
+    let uuid = write_a_checkpoint(&config, 1);
+
+    // Same tables and the same operator vocabulary — what differs is the
+    // filter, which `dbsp`'s own type-name fingerprint would not notice.
+    let other = grasp_dbsp::compile(
+        "t := input(\"t\")\nt :: zset(record(v: i64))\nd := filter(t, function((r) -> r.v > 1))\n",
+    )
+    .expect("compiles");
+    let err = Runner::build(
+        &other,
+        &["d".to_string()],
+        RunnerConfig {
+            storage: Some(config.with_init_checkpoint(Some(uuid.parse().expect("a uuid")))),
+            ..RunnerConfig::default()
+        },
+    )
+    .err()
+    .expect("refused");
+    let text = grasp_dbsp::diag::render(&err);
+    assert!(
+        text.contains("written by a different program"),
+        "the refusal names the program: {text}"
+    );
+}
+
+/// A checkpoint directory with no manifest is refused rather than restored
+/// blind: none of the three checks can be made without one.
+#[test]
+fn a_checkpoint_without_a_manifest_is_refused() {
+    let _lock = ONE_AT_A_TIME.lock().expect("the storage lock");
+    let (dir, config) = forced(0);
+    let uuid = write_a_checkpoint(&config, 1);
+    std::fs::remove_file(grasp_dbsp::checkpoint::Manifest::path(dir.path(), &uuid))
+        .expect("removes the manifest");
+
+    let plan = grasp_dbsp::compile(COUNTED).expect("compiles");
+    let err = Runner::build(
+        &plan,
+        &["d".to_string()],
+        RunnerConfig {
+            storage: Some(config.with_init_checkpoint(Some(uuid.parse().expect("a uuid")))),
+            ..RunnerConfig::default()
+        },
+    )
+    .err()
+    .expect("refused");
+    let text = grasp_dbsp::diag::render(&err);
+    assert!(
+        text.contains("refused rather than restored blind"),
+        "the refusal says why a manifest is required: {text}"
+    );
+}
+
+/// "Latest" means the newest checkpoint with a manifest, not the newest one.
+///
+/// A checkpoint `dbsp` published and this crate never finished describing —
+/// what a crash between the two writes leaves — is skipped, so that restarting
+/// with "latest" lands on something restorable rather than on a refusal.
+#[test]
+fn the_latest_checkpoint_is_the_newest_that_has_a_manifest() {
+    let _lock = ONE_AT_A_TIME.lock().expect("the storage lock");
+    let (dir, config) = forced(0);
+    let first = write_a_checkpoint(&config, 1);
+    let second = write_a_checkpoint(&config, 1);
+    assert_ne!(first, second);
+
+    assert_eq!(
+        grasp_dbsp::checkpoint::latest(&config).expect("reads the catalog"),
+        Some(second.clone())
+    );
+
+    std::fs::remove_file(grasp_dbsp::checkpoint::Manifest::path(dir.path(), &second))
+        .expect("removes the newer manifest");
+    assert_eq!(
+        grasp_dbsp::checkpoint::latest(&config).expect("reads the catalog"),
+        Some(first),
+        "a checkpoint without a manifest is passed over"
     );
 }

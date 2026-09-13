@@ -14,6 +14,7 @@
 //! This is a walking skeleton: a narrow but complete path from program text to
 //! JSON deltas. See `overview.md` for what is deliberately not implemented yet.
 
+pub mod checkpoint;
 pub mod diag;
 pub mod expr;
 pub mod json;

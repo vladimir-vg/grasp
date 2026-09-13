@@ -32,6 +32,10 @@ feldera-sqllib = { path = "vendor/feldera/crates/sqllib" }
 # Provides the `IsNone` derive, which also supplies `SupportsRoaring` — both are
 # required for `DynValue` to satisfy `DBData`.
 feldera-macros = { path = "vendor/feldera/crates/feldera-macros" }
+# `CheckpointMetadata`, which `dbsp` takes and returns but does not re-export.
+# The checkpoint a `Runner` lists is `dbsp`'s own type, so naming it here is
+# cheaper than wrapping it in one of ours that would carry the same fields.
+feldera-types = { path = "vendor/feldera/crates/feldera-types" }
 
 # These must match the versions `dbsp` builds against, or the derived trait
 # impls will not unify with the ones its bounds require. Note that `size-of` is
@@ -68,9 +72,9 @@ serde_yaml = "0.9.34"
 # which two live runners in one test would collide on. Already in the lock file
 # through `dbsp`, so this costs no new compilation.
 tempfile = "3"
-# Only to name a checkpoint in a test: `CircuitStorageConfig::init_checkpoint`
-# is an `Option<Uuid>`, and the runner refuses any configuration that sets it.
-# Already in the lock file through `dbsp`.
+# Checkpoints are named by uuid: `CircuitStorageConfig::init_checkpoint` is an
+# `Option<Uuid>`, and so is every entry `list_checkpoints` returns. Already in
+# the lock file through `dbsp`.
 uuid = "1"
 
 # --- The server ---------------------------------------------------------------
