@@ -655,6 +655,26 @@ are decoded (via `TypeDesc`) into `DynValue`s, which are pushed onto the handle
 with a weight. Pushes are buffered and applied atomically at the next clock
 cycle.
 
+**An input with `offset_as` is three operators, not one.**
+
+1. **The handle receives each record whole.** `Runner::push_partitioned` has
+   filled its partition and its offset, so no two records share a key and
+   nothing merges on the way in.
+2. **`map_index` keys each record by the same row with its offset blanked.**
+   That is the row identified by everything else, partition included.
+3. **`aggregate` with the hand-written `SegmentStart`** walks each key's offsets
+   in order with a running weight, keeping the one where the total last crossed
+   above zero. A `map` then puts that offset back into the row.
+
+The group is the row's whole history, so the walk is linear in how often the row
+has been sent. A partition with no offset needs none of this: the row is pushed
+with its partition filled, and that is all.
+
+**The counters live on the `Runner`, not in the circuit,** because a record needs
+its offset before it is pushed. A checkpoint's manifest carries them. They are
+taken beside `prepare`, on the thread that pushes, so they describe the same
+instant as the circuit's state.
+
 **Output.** Output nodes are not marked in the source; the set of output nodes is
 supplied when the runner starts, by node name. Each named node gets a
 `Stream::output()` handle, which requires only `T: Debug + Clone + Send`

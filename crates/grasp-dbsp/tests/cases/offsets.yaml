@@ -1,0 +1,139 @@
+# Inputs whose partition and offset the runtime fills.
+#
+# The rule, per row identified by every column but the offset: records are taken
+# in offset order with a running weight, and a row carries the offset of the
+# record where that total last crossed from ≤0 to above 0. Every record takes an
+# offset, deletes included.
+
+- name: a row carries the offset of the record that brought it in
+  source: |
+    t := input("t", partition_as: "p", offset_as: "o")
+    t :: zset(record(o: i64, p: i64, v: string))
+
+  input:
+    - t:
+        - [1, {v: "a"}]
+        - [1, {v: "b"}]
+    - t:
+        - [1, {v: "a"}]
+
+  # The second `a` takes offset 2 but changes nothing: the row was already in, so
+  # its segment still began at 0.
+  expected_exact_output:
+    - t:
+        - [1, {o: 0, p: 0, v: "a"}]
+        - [1, {o: 1, p: 0, v: "b"}]
+    - {}
+
+- name: removing a row and adding it again starts a new segment
+  source: |
+    t := input("t", partition_as: "p", offset_as: "o")
+    t :: zset(record(o: i64, p: i64, v: string))
+
+  input:
+    - t:
+        - [1, {v: "a"}]
+    - t:
+        - [-1, {v: "a"}]
+    - t:
+        - [1, {v: "a"}]
+
+  expected_exact_output:
+    - t:
+        - [1, {o: 0, p: 0, v: "a"}]
+    - t:
+        - [-1, {o: 0, p: 0, v: "a"}]
+    - t:
+        - [1, {o: 2, p: 0, v: "a"}]
+
+# A retraction that arrives first leaves a debt. The assertion that pays it off
+# crosses nothing; the one after it does, and it is that record's offset the row
+# carries.
+- name: a debt is paid before a segment begins
+  source: |
+    t := input("t", partition_as: "p", offset_as: "o")
+    t :: zset(record(o: i64, p: i64, v: string))
+
+  input:
+    - t:
+        - [-1, {v: "a"}]
+    - t:
+        - [1, {v: "a"}]
+    - t:
+        - [1, {v: "a"}]
+
+  expected_exact_output:
+    - {}
+    - {}
+    - t:
+        - [1, {o: 2, p: 0, v: "a"}]
+
+# The one place a transaction's contents are ordered. The row's weight is 1
+# before and after, and still it is reported: retracted at its old offset and
+# inserted at the new one.
+- name: a removal and a re-add in one transaction move the offset
+  source: |
+    t := input("t", partition_as: "p", offset_as: "o")
+    t :: zset(record(o: i64, p: i64, v: string))
+
+  input:
+    - t:
+        - [1, {v: "a"}]
+    - t:
+        - [-1, {v: "a"}]
+        - [1, {v: "a"}]
+
+  expected_exact_output:
+    - t:
+        - [1, {o: 0, p: 0, v: "a"}]
+    - t:
+        - [-1, {o: 0, p: 0, v: "a"}]
+        - [1, {o: 2, p: 0, v: "a"}]
+
+- name: partitions count their offsets independently
+  source: |
+    t := input("t", partition_as: "p", offset_as: "o")
+    t :: zset(record(o: i64, p: i64, v: string))
+
+  input:
+    - t:
+        - [1, {v: "a"}, 0]
+        - [1, {v: "a"}, 1]
+        - [1, {v: "b"}, 1]
+
+  expected_exact_output:
+    - t:
+        - [1, {o: 0, p: 0, v: "a"}]
+        - [1, {o: 0, p: 1, v: "a"}]
+        - [1, {o: 1, p: 1, v: "b"}]
+
+# A weighted record takes one offset, and a retraction that leaves the total
+# positive keeps the segment where it began.
+- name: a weighted record is one offset
+  source: |
+    t := input("t", partition_as: "p", offset_as: "o")
+    t :: zset(record(o: i64, p: i64, v: string))
+
+  input:
+    - t:
+        - [3, {v: "a"}]
+    - t:
+        - [-2, {v: "a"}]
+
+  expected_exact_output:
+    - t:
+        - [1, {o: 0, p: 0, v: "a"}]
+    - {}
+
+- name: a partition may be named without an offset
+  source: |
+    t := input("t", partition_as: "p")
+    t :: zset(record(p: i64, v: string))
+
+  input:
+    - t:
+        - [1, {v: "a"}, 4]
+
+  expected_exact_output:
+    - t:
+        - [1, {p: 4, v: "a"}]

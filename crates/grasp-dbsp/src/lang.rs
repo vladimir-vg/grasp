@@ -105,8 +105,23 @@ impl NodeRef {
 pub struct OpCall {
     pub op: String,
     pub args: Vec<Arg>,
+    /// Named arguments, in the order written, always after the positional ones.
+    pub named: Vec<Named>,
     /// The operator name's own position, which a nested call needs for its
     /// diagnostics and its synthesized name.
+    pub span: Span,
+}
+
+/// `name: "value"` in an operator call.
+///
+/// Only `input` takes any, `partition_as` and `offset_as`, and the checker
+/// refuses one on every other operator. The parser reads them wherever an
+/// argument may stand rather than deciding by operator, because an identifier
+/// followed by `:` can be nothing else there.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Named {
+    pub name: String,
+    pub value: String,
     pub span: Span,
 }
 
@@ -860,9 +875,28 @@ impl Parser {
         let op = self.ident()?;
         self.expect(&Tok::LParen, "`(` after an operator name")?;
         let mut args = Vec::new();
+        let mut named: Vec<Named> = Vec::new();
         if !self.eat(&Tok::RParen) {
             loop {
-                args.push(self.arg()?);
+                if let Tok::Ident(name) = self.peek().clone()
+                    && matches!(self.peek_ahead(1), Tok::Colon)
+                {
+                    let span = self.span();
+                    self.bump();
+                    self.bump();
+                    let Tok::Str(value) = self.peek().clone() else {
+                        return self.err(format!("`{name}:` takes a column name in quotes"));
+                    };
+                    self.bump();
+                    named.push(Named { name, value, span });
+                } else if let Some(first) = named.first() {
+                    let first = first.name.clone();
+                    return self.err(format!(
+                        "a positional argument cannot follow the named argument `{first}:`"
+                    ));
+                } else {
+                    args.push(self.arg()?);
+                }
                 if self.eat(&Tok::Comma) {
                     continue;
                 }
@@ -870,7 +904,12 @@ impl Parser {
                 break;
             }
         }
-        Ok(OpCall { op, args, span })
+        Ok(OpCall {
+            op,
+            args,
+            named,
+            span,
+        })
     }
 
     fn arg(&mut self) -> PResult<Arg> {

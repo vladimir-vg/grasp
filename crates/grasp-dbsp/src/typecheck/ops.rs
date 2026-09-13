@@ -85,6 +85,8 @@ struct Ctx<'a> {
     op: &'a str,
     span: Span,
     args: &'a [Arg],
+    /// Named arguments, which only `input` accepts; see `check_op`.
+    named: &'a [crate::lang::Named],
     rargs: Vec<RArg<'a>>,
     funcs: &'a Functions<'a>,
     /// The node's `::` typespec, when it has one.
@@ -292,10 +294,25 @@ pub(super) fn check_op(
         op,
         span,
         args: &call.args,
+        named: &call.named,
         rargs,
         funcs: env.funcs,
         expected: env.specs.get(name).map(|(t, _)| *t),
     };
+
+    // Named arguments are `input`'s alone. Refused here, once, rather than in
+    // each operator family, so that none can quietly ignore one.
+    if op != "input"
+        && let Some(n) = call.named.first()
+    {
+        return err(
+            n.span,
+            format!(
+                "`{op}` takes no named arguments, found `{}:`; only `input` has any",
+                n.name
+            ),
+        );
+    }
 
     if let Some(r) = check_source(name, &cx, env)? {
         return Ok(r);
@@ -344,19 +361,22 @@ fn check_source(name: &str, cx: &Ctx<'_>, env: Env<'_>) -> TResult<Option<(Batch
                     format!("`{name}` is an input and needs a `::` typespec"),
                 );
             };
-            match spec {
-                BatchType::ZSet(TypeDesc::Record(_)) => {}
+            let record = match spec {
+                BatchType::ZSet(record @ TypeDesc::Record(_)) => record,
                 other => {
                     return err(
                         span,
                         format!("an input must be `zset(record(...))`, found `{other}`"),
                     );
                 }
-            }
+            };
+            let (partition, offset) = runtime_columns(name, cx.named, record)?;
             Ok((
                 (*spec).clone(),
                 PlanOp::Input {
                     table: table.clone(),
+                    partition,
+                    offset,
                 },
             ))
         }
@@ -1047,4 +1067,72 @@ fn unordered(ty: &TypeDesc) -> Option<&'static str> {
         TypeDesc::Dynamic => Some("dynamics"),
         _ => None,
     }
+}
+
+/// `input`'s named arguments: which declared fields the runtime fills, as
+/// indices into the input's record type.
+///
+/// Each names a column the typespec already declares, as a non-optional `i64`.
+/// It is declared like any other so that the typespec still says what every
+/// column is, and non-optional because the runtime always has a value for it.
+fn runtime_columns(
+    node: &str,
+    named: &[crate::lang::Named],
+    record: &TypeDesc,
+) -> TResult<(Option<usize>, Option<usize>)> {
+    let mut partition: Option<(usize, crate::diag::Span)> = None;
+    let mut offset: Option<(usize, crate::diag::Span)> = None;
+    for n in named {
+        let slot = match n.name.as_str() {
+            "partition_as" => &mut partition,
+            "offset_as" => &mut offset,
+            other => {
+                return err(
+                    n.span,
+                    format!(
+                        "`input` has no named argument `{other}`; it takes `partition_as` \
+                         and `offset_as`"
+                    ),
+                );
+            }
+        };
+        if slot.is_some() {
+            return err(n.span, format!("`{}` is given twice", n.name));
+        }
+        let (Some(i), Some(ty)) = (record.field_index(&n.value), record.field_type(&n.value))
+        else {
+            return err(
+                n.span,
+                format!(
+                    "`{}` names `{}`, which `{node}`'s typespec does not declare. A column \
+                     the runtime fills is declared like any other.",
+                    n.name, n.value
+                ),
+            );
+        };
+        if ty != &TypeDesc::I64 {
+            return err(
+                n.span,
+                format!(
+                    "`{}` names `{}`, which is `{ty}`; the runtime fills it with a \
+                     non-optional `i64`",
+                    n.name, n.value
+                ),
+            );
+        }
+        *slot = Some((i, n.span));
+    }
+    if let (None, Some((_, span))) = (partition, offset) {
+        return err(
+            span,
+            "`offset_as` needs `partition_as`: an offset counts within a partition, so \
+             without one there is nothing for it to count in",
+        );
+    }
+    if let (Some((p, span)), Some((o, _))) = (partition, offset)
+        && p == o
+    {
+        return err(span, "`partition_as` and `offset_as` name the same column");
+    }
+    Ok((partition.map(|(i, _)| i), offset.map(|(i, _)| i)))
 }

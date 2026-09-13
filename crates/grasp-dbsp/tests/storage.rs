@@ -616,3 +616,74 @@ fn a_checkpoint_from_another_value_format_is_refused() {
         "only the format differs, so only the format is named: {text}"
     );
 }
+
+/// A restored circuit continues each partition's numbering where the checkpoint
+/// stopped.
+///
+/// Starting again from zero would hand a new record an offset that a record in
+/// the restored history already holds, and "the first record" would stop
+/// meaning anything.
+#[test]
+fn a_restored_checkpoint_continues_its_offsets() {
+    let _lock = ONE_AT_A_TIME.lock().expect("the storage lock");
+    let (_dir, config) = forced(0);
+    let source = "t := input(\"t\", partition_as: \"p\", offset_as: \"o\")\n\
+                  t :: zset(record(o: i64, p: i64, v: i64))\n";
+    let plan = grasp_dbsp::compile(source).expect("compiles");
+    let ingress = plan.ingress_type("t").expect("an input");
+    let row = |v: i64| decode_value(&json!({"v": v}), &ingress).expect("a row");
+
+    let mut runner = Runner::build(
+        &plan,
+        &["t".to_string()],
+        RunnerConfig {
+            storage: Some(config.clone()),
+            ..RunnerConfig::default()
+        },
+    )
+    .expect("builds");
+    for v in [1, 2] {
+        runner.push_partitioned("t", 0, row(v), 1).expect("pushes");
+    }
+    runner.step().expect("steps");
+    let uuid = runner
+        .checkpoint(1)
+        .expect("prepares")
+        .commit()
+        .expect("commits")
+        .uuid
+        .to_string();
+    runner.kill();
+
+    let mut restored = Runner::build(
+        &plan,
+        &["t".to_string()],
+        RunnerConfig {
+            storage: Some(config.with_init_checkpoint(Some(uuid.parse().expect("a uuid")))),
+            ..RunnerConfig::default()
+        },
+    )
+    .expect("restores");
+    restored
+        .push_partitioned("t", 0, row(3), 1)
+        .expect("pushes");
+    let deltas = restored.step().expect("steps");
+    let offsets: Vec<i64> = deltas
+        .iter()
+        .filter(|(name, _)| name == "t")
+        .flat_map(|(_, ds)| ds)
+        .map(|d| match &d.key {
+            grasp_dbsp::value::DynValue::Record(fields) => match &fields[0] {
+                grasp_dbsp::value::DynValue::I64(o) => *o,
+                other => panic!("an offset is an i64, found {other:?}"),
+            },
+            other => panic!("a row is a record, found {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        offsets,
+        vec![2],
+        "the first record after the restore takes the offset after the last one issued"
+    );
+    restored.kill();
+}

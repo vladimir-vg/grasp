@@ -23,7 +23,7 @@ use dbsp::{
     RootCircuit, Runtime, Stream, ZSetHandle, ZWeight,
 };
 use feldera_types::checkpoint::CheckpointMetadata;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::num::NonZeroUsize;
 
@@ -95,6 +95,74 @@ impl<T: dbsp::Timestamp> Aggregator<DynValue, T, ZWeight> for MinSkippingNone {
             cursor.step_key();
         }
         seen_absent.then_some(DynValue::None)
+    }
+
+    fn finalize(&self, accumulator: DynValue) -> DynValue {
+        accumulator
+    }
+}
+
+/// The offset that began a row's current positive segment, for an input with
+/// `offset_as`.
+///
+/// The group is every record of one row, keyed by offset, and the walk takes
+/// them in offset order with a running weight. The segment begins where the
+/// total crosses from ≤0 to above 0, and ends where it falls back to ≤0. This is
+/// not the smallest offset among the inserts: a delete does not name the insert
+/// it cancels, so `+1@10, +1@11, -1@12` leaves a row that entered at 10.
+///
+/// Records are never retracted from this group, since each arrives with an
+/// offset of its own, so the walk replays the row's whole history. It is linear
+/// in how many times the row has been sent, which the design accepts.
+#[derive(Clone)]
+struct SegmentStart;
+
+#[derive(Clone)]
+struct SegmentStartSemigroup;
+
+impl Semigroup<DynValue> for SegmentStartSemigroup {
+    // `aggregate` shards by key, so one row's records are never split across
+    // workers and two starts are never combined for one row. If they were, the
+    // earlier is the one that would stand.
+    fn combine(left: &DynValue, right: &DynValue) -> DynValue {
+        left.min(right).clone()
+    }
+}
+
+impl<T: dbsp::Timestamp> Aggregator<DynValue, T, ZWeight> for SegmentStart {
+    type Accumulator = DynValue;
+    type Output = DynValue;
+    type Semigroup = SegmentStartSemigroup;
+
+    fn aggregate<VTrait, RTrait>(
+        &self,
+        cursor: &mut dyn dbsp::trace::Cursor<VTrait, DynUnit, T, RTrait>,
+    ) -> Option<DynValue>
+    where
+        VTrait: DataTrait + ?Sized,
+        RTrait: WeightTrait + ?Sized,
+        DynValue: Erase<VTrait>,
+        ZWeight: Erase<RTrait>,
+    {
+        let mut total: ZWeight = 0;
+        let mut start: Option<DynValue> = None;
+        while cursor.key_valid() {
+            let mut weight: ZWeight = HasZero::zero();
+            cursor.map_times(&mut |_, w| {
+                weight.add_assign_by_ref(unsafe { w.downcast() });
+            });
+            if !weight.is_zero() {
+                let before = total;
+                total += weight;
+                if before <= 0 && total > 0 {
+                    start = Some(unsafe { cursor.key().downcast::<DynValue>() }.clone());
+                } else if total <= 0 {
+                    start = None;
+                }
+            }
+            cursor.step_key();
+        }
+        if total > 0 { start } else { None }
     }
 
     fn finalize(&self, accumulator: DynValue) -> DynValue {
@@ -480,6 +548,12 @@ pub struct Runner {
     storage: Option<CircuitStorageConfig>,
     workers: usize,
     digest: u64,
+    /// `(partition field, offset field)` for every partitioned input.
+    partitioned: HashMap<String, (usize, Option<usize>)>,
+    /// The next offset in each partition of each input with `offset_as`.
+    /// Kept here rather than in the circuit because a record must have its
+    /// offset before it is pushed, and a checkpoint's manifest carries it.
+    offsets: BTreeMap<String, BTreeMap<i64, i64>>,
 }
 
 /// Where a `Runner` is in `dbsp`'s transaction lifecycle.
@@ -536,6 +610,20 @@ impl Runner {
 
         let digest = crate::checkpoint::program_digest(&ids, outputs);
 
+        let partitioned: HashMap<String, (usize, Option<usize>)> = plan
+            .nodes
+            .iter()
+            .filter_map(|n| match &n.op {
+                PlanOp::Input {
+                    table,
+                    partition: Some(p),
+                    offset,
+                } => Some((table.clone(), (*p, *offset))),
+                _ => None,
+            })
+            .collect();
+        let mut offsets: BTreeMap<String, BTreeMap<i64, i64>> = BTreeMap::new();
+
         // A restore is checked *here*, before `Runtime::init_circuit`, because
         // that call is where `dbsp` performs the restore — by the time it
         // returns, a mismatched checkpoint has already been read into a live
@@ -548,6 +636,21 @@ impl Runner {
             let root = std::path::Path::new(&storage.config.path);
             let manifest = crate::checkpoint::Manifest::read(root, &uuid.to_string())?;
             manifest.check(config.workers.get(), digest)?;
+            match manifest.offsets {
+                Some(saved) => offsets = saved,
+                None if partitioned.values().any(|(_, o)| o.is_some()) => {
+                    return Err(vec![Diagnostic::error(
+                        Pass::Config,
+                        None,
+                        "this checkpoint was written before inputs had offsets, and this \
+                         program numbers the records of a partitioned input: restoring it would \
+                         start numbering again from zero, reissuing offsets its history \
+                         already holds"
+                            .to_string(),
+                    )]);
+                }
+                None => {}
+            }
         }
 
         // Storage is one field on the circuit's configuration; the batch types
@@ -643,6 +746,8 @@ impl Runner {
             storage: config.storage,
             workers: config.workers.get(),
             digest,
+            partitioned,
+            offsets,
         })
     }
 
@@ -688,6 +793,9 @@ impl Runner {
             workers: self.workers,
             digest: self.digest,
             steps,
+            // Taken beside `prepare`, on the thread that pushes, so the
+            // counters describe the same instant as the circuit's state.
+            offsets: self.offsets.clone(),
         })
     }
 
@@ -716,11 +824,77 @@ impl Runner {
 
     /// Queues a change to an input table. Applied at the next [`Self::step`].
     pub fn push(&self, table: &str, row: DynValue, weight: ZWeight) -> Result<(), RunError> {
+        if self.partitioned.contains_key(table) {
+            return Err(RunError(format!(
+                "`{table}` is partitioned: its partition and offset are the runtime's to \
+                 fill, so its rows go through `push_partitioned`"
+            )));
+        }
         let handle = self
             .inputs
             .get(table)
             .ok_or_else(|| RunError(format!("no input table `{table}`")))?;
         handle.push(row, weight);
+        Ok(())
+    }
+
+    /// Pushes a row into a partitioned input, filling the fields the runtime
+    /// owns: the partition, and for an input with `offset_as` the partition's
+    /// next offset, which every record takes whatever its weight.
+    ///
+    /// `row` is the record without those fields, as `Plan::ingress_type`
+    /// describes it. They are put back at their places in the declared type.
+    pub fn push_partitioned(
+        &mut self,
+        table: &str,
+        partition: i64,
+        row: DynValue,
+        weight: ZWeight,
+    ) -> Result<(), RunError> {
+        let Some(&(partition_at, offset_at)) = self.partitioned.get(table) else {
+            return Err(RunError(format!(
+                "`{table}` has no `partition_as`, so there is no partition to push into"
+            )));
+        };
+        let handle = self
+            .inputs
+            .get(table)
+            .ok_or_else(|| RunError(format!("no input table `{table}`")))?;
+        let DynValue::Record(given) = row else {
+            return Err(RunError(format!("a row of `{table}` is a record")));
+        };
+        let len = given.len() + 1 + usize::from(offset_at.is_some());
+        let mut given = given.into_iter();
+        let mut fields = Vec::with_capacity(len);
+        for i in 0..len {
+            if i == partition_at {
+                fields.push(DynValue::I64(partition));
+            } else if Some(i) == offset_at {
+                // Filled below, once the row is known to be whole: a malformed
+                // row should not use up an offset.
+                fields.push(DynValue::None);
+            } else {
+                fields.push(given.next().ok_or_else(|| {
+                    RunError(format!("a row of `{table}` has fewer fields than its type"))
+                })?);
+            }
+        }
+        if given.next().is_some() {
+            return Err(RunError(format!(
+                "a row of `{table}` has more fields than its type"
+            )));
+        }
+        if let Some(at) = offset_at {
+            let next = self
+                .offsets
+                .entry(table.to_string())
+                .or_default()
+                .entry(partition)
+                .or_insert(0);
+            fields[at] = DynValue::I64(*next);
+            *next += 1;
+        }
+        handle.push(DynValue::Record(fields), weight);
         Ok(())
     }
 
@@ -1355,10 +1529,43 @@ fn build_root(
             Node::Flat(source.differentiate())
         }
 
-        PlanOp::Input { table } => {
+        PlanOp::Input {
+            table,
+            partition: _,
+            offset,
+        } => {
             let (stream, handle) = circuit.add_input_zset::<DynValue>();
             inputs.push((table.clone(), handle));
-            Node::Flat(stream)
+            match *offset {
+                // Plain, or a partition with no order: the row is what arrived,
+                // its partition already filled by `push_partitioned`.
+                None => Node::Flat(stream),
+                Some(at) => {
+                    // Keyed by the row with its offset blanked, which is the row
+                    // identified by everything but its offset, partition
+                    // included. Every record has an offset of its own, so none
+                    // merge before this point.
+                    let records = stream.map_index(move |row: &DynValue| {
+                        let mut key = row.clone();
+                        let offset = match &mut key {
+                            DynValue::Record(fields) => {
+                                std::mem::replace(&mut fields[at], DynValue::None)
+                            }
+                            _ => unreachable!("an input is a record"),
+                        };
+                        (key, offset)
+                    });
+                    Node::Flat(records.aggregate(SegmentStart).map(
+                        move |(key, start): (&DynValue, &DynValue)| {
+                            let mut row = key.clone();
+                            if let DynValue::Record(fields) = &mut row {
+                                fields[at] = start.clone();
+                            }
+                            row
+                        },
+                    ))
+                }
+            }
         }
 
         PlanOp::Fixpoint { body, outputs } => {
@@ -1537,6 +1744,7 @@ pub struct PendingCheckpoint {
     workers: usize,
     digest: u64,
     steps: u64,
+    offsets: BTreeMap<String, BTreeMap<i64, i64>>,
 }
 
 impl PendingCheckpoint {
@@ -1570,7 +1778,7 @@ impl PendingCheckpoint {
         let uuid = metadata.uuid.to_string();
         extra(&self.root.join(&uuid))
             .map_err(|e| RunError(format!("writing checkpoint {uuid}: {e}")))?;
-        crate::checkpoint::Manifest::new(uuid, self.workers, self.digest, self.steps)
+        crate::checkpoint::Manifest::new(uuid, self.workers, self.digest, self.steps, self.offsets)
             .write(&self.root)
             .map_err(|d| RunError(crate::diag::render(&d)))?;
         Ok(metadata)

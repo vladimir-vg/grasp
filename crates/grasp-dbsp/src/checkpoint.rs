@@ -32,6 +32,7 @@
 use crate::diag::{Diagnostic, Pass};
 use crate::value::DynValue;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use xxhash_rust::xxh3::Xxh3Default;
@@ -86,16 +87,32 @@ pub struct Manifest {
     /// Seconds since the Unix epoch. Informational, and it is what makes a
     /// directory listing legible to a person.
     pub created: u64,
+    /// The next offset for every partition of every partitioned input, so that
+    /// a restored circuit continues numbering where this one stopped rather
+    /// than reissuing offsets its history already holds.
+    ///
+    /// `None` in a manifest written before offsets existed. It is optional
+    /// rather than defaulted to empty because an empty map means "no partition
+    /// has seen a record", and that manifest does not know.
+    #[serde(default)]
+    pub offsets: Option<BTreeMap<String, BTreeMap<i64, i64>>>,
 }
 
 impl Manifest {
-    pub fn new(uuid: String, workers: usize, program_digest: u64, steps: u64) -> Manifest {
+    pub fn new(
+        uuid: String,
+        workers: usize,
+        program_digest: u64,
+        steps: u64,
+        offsets: BTreeMap<String, BTreeMap<i64, i64>>,
+    ) -> Manifest {
         Manifest {
             uuid,
             workers,
             format_digest: DynValue::format_digest(),
             program_digest,
             steps,
+            offsets: Some(offsets),
             created: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_secs())

@@ -45,8 +45,18 @@ fn hash_op(h: &mut Xxh3Default, op: &PlanOp, ids: &[String]) {
     // An explicit tag per variant, rather than anything derived, so that
     // reordering the enum cannot silently change every id in existence.
     let (tag, inputs): (u8, &[usize]) = match op {
-        PlanOp::Input { table } => {
+        PlanOp::Input {
+            table,
+            partition,
+            offset,
+        } => {
             table.hash(h);
+            // Only when present, so a plain input hashes exactly as it did
+            // before these existed, and every checkpoint of a program without
+            // them keeps its program digest.
+            if partition.is_some() {
+                (partition, offset).hash(h);
+            }
             (1, &[])
         }
         PlanOp::Map { input, f } => {

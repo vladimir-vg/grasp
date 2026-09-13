@@ -27,7 +27,8 @@ node_def     := NAME ":=" op_call
 typespec     := NAME "::" batch_type
 comment      := "#" [^\n]*
 
-op_call      := OP "(" [arg ("," arg)*] ")"
+op_call      := OP "(" [arg ("," arg)* ("," named_arg)*] ")"
+named_arg    := NAME ":" STRING         # `input`'s partition_as and offset_as
 arg          := NAME                    # a stream, or a named function
               | op_call                 # a nested operator, except `input` and `constant`
               | STRING                  # a table name, for `input`
@@ -298,6 +299,7 @@ where that mapping is maintained.
 | operator | signature |
 |---|---|
 | `input("t")` | → `zset(T)` |
+| `input("t", partition_as: "p", offset_as: "o")` | → `zset(T)`, `p` and `o` filled by the runtime — see [Partitions and offsets](#partitions-and-offsets) |
 | `constant([r, …])` | → `zset(T)` |
 | `map(s, f)` | `X → zset(U)`, `f : E → U` |
 | `filter(s, f)` | `X → X`, `f : E → bool` |
@@ -373,6 +375,50 @@ with `distinct` for set semantics.
 
 There is no `output` operator. Outputs are named by the host when it starts the
 circuit.
+
+### Partitions and offsets
+
+`input` may name two columns of its own record for the runtime to fill:
+
+```grasp-dbsp
+inbox := input("inbox", partition_as: "partition", offset_as: "offset")
+inbox :: zset(record(from: i64, offset: i64, partition: i64, term: i64))
+```
+
+- **Both columns are declared**, as non-optional `i64`s, like any other. A row
+  pushed into the table carries every column but these two, and a row that
+  carries either is refused.
+- **`partition_as`** names the partition the row was pushed into. The host
+  chooses it, and a row pushed without one goes wherever the host decides.
+- **`offset_as` needs `partition_as`.** Every record pushed into a partition
+  takes that partition's next offset, deletes included. Offsets are counted per
+  table, per partition, and never shared between tables.
+
+**A row carries the offset of the record that began its current segment.** Per
+row, identified by every column but its offset, records are taken in offset
+order with a running weight:
+
+- the row appears when the total crosses from ≤0 to above 0, with the offset of
+  the record that crossed it;
+- it keeps that offset while the total stays above 0;
+- it is retracted when the total falls to ≤0, and a later crossing starts a new
+  segment at a new offset.
+
+So `+1@10, +1@11, -1@12` leaves the row at 10, and a retraction arriving first
+leaves a debt: `-1@10, +1@11, +1@12` puts the row in at 12. It is not the
+smallest offset among the inserts, because a delete does not say which insert it
+cancels.
+
+**This makes arrival order observable, which a transaction otherwise is not.**
+`+1@10, -1@11, +1@12` in one transaction yields offset 12, where `+1@10` alone
+yields 10. A row removed and re-added within one transaction is reported as a
+change, retracted at its old offset and inserted at its new one, though its
+weight never moved. That is the point of an offset, and the one place a
+transaction's contents are ordered.
+
+**Offsets survive a checkpoint.** A restored circuit continues each partition's
+numbering instead of starting again at zero, which would reissue offsets its
+history already holds.
 
 ## Aggregators
 

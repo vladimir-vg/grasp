@@ -1030,3 +1030,68 @@
   expected_diagnostics:
     - pass: typecheck
       message: "has no meaning over dynamics"
+
+- name: offset_as needs partition_as
+  source: |
+    t := input("t", offset_as: "o")
+    t :: zset(record(o: i64, v: string))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "`offset_as` needs `partition_as`"
+
+- name: a runtime column must be declared
+  source: |
+    t := input("t", partition_as: "q")
+    t :: zset(record(p: i64, v: string))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "`partition_as` names `q`, which `t`'s typespec does not declare"
+
+- name: a runtime column is a non-optional i64
+  source: |
+    t := input("t", partition_as: "p")
+    t :: zset(record(p: optional(i64), v: string))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "the runtime fills it with a non-optional `i64`"
+
+- name: partition_as and offset_as name different columns
+  source: |
+    t := input("t", partition_as: "p", offset_as: "p")
+    t :: zset(record(p: i64, v: string))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "name the same column"
+
+- name: input has only partition_as and offset_as
+  source: |
+    t := input("t", partitoin_as: "p")
+    t :: zset(record(p: i64, v: string))
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "`input` has no named argument `partitoin_as`"
+
+# Refused once, in the checker, so that no operator can quietly ignore one.
+- name: a named argument on any other operator is refused
+  source: |
+    t := input("t")
+    t :: zset(record(v: i64))
+    m := map(t, function((r) -> r), partition_as: "v")
+
+  expected_diagnostics:
+    - pass: typecheck
+      message: "`map` takes no named arguments"
+
+- name: a positional argument cannot follow a named one
+  source: |
+    t := input("t", partition_as: "p", "x")
+    t :: zset(record(p: i64, v: string))
+
+  expected_diagnostics:
+    - pass: parse
+      message: "a positional argument cannot follow the named argument `partition_as:`"

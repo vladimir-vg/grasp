@@ -72,6 +72,11 @@ pub enum Agg {
 pub enum PlanOp {
     Input {
         table: String,
+        /// The field `partition_as` names, as an index into the input's record
+        /// type. The runtime fills it; a pushed row never carries it.
+        partition: Option<usize>,
+        /// The field `offset_as` names. Only ever set alongside `partition`.
+        offset: Option<usize>,
     },
     Map {
         input: usize,
@@ -221,10 +226,45 @@ impl Plan {
             .iter()
             .enumerate()
             .filter_map(|(i, n)| match &n.op {
-                PlanOp::Input { table } => Some((i, table.as_str())),
+                PlanOp::Input { table, .. } => Some((i, table.as_str())),
                 _ => None,
             })
             .collect()
+    }
+
+    /// The fields the runtime fills in a partitioned input, as indices into its
+    /// record type: `(partition, offset)`. `None` for a plain input, or for a
+    /// table this program does not have.
+    pub fn runtime_fields(&self, table: &str) -> Option<(usize, Option<usize>)> {
+        self.nodes.iter().find_map(|n| match &n.op {
+            PlanOp::Input {
+                table: t,
+                partition: Some(p),
+                offset,
+            } if t == table => Some((*p, *offset)),
+            _ => None,
+        })
+    }
+
+    /// What a row pushed into `table` carries: its declared record, less the
+    /// fields the runtime fills. For a plain input that is the declared record.
+    pub fn ingress_type(&self, table: &str) -> Option<crate::value::TypeDesc> {
+        let node = self
+            .nodes
+            .iter()
+            .find(|n| matches!(&n.op, PlanOp::Input { table: t, .. } if t == table))?;
+        let crate::value::BatchType::ZSet(crate::value::TypeDesc::Record(fields)) = &node.ty else {
+            return None;
+        };
+        let runtime = self.runtime_fields(table);
+        Some(crate::value::TypeDesc::Record(
+            fields
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !runtime.is_some_and(|(p, o)| *i == p || Some(*i) == o))
+                .map(|(_, f)| f.clone())
+                .collect(),
+        ))
     }
 
     /// Every declared name that may be selected as an output, sorted.

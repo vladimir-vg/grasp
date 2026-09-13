@@ -278,7 +278,7 @@ fn check_no_name_collides_with_a_function(plan: &Plan, funcs: &Functions<'_>) ->
 fn check_one_type_per_table(plan: &Plan) -> TResult<()> {
     let mut seen: HashMap<&str, (&BatchType, Span)> = HashMap::new();
     for node in &plan.nodes {
-        let PlanOp::Input { table } = &node.op else {
+        let PlanOp::Input { table, .. } = &node.op else {
             continue;
         };
         if let Some((prev, _)) = seen.get(table.as_str()) {
