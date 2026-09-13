@@ -115,6 +115,11 @@ struct IngressArgs {
     update_format: String,
     #[serde(default)]
     array: bool,
+    /// The partition to push into. Absent, the runtime decides; on a table
+    /// without `partition_as`, ignored. Not a Feldera parameter: Feldera's
+    /// HTTP ingress has no partitions at all.
+    #[serde(default)]
+    partition: Option<i64>,
 }
 
 fn default_format() -> String {
@@ -144,19 +149,18 @@ async fn ingress(
             name: table,
         });
     }
-    let shape = state
+    // What a row carries. For a partitioned table that is its record less the
+    // columns the runtime fills, so a row that supplies one is refused by the
+    // decoder as an unknown field and needs no check here.
+    let ingress = state
         .handle
-        .shapes
+        .ingress
         .get(&table)
         .ok_or_else(|| ApiError::UnknownName {
             what: "table",
             name: table.clone(),
         })?;
-    let BatchType::ZSet(row_type) = shape else {
-        return Err(ApiError::InvalidParam(format!(
-            "`{table}` is an indexed relation; only a flat input table can be ingested into"
-        )));
-    };
+    let row_type = &ingress.row_type;
 
     // Feldera splits a body into values with a brace-depth scanner and accepts
     // whitespace, newlines or nothing between them (`format/json/input.rs:426-
@@ -202,6 +206,7 @@ async fn ingress(
             state
                 .handle
                 .ask(|reply| Command::Push {
+                    partition: args.partition,
                     table: table.clone(),
                     rows,
                     reply,
@@ -628,6 +633,16 @@ async fn metadata(
         "name": state.pipeline,
         "tables": state.handle.tables,
         "views": state.handle.views,
-        "materialized": state.handle.materialized,
+                "materialized": state.handle.materialized,
+        "runtime_columns": state
+            .handle
+            .ingress
+            .iter()
+            .filter(|(_, i)| i.partition_as.is_some())
+            .map(|(t, i)| (t.clone(), json!({
+                "partition_as": i.partition_as,
+                "offset_as": i.offset_as,
+            })))
+            .collect::<serde_json::Map<String, J>>(),
     })))
 }

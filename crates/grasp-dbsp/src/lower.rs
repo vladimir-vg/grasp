@@ -838,6 +838,16 @@ impl Runner {
         Ok(())
     }
 
+    /// The fields the runtime fills in `table`, as indices into its record:
+    /// `(partition, offset)`. `None` for a plain input or no such table.
+    ///
+    /// A host needs this without the plan it built from: to decide between
+    /// [`Runner::push`] and [`Runner::push_partitioned`], and to decode a row
+    /// that carries every column but these.
+    pub fn runtime_fields(&self, table: &str) -> Option<(usize, Option<usize>)> {
+        self.partitioned.get(table).copied()
+    }
+
     /// Pushes a row into a partitioned input, filling the fields the runtime
     /// owns: the partition, and for an input with `offset_as` the partition's
     /// next offset, which every record takes whatever its weight.

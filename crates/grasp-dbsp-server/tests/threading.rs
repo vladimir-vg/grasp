@@ -103,6 +103,7 @@ impl Fixture {
 
     fn push(&self, rows: Vec<(DynValue, dbsp::ZWeight)>) -> Result<u64, Fault> {
         self.ask(|reply| Command::Push {
+            partition: None,
             table: "t".to_string(),
             rows,
             reply,

@@ -17,7 +17,7 @@ declared. It has no runtime of its own.
 | crate | |
 |---|---|
 | [`grasp-dbsp`](crates/grasp-dbsp) | parses grasp-dbsp and executes it as a `dbsp` circuit |
-| [`grasp-compiler`](crates/grasp-compiler) | compiles grasp down to grasp-dbsp — parse, desugar, infer, plan, emit — and its fixtures run what it emits |
+| [`grasp-compiler`](crates/grasp-compiler) | compiles grasp down to grasp-dbsp — parse, desugar, infer, plan, emit — and its fixtures run what it emits. `grasp compile` is its command line |
 | [`grasp-dbsp-server`](crates/grasp-dbsp-server) | runs one grasp-dbsp program and serves it over a subset of Feldera's HTTP API — the workspace's only binary |
 
 grasp-dbsp is the contract between them, which is why the design documents live

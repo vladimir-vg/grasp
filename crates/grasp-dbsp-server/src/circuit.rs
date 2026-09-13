@@ -32,7 +32,7 @@
 
 use crossbeam_channel::{Receiver, Sender};
 use grasp_dbsp::lower::{Delta, Runner};
-use grasp_dbsp::value::{BatchType, DynValue};
+use grasp_dbsp::value::{BatchType, DynValue, TypeDesc};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
@@ -115,6 +115,9 @@ impl std::fmt::Display for Fault {
 pub enum Command {
     Push {
         table: String,
+        /// The partition the request named. `None` leaves the choice to the
+        /// runtime, and is ignored by a table without `partition_as`.
+        partition: Option<i64>,
         rows: Vec<(DynValue, dbsp::ZWeight)>,
         reply: oneshot::Sender<Result<u64, Fault>>,
     },
@@ -276,6 +279,29 @@ pub struct Handle {
     /// Every relation's shape, so a handler can decode a request body and
     /// encode a response without the plan.
     pub shapes: Arc<HashMap<String, BatchType>>,
+    /// Per input table, what an ingress request's rows carry. For a
+    /// partitioned table that is its record less the columns the runtime fills.
+    pub ingress: Arc<HashMap<String, Ingress>>,
+}
+
+/// The partition a row goes to when its ingress names none.
+///
+/// Documented as the runtime's choice rather than as `0`, because routing
+/// clients to partitions is exactly the kind of thing that may change. A client
+/// that cares which partition it writes to names one.
+pub const DEFAULT_PARTITION: i64 = 0;
+
+/// What an ingress request's rows carry, for one input table.
+#[derive(Debug, Clone)]
+pub struct Ingress {
+    /// The table's record, less the columns the runtime fills. A row that
+    /// supplies one of those is then refused by the decoder as an unknown
+    /// field, with no check of its own.
+    pub row_type: TypeDesc,
+    /// The column `partition_as` names, for a partitioned table.
+    pub partition_as: Option<String>,
+    /// The column `offset_as` names.
+    pub offset_as: Option<String>,
 }
 
 impl Handle {
@@ -397,6 +423,34 @@ pub fn start_restored(
     views.sort();
     let shapes_for_handle = Arc::new(shapes.clone());
 
+    // Before the runner moves into the circuit, which is the last moment its
+    // runtime columns can be read from this thread.
+    let ingress: HashMap<String, Ingress> = tables
+        .iter()
+        .filter_map(|table| {
+            let BatchType::ZSet(TypeDesc::Record(fields)) = shapes.get(table)? else {
+                return None;
+            };
+            let runtime = runner.runtime_fields(table);
+            let is_runtime = |i: usize| runtime.is_some_and(|(p, o)| i == p || Some(i) == o);
+            Some((
+                table.clone(),
+                Ingress {
+                    row_type: TypeDesc::Record(
+                        fields
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| !is_runtime(*i))
+                            .map(|(_, f)| f.clone())
+                            .collect(),
+                    ),
+                    partition_as: runtime.map(|(p, _)| fields[p].0.clone()),
+                    offset_as: runtime.and_then(|(_, o)| o).map(|o| fields[o].0.clone()),
+                },
+            ))
+        })
+        .collect();
+
     let circuit = Circuit {
         runner,
         shared: Arc::clone(&shared),
@@ -424,6 +478,7 @@ pub fn start_restored(
             tables,
             materialized: materialized.to_vec(),
             shapes: shapes_for_handle,
+            ingress: Arc::new(ingress),
         },
         thread,
     )
@@ -508,8 +563,13 @@ impl Circuit {
     /// a commit answers immediately because it has already done the work.
     fn handle(&mut self, command: Command, deferred: &mut Vec<Box<dyn FnOnce()>>) -> bool {
         match command {
-            Command::Push { table, rows, reply } => {
-                let answer = self.push(&table, rows);
+            Command::Push {
+                table,
+                rows,
+                partition,
+                reply,
+            } => {
+                let answer = self.push(&table, rows, partition);
                 deferred.push(Box::new(move || {
                     let _ = reply.send(answer);
                 }));
@@ -569,15 +629,29 @@ impl Circuit {
         false
     }
 
-    fn push(&mut self, table: &str, rows: Vec<(DynValue, dbsp::ZWeight)>) -> Result<u64, Fault> {
+    fn push(
+        &mut self,
+        table: &str,
+        rows: Vec<(DynValue, dbsp::ZWeight)>,
+        partition: Option<i64>,
+    ) -> Result<u64, Fault> {
         let count = rows.len() as u64;
+        let partitioned = self.runner.runtime_fields(table).is_some();
         for (row, weight) in rows {
-            self.runner
-                .push(table, row, weight)
-                .map_err(|_| Fault::NoSuchName {
-                    what: "table",
-                    name: table.to_string(),
-                })?;
+            if partitioned {
+                self.runner
+                    .push_partitioned(table, partition.unwrap_or(DEFAULT_PARTITION), row, weight)
+                    .map_err(|e| Fault::Refused(e.to_string()))?;
+            } else {
+                // A plain table has no partition column for a named partition
+                // to fill, so the name is ignored rather than refused.
+                self.runner
+                    .push(table, row, weight)
+                    .map_err(|_| Fault::NoSuchName {
+                        what: "table",
+                        name: table.to_string(),
+                    })?;
+            }
         }
 
         self.pending += count;

@@ -136,7 +136,7 @@ would say about a pipeline it had never heard of.
 | `/commit_transaction` | POST | run everything buffered as one step |
 | `/completion_status?token=…` | GET | has this ingestion been computed? |
 | `/stats` | GET | state, step counters, transaction status |
-| `/metadata` | GET | the tables, views and materialized views this program has |
+| `/metadata` | GET | the tables, views and materialized views this program has, and each partitioned table's runtime columns |
 | `/checkpoint` | POST | start a checkpoint; answers before it is durable |
 | `/checkpoint_status` | GET | the last checkpoint that committed, and the last that did not |
 | `/checkpoints` | GET | the checkpoints the storage directory holds |
@@ -173,6 +173,23 @@ good ones ingests the good ones and reports the bad**, with a 400 carrying
 `num_errors` and a per-row description. That is Feldera's behaviour and is
 matched rather than improved on: a client that retried the whole batch after a
 400 would double-insert.
+
+**A partitioned table takes a `partition=<i64>` parameter.** That is a table
+whose `input` names `partition_as` (see
+[`language.md`](language.md#partitions-and-offsets)).
+
+- **A request that names no partition** goes to the partition the runtime
+  chooses. That is `0` today, and not a promise: routing clients to partitions is
+  exactly the kind of thing that may change. A client that cares which partition
+  it writes to names one.
+- **On a table without `partition_as`** the parameter is ignored, and the rows
+  are ingested as usual.
+- **A partitioned table's rows carry every column except the ones the runtime
+  fills.** A row that supplies one is a `ParseErrors` entry, reported as an
+  unknown field.
+
+Feldera has no such parameter, since its HTTP ingress has no partitions, so a
+Feldera client never sends one and always gets the runtime's choice.
 
 The response is a completion token:
 

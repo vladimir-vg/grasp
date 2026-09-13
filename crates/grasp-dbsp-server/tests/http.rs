@@ -669,3 +669,129 @@ async fn a_view_the_checkpoint_did_not_save_is_refused_on_resume() {
         .expect_err("refused");
     assert!(err.contains("taken without `big`"), "{err}");
 }
+
+/// An input table the runtime numbers, beside one it does not.
+const PARTITIONED: &str = "\
+inbox := input(\"inbox\", partition_as: \"p\", offset_as: \"o\")
+inbox :: zset(record(o: i64, p: i64, term: i64))
+plain := input(\"plain\")
+plain :: zset(record(term: i64))
+";
+
+fn partitioned_state() -> (web::Data<State>, std::thread::JoinHandle<()>) {
+    let plan = grasp_dbsp::compile(PARTITIONED)
+        .unwrap_or_else(|d| panic!("compiles: {}", grasp_dbsp::diag::render(&d)));
+    let views: Vec<String> = plan.views().into_iter().map(str::to_string).collect();
+    let runner = Runner::build(&plan, &views, RunnerConfig::default())
+        .unwrap_or_else(|d| panic!("builds: {}", grasp_dbsp::diag::render(&d)));
+    let shapes: HashMap<_, _> = views
+        .iter()
+        .filter_map(|v| grasp_dbsp::lower::shape(&plan, v).map(|t| (v.clone(), t.clone())))
+        .collect();
+    let tables: Vec<String> = plan
+        .inputs()
+        .into_iter()
+        .map(|(_, t)| t.to_string())
+        .collect();
+    let (handle, thread) = circuit::start(runner, shapes, &[], tables, true);
+    (
+        web::Data::new(State {
+            handle,
+            pipeline: "shop".to_string(),
+            keepalive: Duration::from_secs(3600),
+        }),
+        thread,
+    )
+}
+
+/// `(offset, partition, term)` for every row of the next chunk on `inbox`.
+async fn next_inbox_rows(
+    chunks: &mut tokio::sync::mpsc::Receiver<circuit::Chunk>,
+) -> Vec<(i64, i64, i64)> {
+    let chunk = actix_web::rt::time::timeout(Duration::from_secs(5), chunks.recv())
+        .await
+        .expect("a chunk within five seconds")
+        .expect("the stream is open");
+    chunk
+        .deltas
+        .iter()
+        .map(|d| match &d.key {
+            grasp_dbsp::value::DynValue::Record(f) => match (&f[0], &f[1], &f[2]) {
+                (
+                    grasp_dbsp::value::DynValue::I64(o),
+                    grasp_dbsp::value::DynValue::I64(p),
+                    grasp_dbsp::value::DynValue::I64(t),
+                ) => (*o, *p, *t),
+                other => panic!("three i64s, found {other:?}"),
+            },
+            other => panic!("a record, found {other:?}"),
+        })
+        .collect()
+}
+
+/// `partition=` names the partition; leaving it out takes the runtime's choice,
+/// and on a table with no partition column it is ignored.
+#[actix_web::test]
+async fn ingress_takes_a_partition_and_the_runtime_fills_the_columns() {
+    let (state, _t) = partitioned_state();
+    let app = app!(state);
+    let mut subscription = state
+        .handle
+        .ask(|reply| circuit::Command::Subscribe {
+            view: "inbox".to_string(),
+            snapshot: false,
+            backpressure: false,
+            reply,
+        })
+        .await
+        .expect("asks")
+        .expect("subscribes");
+
+    let req = test::TestRequest::post()
+        .uri("/ingress/inbox?format=json")
+        .set_payload(r#"{"insert": {"term": 7}}"#)
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status(), 200);
+    assert_eq!(
+        next_inbox_rows(&mut subscription.chunks).await,
+        vec![(0, 0, 7)],
+        "no partition named: the runtime's choice, and the first offset in it"
+    );
+
+    let req = test::TestRequest::post()
+        .uri("/ingress/inbox?format=json&partition=3")
+        .set_payload(r#"{"insert": {"term": 8}}"#)
+        .to_request();
+    assert_eq!(test::call_service(&app, req).await.status(), 200);
+    assert_eq!(
+        next_inbox_rows(&mut subscription.chunks).await,
+        vec![(0, 3, 8)],
+        "partition 3 counts from its own zero"
+    );
+
+    let req = test::TestRequest::post()
+        .uri("/ingress/plain?format=json&partition=5")
+        .set_payload(r#"{"insert": {"term": 1}}"#)
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, req).await.status(),
+        200,
+        "a plain table ignores a partition rather than refusing it"
+    );
+}
+
+/// The columns the runtime fills are not the client's to supply.
+#[actix_web::test]
+async fn a_row_that_supplies_a_runtime_column_is_refused() {
+    let (state, _t) = partitioned_state();
+    let app = app!(state);
+    let req = test::TestRequest::post()
+        .uri("/ingress/inbox?format=json")
+        .set_payload(r#"{"insert": {"term": 7, "o": 41}}"#)
+        .to_request();
+    let response = test::call_service(&app, req).await;
+    assert_eq!(response.status(), 400);
+    let body: J = test::read_body_json(response).await;
+    assert_eq!(body["error_code"], "ParseErrors");
+    assert!(body.to_string().contains("unknown field `o`"), "{body}");
+}
