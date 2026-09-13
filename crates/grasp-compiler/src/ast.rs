@@ -261,6 +261,8 @@ pub enum Stmt {
         span: Span,
     },
     Input {
+        /// The columns the runtime fills, when the statement names any.
+        options: InputOptions,
         span: Span,
     },
 }
@@ -272,7 +274,7 @@ impl Stmt {
             | Stmt::Match { span, .. }
             | Stmt::Filter { span, .. }
             | Stmt::Assert { span, .. }
-            | Stmt::Input { span } => *span,
+            | Stmt::Input { span, .. } => *span,
         }
     }
 }
@@ -669,4 +671,15 @@ pub enum Type {
     /// Nothing below the parser meets it, because a typespec does not reach the
     /// core.
     Var(String),
+}
+
+/// `<- input partition_as: "p", offset_as: "o"`: the columns of an external
+/// relation the runtime fills. Neither is a plain input.
+///
+/// Each keeps the span of its option name, since that is what a diagnostic
+/// about a column that is not declared, or not an `i64`, points at.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InputOptions {
+    pub partition_as: Option<(String, Span)>,
+    pub offset_as: Option<(String, Span)>,
 }

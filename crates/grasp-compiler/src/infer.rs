@@ -55,6 +55,8 @@ pub struct Relation {
     /// record's fields are a set, so declaration order is not information.
     pub columns: Vec<(String, Type)>,
     pub kind: Kind,
+    /// For an input, the columns the runtime fills. `None` for a derived one.
+    pub input: Option<crate::ast::InputOptions>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -147,7 +149,7 @@ struct Cx {
     specs: BTreeMap<String, (Vec<(String, Type)>, Span)>,
     /// Relations with an `r(cols:) <- input` rule, and where it is.
     /// Each input relation: the rule's span, and the columns its head names.
-    inputs: BTreeMap<String, (Span, Vec<String>)>,
+    inputs: BTreeMap<String, (Span, Vec<String>, crate::ast::InputOptions)>,
     facts: Vec<core::Fact>,
     /// Rules that are not `<- input`.
     rules: Vec<core::Rule>,
@@ -170,9 +172,13 @@ impl Cx {
                 }
                 core::Decl::Fact(f) => cx.facts.push(f),
                 core::Decl::Rule(r) => {
-                    if r.body.iter().any(|s| matches!(s, core::Stmt::Input { .. })) {
+                    if let Some(options) = r.body.iter().find_map(|s| match s {
+                        core::Stmt::Input { options, .. } => Some(options.clone()),
+                        _ => None,
+                    }) {
                         let columns = r.head.args.iter().map(|(c, _)| c.clone()).collect();
-                        cx.inputs.insert(r.head.relation.clone(), (r.span, columns));
+                        cx.inputs
+                            .insert(r.head.relation.clone(), (r.span, columns, options));
                     } else {
                         cx.rules.push(r);
                     }
@@ -1952,13 +1958,69 @@ fn scalar(t: &Ty) -> bool {
 // ---------------------------------------------------------------------------
 
 impl Cx {
+    /// `partition_as` and `offset_as` name columns the relation's spec declares,
+    /// as a non-optional `i64`. Declared like any other, so that the spec still
+    /// says what every column is; non-optional, because the runtime always has a
+    /// value for it.
+    fn check_runtime_columns(
+        &self,
+        name: &str,
+        options: &crate::ast::InputOptions,
+    ) -> Option<Diagnostic> {
+        let (columns, _) = self.specs.get(name)?;
+        for (option, given) in [
+            ("partition_as", &options.partition_as),
+            ("offset_as", &options.offset_as),
+        ] {
+            let Some((column, span)) = given else {
+                continue;
+            };
+            match columns.iter().find(|(c, _)| c == column) {
+                None => {
+                    return Some(Diagnostic::error(
+                        Pass::Infer,
+                        *span,
+                        format!(
+                            "`{option}` names `{column}`, which `{name}`'s spec does not \
+                             declare. A column the runtime fills is declared like any other."
+                        ),
+                    ));
+                }
+                Some((_, ty)) if *ty != Type::I64 => {
+                    return Some(Diagnostic::error(
+                        Pass::Infer,
+                        *span,
+                        format!(
+                            "`{option}` names `{column}`, which is `{ty}`; the runtime fills \
+                             it with a non-optional `i64`"
+                        ),
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+        if let (Some((p, span)), Some((o, _))) = (&options.partition_as, &options.offset_as)
+            && p == o
+        {
+            return Some(Diagnostic::error(
+                Pass::Infer,
+                *span,
+                "`partition_as` and `offset_as` name the same column",
+            ));
+        }
+        None
+    }
+
     /// Every diagnostic this pass produces, in one walk over the settled table.
     fn check(&self) -> Vec<Diagnostic> {
         let mut out = Vec::new();
 
         // Relation-level, once each.
-        for (name, (span, columns)) in &self.inputs {
-            if let Some(d) = self.check_input(name, *span, columns) {
+        for (name, (span, columns, options)) in &self.inputs {
+            if let Some(d) = self
+                .check_input(name, *span, columns)
+                .or_else(|| self.check_runtime_columns(name, options))
+            {
                 out.push(d);
             }
         }
@@ -3051,6 +3113,7 @@ impl Cx {
             relations.insert(
                 name.clone(),
                 Relation {
+                    input: self.inputs.get(name).map(|(_, _, options)| options.clone()),
                     columns: cols,
                     kind: if self.inputs.contains_key(name) {
                         Kind::Input

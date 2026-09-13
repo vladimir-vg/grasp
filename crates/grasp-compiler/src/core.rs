@@ -104,6 +104,7 @@ pub enum Stmt {
         span: Span,
     },
     Input {
+        options: crate::ast::InputOptions,
         span: Span,
     },
 }
@@ -115,7 +116,7 @@ impl Stmt {
             | Stmt::Match { span, .. }
             | Stmt::Filter { span, .. }
             | Stmt::Assert { span, .. }
-            | Stmt::Input { span } => *span,
+            | Stmt::Input { span, .. } => *span,
         }
     }
 }

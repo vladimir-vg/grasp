@@ -930,13 +930,21 @@ fn check_output(case: &Case, expected: &[Epoch], exact: bool, where_: &str) -> R
                     ));
                 }
             };
+            // As grasp-dbsp's own harness does: a partitioned relation's rows
+            // are decoded without the columns the runtime fills, and pushed into
+            // the row's third element, or partition 0 when it has none.
+            let row_type = plan.ingress_type(relation).unwrap_or(row_type);
+            let partitioned = plan.runtime_fields(relation).is_some();
             for row in rows {
-                let (value, weight) = decode_input_row(row, &row_type).map_err(|e| {
+                let (value, weight, partition) = decode_input_row(row, &row_type).map_err(|e| {
                     format!("{where_}, epoch {epoch_idx}, relation `{relation}`: {e}")
                 })?;
-                runner
-                    .push(relation, value, weight)
-                    .map_err(|e| format!("{where_}: {e}\n  emitted:\n{}", emitted()))?;
+                if partitioned {
+                    runner.push_partitioned(relation, partition.unwrap_or(0), value, weight)
+                } else {
+                    runner.push(relation, value, weight)
+                }
+                .map_err(|e| format!("{where_}: {e}\n  emitted:\n{}", emitted()))?;
             }
         }
 
@@ -1016,13 +1024,14 @@ fn check_output(case: &Case, expected: &[Epoch], exact: bool, where_: &str) -> R
 fn decode_input_row(
     row: &Row,
     ty: &TypeDesc,
-) -> Result<(grasp_dbsp::value::DynValue, i64), String> {
+) -> Result<(grasp_dbsp::value::DynValue, i64, Option<i64>), String> {
     let row = row
         .as_sequence()
         .ok_or_else(|| "an input row is [weight, value]".to_string())?;
-    if row.len() != 2 {
+    if row.len() != 2 && row.len() != 3 {
         return Err(format!(
-            "an input row is [weight, value]; found {} element(s)",
+            "an input row is [weight, value] or [weight, value, partition]; found {} \
+             element(s)",
             row.len()
         ));
     }
@@ -1030,7 +1039,13 @@ fn decode_input_row(
         .as_i64()
         .ok_or_else(|| "the first element of a row must be an integer weight".to_string())?;
     let value = decode_value(&yaml_to_json(&row[1]), ty).map_err(|e| e.to_string())?;
-    Ok((value, weight))
+    let partition = match row.get(2) {
+        None => None,
+        Some(p) => Some(yaml_to_json(p).as_i64().ok_or_else(|| {
+            "the third element of a row must be an integer partition".to_string()
+        })?),
+    };
+    Ok((value, weight, partition))
 }
 
 // ---------------------------------------------------------------------------

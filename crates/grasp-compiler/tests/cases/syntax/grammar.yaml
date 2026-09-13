@@ -408,3 +408,27 @@
     - severity: error
       pass: parse
       message: "an aggregate's only named argument is `by`"
+
+- name: an input may name the columns the runtime fills
+  source: |
+    inbox :: relation(partition: i64, offset: i64, term: i64)
+    inbox(partition:, offset:, term:) <- input partition_as: "partition", offset_as: "offset"
+  expected_ok: true
+
+- name: offset_as needs partition_as
+  source: |
+    inbox :: relation(offset: i64, term: i64)
+    inbox(offset:, term:) <- input offset_as: "offset"
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "`offset_as` needs `partition_as`"
+
+- name: an input takes only partition_as and offset_as
+  source: |
+    inbox :: relation(partition: i64, term: i64)
+    inbox(partition:, term:) <- input partitoin_as: "partition"
+  expected_diagnostics:
+    - severity: error
+      pass: parse
+      message: "`input` takes `partition_as` and `offset_as`, not `partitoin_as`"

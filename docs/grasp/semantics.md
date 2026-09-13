@@ -38,6 +38,10 @@ row, `-1` retracts it. A transaction may carry several weights for one row; they
 are summed, so `+1, -1, +1` and `+1` are the same transaction. That is the same
 "order does not exist" as above, applied to data instead of to statements.
 
+The one exception is an input with `offset_as`, whose offsets record the order
+records arrived in, so there `+1, -1, +1` and `+1` differ. See
+[External relations](#external-relations).
+
 **An input relation is the rows whose accumulated weight is positive**, summed
 over every transaction so far. So `+1, +1, -1` leaves the row in — the total is
 still one. `-1, -1, +1` leaves it out, and so does the next `+1`: the total is
@@ -163,6 +167,26 @@ are. Such a relation may not also be derived by rules, and may not take part in
 recursion.
 
 > ``relation `r` is both an input and derived by a rule``
+
+**An input may name columns for the runtime to fill.**
+
+```grasp
+inbox :: relation(partition: i64, offset: i64, from: i64, term: i64)
+inbox(partition:, offset:, from:, term:) <- input partition_as: "partition", offset_as: "offset"
+```
+
+- **`partition_as`** names the column holding the partition a row was pushed
+  into.
+- **`offset_as`** names the column holding its offset, and needs `partition_as`.
+  Every record pushed into a partition takes the next offset, deletes included.
+- **Both columns are ordinary.** They're in the spec, as non-optional `i64`s,
+  and in the head, since every column is. What arrives from outside carries
+  every column but these two.
+- **A row carries the offset of the record that began its current positive
+  segment.** A row removed and added again takes a new one, and a row asserted
+  twice keeps its first. grasp-dbsp's
+  [`language.md`](../grasp-dbsp/language.md#partitions-and-offsets) has the rule
+  in full.
 
 ## Matches, assertions and expressions
 

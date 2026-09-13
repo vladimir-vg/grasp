@@ -110,7 +110,8 @@ positive_atom  ::= relation_name "(" [kv_args] ")"
 negated_atom   ::= "not" positive_atom
 filter         ::= expr                 -- must be boolean
 type_assertion ::= variable "::" type
-input_stmt     ::= "input"
+input_stmt     ::= "input" [input_option ("," input_option)*]
+input_option   ::= ("partition_as" | "offset_as") ":" STRING
 
 match          ::= variable ":=" expr
                  | variable ":=" aggregate
@@ -494,7 +495,7 @@ Stmt         = Atom      { relation, args: [KvArg], negated: bool }
              | Match     { lhs: Pattern, rhs: Rhs }
              | Filter    { expr: Expr }
              | Assert    { variable, ty: Type }
-             | Input
+             | Input     { partition_as: name?, offset_as: name? }
 
 Pattern      = Var       { name }
              | Unnest    { vars: [name], kind: Array | Dict }

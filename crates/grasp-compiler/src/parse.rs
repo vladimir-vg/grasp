@@ -919,13 +919,65 @@ impl<'a> Parser<'a> {
         Ok(body)
     }
 
+    /// `input_option ::= ("partition_as" | "offset_as") ":" STRING`, read after
+    /// `input`: the columns of the relation the runtime fills.
+    ///
+    /// Which names are allowed, and that `offset_as` needs `partition_as`, are
+    /// shape and so are refused here. Whether the column is declared, and is an
+    /// `i64`, needs the spec, which is inference's.
+    fn input_options(&mut self) -> Result<crate::ast::InputOptions, Diagnostic> {
+        let mut options = crate::ast::InputOptions::default();
+        while matches!(self.kind(), Some(Tok::Ident(_))) && self.kind_at(1) == Some(&Tok::Colon) {
+            let (name, span) = self.expect_ident("an input option")?;
+            self.expect(&Tok::Colon, "`:`")?;
+            let Some(Tok::Str(column)) = self.kind() else {
+                return Err(self.error(
+                    self.here(),
+                    format!("`{name}:` takes a column name in quotes"),
+                ));
+            };
+            let column = column.clone();
+            self.bump();
+            let slot = match name.as_str() {
+                "partition_as" => &mut options.partition_as,
+                "offset_as" => &mut options.offset_as,
+                other => {
+                    return Err(self.error(
+                        span,
+                        format!("`input` takes `partition_as` and `offset_as`, not `{other}`"),
+                    ));
+                }
+            };
+            if slot.is_some() {
+                return Err(self.error(span, format!("`{name}` is given twice")));
+            }
+            *slot = Some((column, span));
+            let another = self.at(&Tok::Comma)
+                && matches!(self.kind_at(1), Some(Tok::Ident(_)))
+                && self.kind_at(2) == Some(&Tok::Colon);
+            if !another {
+                break;
+            }
+            self.bump(); // `,`
+        }
+        if let (None, Some((_, span))) = (&options.partition_as, &options.offset_as) {
+            return Err(self.error(
+                *span,
+                "`offset_as` needs `partition_as`: an offset counts within a partition, so \
+                 without one there is nothing for it to count in",
+            ));
+        }
+        Ok(options)
+    }
+
     fn body_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.here();
 
-        // input_stmt ::= "input"
+        // input_stmt ::= "input" [input_option ("," input_option)*]
         if self.at(&Tok::Input) {
             let span = self.bump().span;
-            return Ok(Stmt::Input { span });
+            let options = self.input_options()?;
+            return Ok(Stmt::Input { options, span });
         }
 
         // negated_atom ::= "not" positive_atom

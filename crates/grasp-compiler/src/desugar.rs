@@ -195,7 +195,10 @@ fn stmt_of(stmt: &ast::Stmt) -> Result<core::Stmt, Diagnostic> {
             ty: ty.clone(),
             span: *span,
         },
-        ast::Stmt::Input { span } => core::Stmt::Input { span: *span },
+        ast::Stmt::Input { options, span } => core::Stmt::Input {
+            options: options.clone(),
+            span: *span,
+        },
     })
 }
 

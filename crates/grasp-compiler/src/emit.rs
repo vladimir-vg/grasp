@@ -227,10 +227,20 @@ fn emit_relation(out: &mut String, relation: &Relation, names: &mut Names) {
         // weight is positive. The raw stream takes the intermediate name and
         // the relation keeps its own, so "the node named `r` is relation `r`'s
         // stream" still holds — it is the `input` node that moves.
-        Source::Input => {
+        Source::Input { options } => {
             let raw = names.intermediate(node);
             let _ = writeln!(out, "{raw} :: {ty}");
-            let _ = writeln!(out, "{raw} := input({:?})", relation.name);
+            // grasp-dbsp's option names, and the relation's own column names:
+            // a column keeps its name across the boundary (only a relation's is
+            // mangled), so the runtime column is the one the typespec declares.
+            let mut named = String::new();
+            if let Some((column, _)) = &options.partition_as {
+                let _ = write!(named, ", partition_as: {column:?}");
+            }
+            if let Some((column, _)) = &options.offset_as {
+                let _ = write!(named, ", offset_as: {column:?}");
+            }
+            let _ = writeln!(out, "{raw} := input({:?}{named})", relation.name);
             let _ = writeln!(out, "{node} := distinct({raw})");
         }
         // "A relation with a typespec and no producer is empty for the life of

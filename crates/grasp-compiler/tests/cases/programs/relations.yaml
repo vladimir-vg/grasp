@@ -263,3 +263,43 @@
   source: |
     greeting(word: "hello")
   expected_ok: true
+
+# The reason offsets exist: a rule can order what arrived. The rows carry no
+# ordering column of their own; the runtime supplies one.
+- name: offsets order an input's rows for the rules that read them
+  source: |
+    inbox :: relation(partition: i64, offset: i64, term: i64)
+    inbox(partition:, offset:, term:) <- input partition_as: "partition", offset_as: "offset"
+
+    earliest(term: argmin<t, by: o>) <-
+        inbox(partition: 0, offset: o, term: t)
+
+  input:
+    - inbox:
+        - [1, {term: 7}]
+        - [1, {term: 3}]
+        - [1, {term: 9}]
+
+  expected_exact_output:
+    - earliest:
+        - [1, {term: 7}]
+
+- name: a runtime column must be in the spec
+  source: |
+    inbox :: relation(term: i64)
+    inbox(term:) <- input partition_as: "partition"
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "`partition_as` names `partition`, which `inbox`'s spec does not declare"
+
+- name: a runtime column is a non-optional i64
+  source: |
+    inbox :: relation(partition: optional(i64), term: i64)
+    inbox(partition:, term:) <- input partition_as: "partition"
+
+  expected_diagnostics:
+    - severity: error
+      pass: infer
+      message: "the runtime fills it with a non-optional `i64`"

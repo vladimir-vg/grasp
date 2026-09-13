@@ -79,8 +79,8 @@ pub struct Relation {
 /// Where a relation's rows come from — `mapping.md`'s relation table.
 #[derive(Debug)]
 pub enum Source {
-    /// `r(cols:) <- input`.
-    Input,
+    /// `r(cols:) <- input`, with the columns the runtime fills, if it names any.
+    Input { options: crate::ast::InputOptions },
     /// A typespec and no producer: "a relation with only a spec is derived and
     /// empty".
     Empty,
@@ -352,7 +352,9 @@ pub fn plan(typed: infer::Typed) -> Result<Plan, Vec<Diagnostic>> {
     let mut relations = Vec::new();
     for (name, relation) in &typed.relations {
         let source = if relation.kind == infer::Kind::Input {
-            Source::Input
+            Source::Input {
+                options: relation.input.clone().unwrap_or_default(),
+            }
         } else {
             let f = facts.remove(name).unwrap_or_default();
             let r = rules.remove(name).unwrap_or_default();
