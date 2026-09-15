@@ -125,6 +125,79 @@
         - [1, {o: 0, p: 0, v: "a"}]
     - {}
 
+# Offsets the host supplies, as a reader of a Kafka partition does: a row's
+# fourth element. They may skip, and the partition's counter continues after the
+# last one given.
+- name: a supplied offset may skip, and the counter continues after it
+  source: |
+    t := input("t", partition_as: "p", offset_as: "o")
+    t :: zset(record(o: i64, p: i64, v: string))
+
+  input:
+    - t:
+        - [1, {v: "a"}, 0, 5]
+        - [1, {v: "b"}, 0, 9]
+    - t:
+        - [1, {v: "c"}]
+
+  expected_exact_output:
+    - t:
+        - [1, {o: 5, p: 0, v: "a"}]
+        - [1, {o: 9, p: 0, v: "b"}]
+    - t:
+        - [1, {o: 10, p: 0, v: "c"}]
+
+- name: the rows of one message share its offset
+  source: |
+    t := input("t", partition_as: "p", offset_as: "o")
+    t :: zset(record(o: i64, p: i64, v: string))
+
+  input:
+    - t:
+        - [1, {v: "a"}, 0, 3]
+        - [1, {v: "b"}, 0, 3]
+
+  expected_exact_output:
+    - t:
+        - [1, {o: 3, p: 0, v: "a"}]
+        - [1, {o: 3, p: 0, v: "b"}]
+
+# The same row twice at one offset is one record, so an insert and a delete in
+# one message add to nothing: no crossing, no row, and no debt left behind.
+- name: an insert and a delete of one row in one message cancel
+  source: |
+    t := input("t", partition_as: "p", offset_as: "o")
+    t :: zset(record(o: i64, p: i64, v: string))
+
+  input:
+    - t:
+        - [1, {v: "a"}, 0, 3]
+        - [-1, {v: "a"}, 0, 3]
+    - t:
+        - [1, {v: "a"}, 0, 4]
+
+  expected_exact_output:
+    - {}
+    - t:
+        - [1, {o: 4, p: 0, v: "a"}]
+
+- name: a row deleted at a later offset keeps the offset it came in at
+  source: |
+    t := input("t", partition_as: "p", offset_as: "o")
+    t :: zset(record(o: i64, p: i64, v: string))
+
+  input:
+    - t:
+        - [1, {v: "a"}, 0, 3]
+    - t:
+        - [-1, {v: "a"}, 0, 7]
+
+  expected_exact_output:
+    - t:
+        - [1, {o: 3, p: 0, v: "a"}]
+    - t:
+        - [-1, {o: 3, p: 0, v: "a"}]
+
 - name: a partition may be named without an offset
   source: |
     t := input("t", partition_as: "p")

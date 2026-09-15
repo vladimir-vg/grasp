@@ -393,6 +393,11 @@ inbox :: zset(record(from: i64, offset: i64, partition: i64, term: i64))
 - **`offset_as` needs `partition_as`.** Every record pushed into a partition
   takes that partition's next offset, deletes included. Offsets are counted per
   table, per partition, and never shared between tables.
+- **Or the host supplies the offset**, as a reader of a Kafka partition does
+  with the log's own. Offsets then only increase within a partition, and may
+  skip; the partition's count continues after the last one supplied. The rows
+  of one message share its offset, so the same row twice in one message is one
+  record with its weights added, and an insert and a delete of it cancel.
 
 **A row carries the offset of the record that began its current segment.** Per
 row, identified by every column but its offset, records are taken in offset

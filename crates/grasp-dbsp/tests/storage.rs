@@ -687,3 +687,72 @@ fn a_restored_checkpoint_continues_its_offsets() {
     );
     restored.kill();
 }
+
+/// A host supplying offsets — a Kafka reader resuming — may not go back past
+/// the position a restored checkpoint saved, and a refused message pushes
+/// nothing.
+///
+/// Resuming a Kafka partition from the saved position is exactly what makes
+/// this hold, so a message below it means the reader and the checkpoint
+/// disagree about how far the partition was read.
+#[test]
+fn a_supplied_offset_behind_a_restored_partition_is_refused() {
+    let _lock = ONE_AT_A_TIME.lock().expect("the storage lock");
+    let (_dir, config) = forced(0);
+    let source = "t := input(\"t\", partition_as: \"p\", offset_as: \"o\")\n\
+                  t :: zset(record(o: i64, p: i64, v: i64))\n";
+    let plan = grasp_dbsp::compile(source).expect("compiles");
+    let ingress = plan.ingress_type("t").expect("an input");
+    let row = |v: i64| decode_value(&json!({"v": v}), &ingress).expect("a row");
+
+    let mut runner = Runner::build(
+        &plan,
+        &["t".to_string()],
+        RunnerConfig {
+            storage: Some(config.clone()),
+            ..RunnerConfig::default()
+        },
+    )
+    .expect("builds");
+    runner
+        .push_message("t", 0, 41, vec![(row(1), 1)])
+        .expect("pushes");
+    runner.step().expect("steps");
+    let uuid = runner
+        .checkpoint(1)
+        .expect("prepares")
+        .commit()
+        .expect("commits")
+        .uuid
+        .to_string();
+    runner.kill();
+
+    let mut restored = Runner::build(
+        &plan,
+        &["t".to_string()],
+        RunnerConfig {
+            storage: Some(config.with_init_checkpoint(Some(uuid.parse().expect("a uuid")))),
+            ..RunnerConfig::default()
+        },
+    )
+    .expect("restores");
+    let refused = restored
+        .push_message("t", 0, 41, vec![(row(2), 1), (row(3), 1)])
+        .expect_err("offset 41 was already read");
+    assert!(
+        refused.to_string().contains("next offset is 42"),
+        "{refused}"
+    );
+    let deltas = restored.step().expect("steps");
+    assert!(
+        deltas.iter().all(|(_, ds)| ds.is_empty()),
+        "a refused message pushes none of its rows: {deltas:?}"
+    );
+
+    restored
+        .push_message("t", 0, 42, vec![(row(2), 1)])
+        .expect("the next offset is accepted");
+    let deltas = restored.step().expect("steps");
+    assert_eq!(deltas.iter().map(|(_, ds)| ds.len()).sum::<usize>(), 1);
+    restored.kill();
+}

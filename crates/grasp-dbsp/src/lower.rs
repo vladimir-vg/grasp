@@ -574,6 +574,42 @@ enum Transaction {
     Committing,
 }
 
+/// A partitioned table's row with its runtime fields put back at their places:
+/// the partition filled, the offset left as `NONE` for the caller.
+///
+/// `row` is the record without either, as `Plan::ingress_type` describes it.
+fn fill_runtime_fields(
+    table: &str,
+    partition_at: usize,
+    offset_at: Option<usize>,
+    partition: i64,
+    row: DynValue,
+) -> Result<Vec<DynValue>, RunError> {
+    let DynValue::Record(given) = row else {
+        return Err(RunError(format!("a row of `{table}` is a record")));
+    };
+    let len = given.len() + 1 + usize::from(offset_at.is_some());
+    let mut given = given.into_iter();
+    let mut fields = Vec::with_capacity(len);
+    for i in 0..len {
+        if i == partition_at {
+            fields.push(DynValue::I64(partition));
+        } else if Some(i) == offset_at {
+            fields.push(DynValue::None);
+        } else {
+            fields.push(given.next().ok_or_else(|| {
+                RunError(format!("a row of `{table}` has fewer fields than its type"))
+            })?);
+        }
+    }
+    if given.next().is_some() {
+        return Err(RunError(format!(
+            "a row of `{table}` has more fields than its type"
+        )));
+    }
+    Ok(fields)
+}
+
 impl Runner {
     /// Builds the circuit for `plan`, exposing the nodes named in `outputs`.
     ///
@@ -870,30 +906,9 @@ impl Runner {
             .inputs
             .get(table)
             .ok_or_else(|| RunError(format!("no input table `{table}`")))?;
-        let DynValue::Record(given) = row else {
-            return Err(RunError(format!("a row of `{table}` is a record")));
-        };
-        let len = given.len() + 1 + usize::from(offset_at.is_some());
-        let mut given = given.into_iter();
-        let mut fields = Vec::with_capacity(len);
-        for i in 0..len {
-            if i == partition_at {
-                fields.push(DynValue::I64(partition));
-            } else if Some(i) == offset_at {
-                // Filled below, once the row is known to be whole: a malformed
-                // row should not use up an offset.
-                fields.push(DynValue::None);
-            } else {
-                fields.push(given.next().ok_or_else(|| {
-                    RunError(format!("a row of `{table}` has fewer fields than its type"))
-                })?);
-            }
-        }
-        if given.next().is_some() {
-            return Err(RunError(format!(
-                "a row of `{table}` has more fields than its type"
-            )));
-        }
+        // Filled before the offset, once the row is known to be whole: a
+        // malformed row should not use up an offset.
+        let mut fields = fill_runtime_fields(table, partition_at, offset_at, partition, row)?;
         if let Some(at) = offset_at {
             let next = self
                 .offsets
@@ -905,6 +920,69 @@ impl Runner {
             *next += 1;
         }
         handle.push(DynValue::Record(fields), weight);
+        Ok(())
+    }
+
+    /// Pushes the rows of one message into a partitioned input, at an offset
+    /// the host supplies rather than the partition's counter.
+    ///
+    /// This is how a host reading a log — a Kafka partition — keeps the log's
+    /// own offsets. Every row of the message shares `offset`, so identical rows
+    /// in one message are one record with their weights added. The offset may
+    /// skip ahead, since a log's offsets have gaps, but it may not go back:
+    /// below the partition's next offset is refused, and then nothing of the
+    /// message is pushed. The counter moves past it, so a later
+    /// [`Self::push_partitioned`] continues after it.
+    ///
+    /// On an input without `offset_as` the offset is not stored anywhere and
+    /// is not checked; only the partition is filled.
+    pub fn push_message(
+        &mut self,
+        table: &str,
+        partition: i64,
+        offset: i64,
+        rows: Vec<(DynValue, ZWeight)>,
+    ) -> Result<(), RunError> {
+        let Some(&(partition_at, offset_at)) = self.partitioned.get(table) else {
+            return Err(RunError(format!(
+                "`{table}` has no `partition_as`, so there is no partition to push into"
+            )));
+        };
+        if offset_at.is_some() {
+            let next = self
+                .offsets
+                .get(table)
+                .and_then(|p| p.get(&partition))
+                .copied()
+                .unwrap_or(0);
+            if offset < next {
+                return Err(RunError(format!(
+                    "offset {offset} in partition {partition} of `{table}` is behind the \
+                     partition, whose next offset is {next}: offsets only increase"
+                )));
+            }
+        }
+        let mut records = Vec::with_capacity(rows.len());
+        for (row, weight) in rows {
+            let mut fields = fill_runtime_fields(table, partition_at, offset_at, partition, row)?;
+            if let Some(at) = offset_at {
+                fields[at] = DynValue::I64(offset);
+            }
+            records.push((DynValue::Record(fields), weight));
+        }
+        let handle = self
+            .inputs
+            .get(table)
+            .ok_or_else(|| RunError(format!("no input table `{table}`")))?;
+        for (record, weight) in records {
+            handle.push(record, weight);
+        }
+        if offset_at.is_some() {
+            self.offsets
+                .entry(table.to_string())
+                .or_default()
+                .insert(partition, offset + 1);
+        }
         Ok(())
     }
 

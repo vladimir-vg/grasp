@@ -338,18 +338,43 @@ fn check_output(case: &Case, expected: &[Epoch], exact: bool, where_: &str) -> R
             // A partitioned table's rows are decoded without the fields the
             // runtime fills, and pushed into a partition: the row's third
             // element, or `0` when it has none, which is what the server does
-            // with an ingress that names no partition.
+            // with an ingress that names no partition. A fourth element is an
+            // offset the host supplies, as a Kafka reader does, and adjacent
+            // rows naming the same partition and offset are one message.
             let row_type = plan.ingress_type(table).unwrap_or(row_type);
             let partitioned = plan.runtime_fields(table).is_some();
+            let mut message: Option<(i64, i64, Vec<_>)> = None;
             for row in rows {
-                let (value, weight, partition) = decode_input_row(row, &row_type, in_format)
-                    .map_err(|e| format!("{where_}, epoch {epoch_idx}, table `{table}`: {e}"))?;
-                if partitioned {
-                    runner.push_partitioned(table, partition.unwrap_or(0), value, weight)
-                } else {
-                    runner.push(table, value, weight)
+                let (value, weight, partition, offset) =
+                    decode_input_row(row, &row_type, in_format).map_err(|e| {
+                        format!("{where_}, epoch {epoch_idx}, table `{table}`: {e}")
+                    })?;
+                let partition = partition.unwrap_or(0);
+                if let Some((p, o, rows)) = &mut message
+                    && Some((*p, *o)) == offset.map(|o| (partition, o))
+                {
+                    rows.push((value, weight));
+                    continue;
                 }
-                .map_err(|e| format!("{where_}: {e}"))?;
+                if let Some((p, o, rows)) = message.take() {
+                    runner
+                        .push_message(table, p, o, rows)
+                        .map_err(|e| format!("{where_}: {e}"))?;
+                }
+                match offset {
+                    Some(o) => message = Some((partition, o, vec![(value, weight)])),
+                    None if partitioned => runner
+                        .push_partitioned(table, partition, value, weight)
+                        .map_err(|e| format!("{where_}: {e}"))?,
+                    None => runner
+                        .push(table, value, weight)
+                        .map_err(|e| format!("{where_}: {e}"))?,
+                }
+            }
+            if let Some((p, o, rows)) = message {
+                runner
+                    .push_message(table, p, o, rows)
+                    .map_err(|e| format!("{where_}: {e}"))?;
             }
         }
 
@@ -436,24 +461,27 @@ fn key_type(ty: &BatchType) -> &TypeDesc {
     }
 }
 
-/// `[weight, row]` for a flat input table, or `[weight, row, partition]` for a
-/// partitioned one.
+/// `[weight, row]` for a flat input table, `[weight, row, partition]` for a
+/// partitioned one, or `[weight, row, partition, offset]` for a row whose offset
+/// the host supplies.
+#[allow(clippy::type_complexity)]
 fn decode_input_row(
     row: &Row,
     ty: &TypeDesc,
     format: Format,
-) -> Result<(grasp_dbsp::value::DynValue, i64, Option<i64>), String> {
+) -> Result<(grasp_dbsp::value::DynValue, i64, Option<i64>, Option<i64>), String> {
     if format == Format::InsertDelete {
         return decode_delta_insert_delete(&yaml_to_json(row), ty)
-            .map(|(v, w)| (v, w, None))
+            .map(|(v, w)| (v, w, None, None))
             .map_err(|e| e.to_string());
     }
     let row = row
         .as_sequence()
         .ok_or_else(|| "an input row is [weight, row]".to_string())?;
-    if row.len() != 2 && row.len() != 3 {
+    if !(2..=4).contains(&row.len()) {
         return Err(format!(
-            "an input row is [weight, row] or [weight, row, partition]; found {} element(s)",
+            "an input row is [weight, row], [weight, row, partition] or \
+             [weight, row, partition, offset]; found {} element(s)",
             row.len()
         ));
     }
@@ -467,7 +495,14 @@ fn decode_input_row(
             "the third element of a row must be an integer partition".to_string()
         })?),
     };
-    Ok((value, weight, partition))
+    let offset =
+        match row.get(3) {
+            None => None,
+            Some(o) => Some(yaml_to_json(o).as_i64().ok_or_else(|| {
+                "the fourth element of a row must be an integer offset".to_string()
+            })?),
+        };
+    Ok((value, weight, partition, offset))
 }
 
 fn parse_format(name: Option<&str>, what: &str) -> Result<Format, String> {

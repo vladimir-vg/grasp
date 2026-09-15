@@ -659,7 +659,9 @@ cycle.
 
 1. **The handle receives each record whole.** `Runner::push_partitioned` has
    filled its partition and its offset, so no two records share a key and
-   nothing merges on the way in.
+   nothing merges on the way in. `Runner::push_message` fills one offset the
+   host supplies into every row of a message, so identical rows of one message
+   do merge — which is the rule, not an accident of it.
 2. **`map_index` keys each record by the same row with its offset blanked.**
    That is the row identified by everything else, partition included.
 3. **`aggregate` with the hand-written `SegmentStart`** walks each key's offsets
@@ -671,7 +673,9 @@ has been sent. A partition with no offset needs none of this: the row is pushed
 with its partition filled, and that is all.
 
 **The counters live on the `Runner`, not in the circuit,** because a record needs
-its offset before it is pushed. A checkpoint's manifest carries them. They are
+its offset before it is pushed. `push_message` refuses an offset behind its
+partition's counter and moves the counter past the one it was given. A
+checkpoint's manifest carries them. They are
 taken beside `prepare`, on the thread that pushes, so they describe the same
 instant as the circuit's state.
 
