@@ -3,16 +3,23 @@
 Each Raft node runs its own `grasp-dbsp-server` beside a small Python process.
 Every decision a node makes is a rule in [`raft.grasp`](raft.grasp): when to
 campaign, whom to vote for, whether it has won, what to send. The Python only
-moves records. It delivers each message the program derives into the
-recipient's server, and fires two timers into its own.
+moves records. It produces each message the program derives to the recipient's
+Kafka topic, and fires two timers into its own.
+
+It needs a Kafka broker. A local Redpanda will do:
+
+```bash
+rpk container start
+```
 
 ```bash
 python3 examples/raft/launch.py
 ```
 
 The launcher builds `grasp` and `grasp-dbsp-server`, compiles `raft.grasp`, and
-starts three nodes on ports 18201–18203. Then it puts the cluster through one
-failure:
+creates this run's topics on the broker at `127.0.0.1:9092` (`--brokers` to
+change it). It starts three nodes on ports 18201–18203, then puts the cluster
+through one failure:
 
 1. It waits for a leader.
 2. It kills the leader and waits for a new leader in a later term.
@@ -20,18 +27,34 @@ failure:
 4. It waits for the newcomer to follow the leader.
 
 Throughout, it watches every node and checks that no term ever had two leaders
-and no node ever voted twice in one term. It exits non-zero if either happened.
-It needs `python3` with `requests`.
+and no node ever voted twice in one term. It exits non-zero if either happened,
+and deletes this run's topics either way. It needs `python3` with `requests` and
+`kafka-python`.
 
 ## How it works
 
+**Messages travel through Kafka.** Each node's inbox is a topic of its own with
+one partition, `<run>-node-<id>`, and the node's server reads it into the
+`inbox` table (see the Kafka inputs in
+[`serving.md`](../../docs/grasp-dbsp/serving.md#kafka-inputs)). Membership is
+one topic, `<run>-members`, that every node reads into `member`, so a membership
+edit is one message. Both are read from the start, so a new node sees what was
+sent to it before it came up, and the whole membership history. What a node
+*sends* still leaves over HTTP, as rows entering its `send` view, because the
+server has no Kafka output. Each node also tells its server who it is over HTTP,
+once.
+
 **A node's state is its history.** Nothing in the program is carried from one
 transaction to the next. A node's state is derived from its `inbox`, every
-message it has ever received, whose offsets the runtime fills in arrival order:
+message it has ever received, ordered by the offset Kafka gave it in the topic:
 
 ```grasp
 inbox(partition:, offset:, kind:, from:, term:, tick:) <- input partition_as: "partition", offset_as: "offset"
 ```
+
+The server puts each message's Kafka partition and offset into those two
+columns. Every producer writing to a node's topic goes through one partition,
+so the broker's order of arrival is the node's order of receipt.
 
 **Every decision is made "as of" an offset.** `term_before` is the highest term
 among messages with a lower offset, which is the term the node knew when a
@@ -76,12 +99,12 @@ twice with the same content is the same row, so it arrives once.
 - **History grows without bound.** Every message and timer tick stays in the
   inbox, and the "as of" rules join against all of it, so a node slows down the
   longer it runs. The example runs for about a minute.
-- **Membership changes aren't Raft-safe during the change.** `member` is an
-  input the launcher edits on every node. For a moment two nodes can count
-  different memberships, which is why the launcher changes it only while a
-  leader is in place, never mid-election. Real Raft changes membership through
-  the log.
-- **One partition.** Every node reads and writes partition `0`, and names it
-  explicitly rather than taking the runtime's default.
+- **Membership changes aren't Raft-safe during the change.** `member` is a topic
+  the launcher writes to, and each node reads it at its own pace. For a moment
+  two nodes can count different memberships, which is why the launcher changes
+  it only while a leader is in place, never mid-election. Real Raft changes
+  membership through the log.
+- **One partition.** Every topic has one partition, and every producer names
+  partition `0`, which is the partition the program reads.
 - **A crashed node doesn't come back.** It rejoins, if at all, as a new node
   under a new id.

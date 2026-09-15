@@ -2,15 +2,19 @@
 
 1. Starts three nodes and waits for a leader.
 2. Kills the leader, and waits for a new leader in a higher term.
-3. Replaces the dead node: removes it from every member list, starts a node
-   under a new id, and adds that id to every member list. Membership changes
-   here are not Raft's joint consensus, so this is done only once a leader is
-   in place, never mid-election.
+3. Replaces the dead node: removes it from the membership, starts a node under
+   a new id, and adds that id. Membership changes here are not Raft's joint
+   consensus, so this is done only once a leader is in place, never
+   mid-election.
 4. Waits for the new node to follow the current leader.
 
 Throughout, it watches every node's `won` and `voted` views and checks the two
 promises an election makes: at most one leader per term, and at most one vote
 per node per term. It exits non-zero if either was ever broken.
+
+Messages and membership travel through Kafka: every node's inbox is a topic, and
+the membership is one topic all nodes read. The topics are this run's own, named
+by a fresh prefix, and deleted at the end.
 """
 
 import argparse
@@ -21,8 +25,15 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 
 import requests
+from kafka import KafkaProducer
+from kafka.admin import KafkaAdminClient, NewTopic
+from kafka.errors import KafkaError, NoBrokersAvailable
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from node import inbox_topic, members_topic  # noqa: E402
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -105,22 +116,69 @@ def wait_for(what, predicate, timeout, base_port=None, nodes=()):
     # still climbing is receiving messages, and one that does not answer is not.
     for node in nodes:
         try:
-            g = requests.get(
+            stats = requests.get(
                 f"http://127.0.0.1:{base_port + node}/v0/pipelines/{PIPELINE}/stats", timeout=2
-            ).json()["global_metrics"]
+            ).json()
+            g = stats["global_metrics"]
             print(
                 f"  node {node}: {g['total_input_records']} records in, "
                 f"{g['total_completed_steps']} steps, {g['buffered_input_records']} buffered"
             )
+            for i in stats.get("inputs", []):
+                m = i["metrics"]
+                print(
+                    f"    {i['endpoint_name']}: {m['total_records']} records, "
+                    f"{m['num_parse_errors']} parse errors, "
+                    f"{m['num_transport_errors']} transport errors, fatal: {i['fatal_error']}"
+                )
         except requests.RequestException as e:
             print(f"  node {node}: no answer ({e.__class__.__name__})")
     raise SystemExit(f"timed out waiting for {what}")
 
 
-def push(base_port, node, table, row, delete=False):
-    url = f"http://127.0.0.1:{base_port + node}/v0/pipelines/{PIPELINE}/ingress/{table}"
-    body = json.dumps({"delete" if delete else "insert": row})
-    requests.post(url, params={"format": "json"}, data=body, timeout=5).raise_for_status()
+class Kafka:
+    """This run's topics: creating them, editing the membership, and removing
+    them afterwards."""
+
+    def __init__(self, brokers, prefix):
+        self.prefix = prefix
+        try:
+            self.admin = KafkaAdminClient(bootstrap_servers=brokers)
+        except NoBrokersAvailable:
+            raise SystemExit(
+                f"no Kafka broker at {brokers}. Start one (`rpk container start`), "
+                "or pass --brokers."
+            )
+        self.producer = KafkaProducer(bootstrap_servers=brokers, linger_ms=0)
+        self.created = []
+        self.create(members_topic(prefix))
+
+    def create(self, topic):
+        # One partition: the program reads partition 0.
+        self.admin.create_topics([NewTopic(topic, num_partitions=1, replication_factor=1)])
+        self.created.append(topic)
+        # Wait for the topic's metadata, so a server starting next finds it.
+        deadline = time.monotonic() + 30
+        while not self.producer.partitions_for(topic):
+            if time.monotonic() > deadline:
+                raise SystemExit(f"topic {topic} was created and never appeared")
+            time.sleep(0.1)
+
+    def node(self, node):
+        self.create(inbox_topic(self.prefix, node))
+
+    def member(self, node, delete=False):
+        body = json.dumps({"delete" if delete else "insert": {"node": node}}).encode()
+        self.producer.send(members_topic(self.prefix), value=body, partition=0)
+        self.producer.flush()
+
+    def close(self):
+        self.producer.close(timeout=5)
+        try:
+            self.admin.delete_topics(self.created)
+        except KafkaError as e:
+            print(f"could not delete this run's topics {self.created}: {e}")
+        self.admin.close()
 
 
 def main():
@@ -129,9 +187,11 @@ def main():
     sys.stdout.reconfigure(line_buffering=True)
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--base-port", type=int, default=18200)
+    ap.add_argument("--brokers", default="127.0.0.1:9092", help="Kafka bootstrap servers")
     ap.add_argument("--no-build", action="store_true")
     args = ap.parse_args()
     base = args.base_port
+    kafka = Kafka(args.brokers, f"grasp-raft-{uuid.uuid4().hex[:8]}")
 
     if not args.no_build:
         subprocess.run(
@@ -152,14 +212,17 @@ def main():
     nodes = {}
     watch = Watch()
 
-    def start(node, members):
+    def start(node):
+        kafka.node(node)
         nodes[node] = subprocess.Popen([
             sys.executable, HERE / "node.py",
             "--id", str(node),
             "--base-port", str(base),
-            "--members", ",".join(str(m) for m in members),
+            "--brokers", args.brokers,
+            "--topic-prefix", kafka.prefix,
             "--server-bin", server,
             "--program", program,
+            "--work", work,
             "--log", work / f"node-{node}.log",
         ])
         watch.follow(base, node, stopping)
@@ -167,7 +230,9 @@ def main():
     try:
         members = [1, 2, 3]
         for n in members:
-            start(n, members)
+            kafka.member(n)
+        for n in members:
+            start(n)
 
         term, leader = wait_for("a first leader", lambda: watch.leader(members), 60, base, list(nodes))
         print(f"term {term}: node {leader} leads")
@@ -187,11 +252,11 @@ def main():
         print(f"term {term2}: node {leader2} leads")
 
         newcomer = 4
-        for n in members:
-            push(base, n, "member", {"node": leader}, delete=True)
-        start(newcomer, members + [newcomer])
-        for n in members:
-            push(base, n, "member", {"node": newcomer})
+        # One topic, read by every node: each edit reaches all of them, and the
+        # newcomer reads the whole history from the start.
+        kafka.member(leader, delete=True)
+        kafka.member(newcomer)
+        start(newcomer)
         members.append(newcomer)
         print(f"replaced node {leader} with node {newcomer}")
 
@@ -220,6 +285,7 @@ def main():
                 proc.wait(timeout=20)
             except subprocess.TimeoutExpired:
                 proc.kill()
+        kafka.close()
 
 
 if __name__ == "__main__":

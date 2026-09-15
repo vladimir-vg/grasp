@@ -1,4 +1,5 @@
-# Each node's grasp-dbsp-server configuration.
+# Each node's grasp-dbsp-server configuration, less its Kafka inputs: `node.py`
+# appends those, since the topics are named by the node's id and the run.
 #
 # The launcher watches these three views, and a watcher that connects after a
 # row was derived would never see it: an egress stream carries only what changes
