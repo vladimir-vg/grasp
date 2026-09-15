@@ -30,6 +30,44 @@
     max_rss_mb: 4096
   expected_storage: false
 
+- name: a Kafka input written as Feldera writes it
+  program: |
+    inbox := input("inbox", partition_as: "partition", offset_as: "offset")
+    inbox :: zset(record(offset: i64, partition: i64, v: i64))
+  config: |
+    inputs:
+      inbox_kafka:
+        stream: inbox
+        transport:
+          name: kafka_input
+          config:
+            bootstrap.servers: "localhost:19092"
+            topic: inbox
+            start_from: earliest
+            security.protocol: PLAINTEXT
+        format:
+          name: json
+          config: {update_format: insert_delete, array: false}
+        max_queued_records: 1000
+  expected_workers: 1
+
+- name: a Kafka input's format may be left out, and a plain table may be fed
+  program: |
+    t := input("t")
+    t :: zset(record(v: i64))
+  config: |
+    inputs:
+      t_kafka:
+        stream: t
+        transport:
+          name: kafka_input
+          config:
+            bootstrap.servers: "localhost:19092"
+            topic: t
+            start_from:
+              offsets: [0, 10]
+  expected_workers: 1
+
 - name: a materialized view the program has
   program: |
     t := input("t")

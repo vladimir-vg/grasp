@@ -20,6 +20,9 @@ path = "src/main.rs"
 [dependencies]
 grasp-dbsp = { path = "../grasp-dbsp" }
 dbsp = { workspace = true }
+# `KafkaInputConfig`, deserialized verbatim so that a Kafka connector's
+# `transport.config` means here what it means in Feldera.
+feldera-types = { workspace = true }
 actix-web = { workspace = true }
 tokio = { workspace = true }
 crossbeam-channel = { workspace = true }

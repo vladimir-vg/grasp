@@ -31,6 +31,7 @@
 use grasp_dbsp::diag::{Diagnostic, Pass, Span};
 use grasp_dbsp::lower::RunnerConfig;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::path::Path;
 
@@ -109,6 +110,99 @@ pub struct PipelineConfig {
     /// refused, only not honoured below that.
     #[serde(default = "default_checkpoint_retention")]
     pub checkpoint_retention: usize,
+
+    /// Connectors that read a table's rows from outside, by endpoint name.
+    /// Feldera's `PipelineConfig::inputs` (`config.rs:142`), in its shape:
+    /// each entry names its table as `stream`, and carries a `transport` and a
+    /// `format`.
+    ///
+    /// Kafka is the only transport, and JSON the only format. See
+    /// [`InputEndpoint`] for what else is refused, and why.
+    #[serde(default)]
+    pub inputs: BTreeMap<String, InputEndpoint>,
+}
+
+/// One input connector, as a configuration file writes it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InputEndpoint {
+    /// The table the rows go into.
+    pub stream: String,
+    pub transport: Transport,
+    /// Optional, as in Feldera; absent is `json` with its defaults.
+    #[serde(default)]
+    pub format: Option<FormatSpec>,
+    /// While this many rows are waiting for a transaction, the connector stops
+    /// reading. Feldera's `ConnectorConfig::max_queued_records`, and its
+    /// default.
+    #[serde(default = "default_max_queued_records")]
+    pub max_queued_records: u64,
+}
+
+/// `transport: {name, config}`, with the config kept untyped until the name
+/// says which type it is — the order Feldera's own tagged enum reads it in.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Transport {
+    pub name: String,
+    #[serde(default)]
+    pub config: serde_yaml::Value,
+}
+
+/// `format: {name, config}`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormatSpec {
+    pub name: String,
+    #[serde(default)]
+    pub config: JsonFormat,
+}
+
+/// The `json` format's settings: Feldera's `JsonParserConfig`, less what this
+/// server's decoder does not have.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JsonFormat {
+    /// `insert_delete` or `weighted`, as `POST /ingress` takes them.
+    #[serde(default = "default_update_format")]
+    pub update_format: String,
+    /// A message is a JSON array of rows rather than rows back to back.
+    #[serde(default)]
+    pub array: bool,
+    /// Accepted and changes nothing: rows may span lines or share one either
+    /// way, as over HTTP.
+    #[serde(default)]
+    pub lines: Option<String>,
+}
+
+impl Default for JsonFormat {
+    fn default() -> Self {
+        JsonFormat {
+            update_format: default_update_format(),
+            array: false,
+            lines: None,
+        }
+    }
+}
+
+fn default_update_format() -> String {
+    "insert_delete".to_string()
+}
+
+fn default_max_queued_records() -> u64 {
+    1_000_000
+}
+
+/// A connector, checked and resolved: what the server starts a reader from.
+#[derive(Debug, Clone)]
+pub struct KafkaInput {
+    /// The endpoint's name, as `/stats` reports it.
+    pub endpoint: String,
+    pub table: String,
+    pub config: feldera_types::transport::kafka::KafkaInputConfig,
+    pub update_format: grasp_dbsp::json::Format,
+    pub array: bool,
+    pub max_queued_records: u64,
 }
 
 fn default_name() -> String {
@@ -152,6 +246,25 @@ impl PipelineConfig {
             let Some(key) = key.as_str() else { continue };
             if let Some(why) = unsupported(key) {
                 diags.push(Diagnostic::error(Pass::Config, locate(text, key), why));
+            }
+        }
+        // The same, one level down: a Feldera connector's keys that this
+        // server's connectors do not have.
+        if let Some(serde_yaml::Value::Mapping(inputs)) = mapping.get("inputs") {
+            for (endpoint, body) in inputs {
+                let (Some(endpoint), serde_yaml::Value::Mapping(body)) = (endpoint.as_str(), body)
+                else {
+                    continue;
+                };
+                for key in body.keys().filter_map(|k| k.as_str()) {
+                    if let Some(why) = unsupported_in_endpoint(key) {
+                        diags.push(Diagnostic::error(
+                            Pass::Config,
+                            None,
+                            format!("input `{endpoint}`: `{key}` {why}. Remove the key."),
+                        ));
+                    }
+                }
             }
         }
         if !diags.is_empty() {
@@ -211,7 +324,112 @@ impl PipelineConfig {
             _ => {}
         }
 
+        if let Err(more) = self.kafka_inputs() {
+            diags.extend(more);
+        }
+
         if diags.is_empty() { Ok(()) } else { Err(diags) }
+    }
+
+    /// Every input connector, resolved into what a reader starts from.
+    ///
+    /// Called by [`Self::parse`], so that a file with a connector this server
+    /// cannot run is refused before anything else happens, and again by the
+    /// host that starts the readers.
+    pub fn kafka_inputs(&self) -> Result<Vec<KafkaInput>, Vec<Diagnostic>> {
+        let mut diags = Vec::new();
+        let mut out = Vec::new();
+        for (endpoint, input) in &self.inputs {
+            let mut refuse = |message: String| {
+                diags.push(Diagnostic::error(
+                    Pass::Config,
+                    None,
+                    format!("input `{endpoint}`: {message}"),
+                ))
+            };
+
+            if input.transport.name != "kafka_input" {
+                refuse(format!(
+                    "`transport.name: {}` is not a transport this server has. Its one input \
+                     connector is `kafka_input`; rows arrive otherwise over `POST /ingress`.",
+                    input.transport.name
+                ));
+                continue;
+            }
+
+            let format = input.format.clone().unwrap_or(FormatSpec {
+                name: "json".to_string(),
+                config: JsonFormat::default(),
+            });
+            if format.name != "json" {
+                refuse(format!(
+                    "`format.name: {}` is not implemented. This server decodes `json` and \
+                     nothing else.",
+                    format.name
+                ));
+            }
+            let update_format = match format.config.update_format.as_str() {
+                "insert_delete" => Some(grasp_dbsp::json::Format::InsertDelete),
+                "weighted" => Some(grasp_dbsp::json::Format::Weighted),
+                other => {
+                    refuse(format!(
+                        "`update_format: {other}` is not implemented. This server has \
+                         `insert_delete` and `weighted`."
+                    ));
+                    None
+                }
+            };
+            if let Some(lines) = &format.config.lines
+                && lines != "single"
+                && lines != "multiple"
+            {
+                refuse(format!(
+                    "`lines: {lines}` is neither `single` nor `multiple`."
+                ));
+            }
+
+            let raw = match &input.transport.config {
+                serde_yaml::Value::Mapping(m) => m.clone(),
+                serde_yaml::Value::Null => serde_yaml::Mapping::new(),
+                _ => {
+                    refuse("`transport.config` is a mapping of Kafka settings.".to_string());
+                    continue;
+                }
+            };
+            let mut named = false;
+            for key in raw.keys().filter_map(|k| k.as_str()) {
+                if let Some(why) = unsupported_in_kafka(key) {
+                    refuse(format!("`{key}` {why}. Remove the key."));
+                    named = true;
+                }
+            }
+            if named {
+                continue;
+            }
+            let config: feldera_types::transport::kafka::KafkaInputConfig =
+                match serde_yaml::from_value(serde_yaml::Value::Mapping(raw)) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        refuse(format!("the Kafka settings: {e}"));
+                        continue;
+                    }
+                };
+            if let Some(update_format) = update_format {
+                out.push(KafkaInput {
+                    endpoint: endpoint.clone(),
+                    table: input.stream.clone(),
+                    config,
+                    update_format,
+                    array: format.config.array,
+                    max_queued_records: input.max_queued_records,
+                });
+            }
+        }
+        if diags.is_empty() {
+            Ok(out)
+        } else {
+            Err(diags)
+        }
     }
 
     /// The keys that name something in the program, checked against it.
@@ -223,7 +441,7 @@ impl PipelineConfig {
     /// renamed node leaves the configuration behind.
     pub fn check_against(&self, plan: &grasp_dbsp::typecheck::Plan) -> Result<(), Vec<Diagnostic>> {
         let views = plan.views();
-        let diags: Vec<Diagnostic> = self
+        let mut diags: Vec<Diagnostic> = self
             .materialized
             .iter()
             .filter(|name| !views.contains(&name.as_str()))
@@ -243,6 +461,41 @@ impl PipelineConfig {
                 )
             })
             .collect();
+
+        // One connector per table. Offsets are counted per table and
+        // partition, so two topics feeding one table would both write a
+        // partition 0, and their offsets would interleave meaninglessly.
+        let tables: Vec<&str> = plan.inputs().into_iter().map(|(_, t)| t).collect();
+        let mut fed: BTreeMap<&str, &str> = BTreeMap::new();
+        for (endpoint, input) in &self.inputs {
+            if !tables.contains(&input.stream.as_str()) {
+                diags.push(Diagnostic::error(
+                    Pass::Config,
+                    None,
+                    format!(
+                        "input `{endpoint}` feeds `{}`, which is not a table of this program. \
+                         Its tables are: {}.",
+                        input.stream,
+                        if tables.is_empty() {
+                            "none".to_string()
+                        } else {
+                            tables.join(", ")
+                        }
+                    ),
+                ));
+            } else if let Some(first) = fed.insert(&input.stream, endpoint) {
+                diags.push(Diagnostic::error(
+                    Pass::Config,
+                    None,
+                    format!(
+                        "inputs `{first}` and `{endpoint}` both feed `{}`. A table has one \
+                         connector: offsets are counted per table and partition, and two \
+                         topics would both write partition 0.",
+                        input.stream
+                    ),
+                ));
+            }
+        }
         if diags.is_empty() { Ok(()) } else { Err(diags) }
     }
 
@@ -288,17 +541,16 @@ impl PipelineConfig {
 /// is a key Feldera knows and this server does not implement.
 fn unsupported(key: &str) -> Option<String> {
     let why = match key {
-        "inputs" | "outputs" => {
-            "configures Feldera connectors — Kafka, files, object stores. This server has \
-             exactly one input transport, `POST /ingress/{table}`, and one output transport, \
-             `POST /egress/{view}`, so there is nothing for a connector configuration to \
-             configure"
+        "outputs" => {
+            "configures Feldera output connectors — Kafka, files, databases. This server has \
+             exactly one output transport, `POST /egress/{view}`, so there is nothing for an \
+             output connector configuration to configure"
         }
         "fault_tolerance" => {
-            "replays *input* after a crash, from each connector's journaled offsets. This \
-             server has no connectors and journals nothing — rows arrive over \
-             `POST /ingress` — so there is nothing to replay. Checkpoints themselves are \
-             supported: `POST /checkpoint`, and `serve --resume-from`"
+            "replays journaled *input* after a crash. This server journals nothing, so there \
+             is nothing to replay. Checkpoints themselves are supported, and a Kafka input \
+             resumes from the offsets its checkpoint saved: `POST /checkpoint`, and \
+             `serve --resume-from`"
         }
         "checkpoint_during_suspend" => {
             "is deprecated in Feldera and has no effect there \
@@ -341,6 +593,69 @@ fn unsupported(key: &str) -> Option<String> {
         _ => return None,
     };
     Some(format!("`{key}` {why}. Remove the key."))
+}
+
+/// Why a Feldera connector key is not accepted on an input here, if it is one.
+fn unsupported_in_endpoint(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "preprocessor" | "postprocessor" => {
+            "transforms bytes before parsing or after encoding. This server has no such \
+             stages"
+        }
+        "index"
+        | "send_snapshot"
+        | "enable_output_buffer"
+        | "max_output_buffer_time_millis"
+        | "max_output_buffer_size_records" => "configures an output connector, not an input",
+        "soft_delete" => "turns deletes into updates of a marker column. A delete here is a delete",
+        "max_batch_size" | "max_worker_batch_size" => {
+            "caps how many records Feldera's controller takes into one step. This server \
+             steps once per drain of its command queue, and `max_queued_records` is the knob \
+             that bounds it"
+        }
+        "paused" | "start_after" | "labels" => {
+            "orchestrates when Feldera's controller starts a connector. Every connector here \
+             starts with the server"
+        }
+        _ => return None,
+    })
+}
+
+/// Why a Kafka setting Feldera has is not accepted here, if it is one.
+///
+/// Feldera's `KafkaInputConfig` flattens every key it does not know into the
+/// options it hands librdkafka, so the consumer-group settings are named here:
+/// without that they would reach librdkafka and quietly change where reading
+/// starts.
+fn unsupported_in_kafka(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "include_headers" | "include_timestamp" | "include_partition" | "include_offset"
+        | "include_topic" => {
+            "puts Kafka metadata where SQL's `CONNECTOR_METADATA()` reads it. Here a program \
+             declares the columns the runtime fills: a table whose `input` names \
+             `partition_as` and `offset_as` gets the Kafka partition and offset, and there \
+             is no timestamp, topic or header column"
+        }
+        "synchronize_partitions" => {
+            "orders ingestion across partitions by Kafka timestamp, for Feldera's lateness. \
+             This language has no lateness, and each row carries its own partition and offset"
+        }
+        "header_filter" => "is not implemented: every message is read",
+        "region" | "oauth_provider" => {
+            "configures AWS MSK authentication, which is not implemented. SASL and SSL \
+             settings are passed to librdkafka as usual"
+        }
+        "poller_threads" | "group_join_timeout_secs" => {
+            "tunes Feldera's reader. This server reads each topic on one thread and joins no \
+             consumer group"
+        }
+        "fault_tolerance" | "kafka_service" => "is a legacy key that Feldera ignores",
+        "group.id" | "enable.auto.commit" | "enable.auto.offset.store" | "auto.offset.reset" => {
+            "would hand the read position to Kafka. This reader assigns its partitions itself \
+             and keeps its position in the checkpoint; where it starts is `start_from`"
+        }
+        _ => return None,
+    })
 }
 
 /// Where a top-level key sits in the file.

@@ -71,6 +71,7 @@ materialized:
 | `storage_config` | *where* it lives — Feldera's `StorageConfig`, verbatim | none |
 | `materialized` | views whose contents are kept, so `send_snapshot=true` has something to send | none |
 | `checkpoint_retention` | how many checkpoints to keep; older ones are removed once a newer one commits | `2` |
+| `inputs` | connectors that read tables' rows from Kafka, in Feldera's shape | none |
 
 ### Three departures from Feldera, each deliberate
 
@@ -110,8 +111,8 @@ expected:
 
 | keys | why not |
 |---|---|
-| `inputs`, `outputs` | configure Feldera connectors — Kafka, files, object stores. There is exactly one input transport here and one output transport, so there is nothing to configure |
-| `fault_tolerance` | replays *input* after a crash, from each connector's journaled offsets. There are no connectors here and nothing is journaled, so there is nothing to replay. Checkpoints themselves are supported — see [Checkpoints](#checkpoints) |
+| `outputs` | configure Feldera output connectors. There is exactly one output transport here, `POST /egress`, so there is nothing to configure |
+| `fault_tolerance` | replays journaled *input* after a crash. Nothing is journaled here, so there is nothing to replay. Checkpoints themselves are supported, and a Kafka input resumes from the offsets its checkpoint saved — see [Checkpoints](#checkpoints) |
 | `checkpoint_during_suspend` | deprecated in Feldera, where it has no effect, and there is no `/suspend` here for it to apply to |
 | `hosts`, `multihost` | a multi-host `dbsp` layout. This runtime names a worker count and nothing else |
 | `clock_resolution_usecs`, `clock_timezone_offset` | pace Feldera's clock for SQL's `NOW()`. This language has no clock: a timestamp is a value a program is given, never one it reads |

@@ -108,6 +108,13 @@ fn serve(
         None => PipelineConfig::parse("{}").map_err(|d| render(&d))?,
     };
     config.check_against(&plan).map_err(|d| render(&d))?;
+    if !config.inputs.is_empty() {
+        return Err(
+            "`inputs` is a valid configuration, and this build does not start input \
+             connectors yet. Remove `inputs`, or send rows over `POST /ingress`."
+                .to_string(),
+        );
+    }
     let runner_config = config.runner().map_err(|d| render(&d))?;
     let (runner_config, resumed) = match resume_from {
         None => (runner_config, None),
@@ -288,6 +295,12 @@ fn validate(program: &std::path::Path, config_file: Option<&std::path::Path>) ->
                     );
                     if !config.materialized.is_empty() {
                         println!("  materialized: {}", list(&config.materialized));
+                    }
+                    for (endpoint, input) in &config.inputs {
+                        println!(
+                            "  input {endpoint}: {} into `{}`",
+                            input.transport.name, input.stream
+                        );
                     }
                 }
             },

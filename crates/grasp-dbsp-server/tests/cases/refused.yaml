@@ -6,13 +6,144 @@
   expected_diagnostics:
     - "unknown field `worker`"
 
-- name: a Feldera connector section says why there is nothing to configure
+- name: an input connector needs a transport
   config: |
     inputs:
       orders:
         stream: orders
   expected_diagnostics:
-    - "there is nothing for a connector configuration to configure"
+    - "missing field `transport`"
+
+- name: an output connector section says why there is nothing to configure
+  config: |
+    outputs:
+      orders: {}
+  expected_diagnostics:
+    - "there is nothing for an output connector configuration to configure"
+
+- name: a transport other than Kafka is refused
+  config: |
+    inputs:
+      orders:
+        stream: orders
+        transport:
+          name: file_input
+          config: {path: /tmp/orders.json}
+  expected_diagnostics:
+    - "input `orders`: `transport.name: file_input` is not a transport this server has"
+
+- name: a format other than json is refused
+  config: |
+    inputs:
+      orders:
+        stream: orders
+        transport:
+          name: kafka_input
+          config: {bootstrap.servers: "localhost:9092", topic: orders}
+        format:
+          name: csv
+  expected_diagnostics:
+    - "`format.name: csv` is not implemented"
+
+- name: an update format the decoder lacks is refused
+  config: |
+    inputs:
+      orders:
+        stream: orders
+        transport:
+          name: kafka_input
+          config: {bootstrap.servers: "localhost:9092", topic: orders}
+        format:
+          name: json
+          config: {update_format: debezium}
+  expected_diagnostics:
+    - "`update_format: debezium` is not implemented"
+
+- name: a Kafka input without a topic is refused
+  config: |
+    inputs:
+      orders:
+        stream: orders
+        transport:
+          name: kafka_input
+          config: {bootstrap.servers: "localhost:9092"}
+  expected_diagnostics:
+    - "input `orders`: the Kafka settings"
+
+- name: Kafka metadata switches say the program declares its columns instead
+  config: |
+    inputs:
+      orders:
+        stream: orders
+        transport:
+          name: kafka_input
+          config:
+            bootstrap.servers: "localhost:9092"
+            topic: orders
+            include_offset: true
+            include_partition: true
+  expected_diagnostics:
+    - "`include_offset` puts Kafka metadata"
+    - "`include_partition` puts Kafka metadata"
+
+- name: a consumer group setting is refused rather than passed to librdkafka
+  config: |
+    inputs:
+      orders:
+        stream: orders
+        transport:
+          name: kafka_input
+          config:
+            bootstrap.servers: "localhost:9092"
+            topic: orders
+            group.id: shop
+  expected_diagnostics:
+    - "`group.id` would hand the read position to Kafka"
+
+- name: a Feldera connector key this server lacks is refused by name
+  config: |
+    inputs:
+      orders:
+        stream: orders
+        max_batch_size: 100
+        transport:
+          name: kafka_input
+          config: {bootstrap.servers: "localhost:9092", topic: orders}
+  expected_diagnostics:
+    - "input `orders`: `max_batch_size` caps how many records"
+
+- name: an input feeding no table of the program names the tables it has
+  program: |
+    t := input("t")
+    t :: zset(record(v: i64))
+  config: |
+    inputs:
+      orders:
+        stream: orders
+        transport:
+          name: kafka_input
+          config: {bootstrap.servers: "localhost:9092", topic: orders}
+  expected_diagnostics:
+    - "input `orders` feeds `orders`, which is not a table of this program. Its tables are: t."
+
+- name: two inputs feeding one table are refused
+  program: |
+    t := input("t")
+    t :: zset(record(v: i64))
+  config: |
+    inputs:
+      a:
+        stream: t
+        transport:
+          name: kafka_input
+          config: {bootstrap.servers: "localhost:9092", topic: a}
+      b:
+        stream: t
+        transport:
+          name: kafka_input
+          config: {bootstrap.servers: "localhost:9092", topic: b}
+  expected_diagnostics:
+    - "inputs `a` and `b` both feed `t`"
 
 - name: fault tolerance is refused because there is no input to replay
   config: |
@@ -35,11 +166,11 @@
 
 - name: every unsupported key is reported, not just the first
   config: |
-    inputs: {}
+    hosts: 4
     outputs: {}
   expected_diagnostics:
-    - "`inputs` configures Feldera connectors"
-    - "`outputs` configures Feldera connectors"
+    - "`hosts` is a multi-host"
+    - "`outputs` configures Feldera output connectors"
 
 - name: storage with nowhere to write is refused
   config: |
