@@ -192,6 +192,10 @@ whose `input` names `partition_as` (see
 Feldera has no such parameter, since its HTTP ingress has no partitions, so a
 Feldera client never sends one and always gets the runtime's choice.
 
+**A table a Kafka input feeds refuses ingress**, with a 409 naming the input and
+its topic. A table has one source of rows: over HTTP they would take offsets
+that the topic's own records hold. See [Kafka inputs](#kafka-inputs).
+
 The response is a completion token:
 
 ```json
@@ -275,6 +279,110 @@ already grouped into one, and an explicit transaction is the knob for grouping
 more. Transactions do not nest: opening one while one is open is a 409, and
 committing with nothing open is a diagnostic rather than a panic.
 
+## Kafka inputs
+
+A table can read its rows from a Kafka or Redpanda topic. The configuration is
+Feldera's `inputs`, in Feldera's shape: entries keyed by endpoint name, each
+naming its table as `stream`.
+
+```yaml
+inputs:
+  inbox_kafka:
+    stream: inbox
+    transport:
+      name: kafka_input
+      config:
+        bootstrap.servers: "localhost:9092"
+        topic: inbox
+        start_from: earliest
+    format:
+      name: json
+      config: {update_format: insert_delete}
+    max_queued_records: 1000000
+```
+
+`transport.config` is Feldera's `KafkaInputConfig`, read by Feldera's own type:
+
+| key | meaning | default |
+|---|---|---|
+| `topic` | the one topic this input reads | required |
+| `partitions` | which of its partitions to read | all of them |
+| `start_from` | `earliest`, `latest`, `{offsets: [...]}` (one per partition read), or `{timestamp: <ms>}` | `latest` |
+| `resume_earliest_if_data_expires` | on resume, start from the earliest offset still held rather than refuse | `false` |
+| `log_level` | librdkafka's log level | librdkafka's |
+| anything else | passed to librdkafka, as `bootstrap.servers`, `security.protocol` and SASL settings are | |
+
+`format` is `json`, with `update_format` `insert_delete` or `weighted` and
+`array`, exactly as over HTTP. `max_queued_records` is Feldera's and has its
+default.
+
+**The metadata is the program's own columns.** Feldera exposes a record's
+partition and offset through `include_partition` and `include_offset` and SQL's
+`CONNECTOR_METADATA()`. Here a program declares them instead: an `input` with
+`partition_as` and `offset_as` (see
+[`language.md`](language.md#partitions-and-offsets)) gets each record's Kafka
+partition and Kafka offset in those columns. A table without them takes the
+rows and ignores where they came from, as it ignores `partition=` over HTTP.
+There is no timestamp, key, topic or header column.
+
+**A message is its rows at its offset.** A message can hold several rows, back
+to back or as an array, and every one of them shares the message's offset — so
+the same row twice in one message is one record with its weights added, and an
+insert and a delete of it cancel.
+
+**Bad messages are Feldera's behaviour:**
+
+- A value that is not a row is skipped and counted in the input's
+  `num_parse_errors`, and the other rows of its message are kept.
+- A JSON syntax error drops the rest of that message, since nothing says where
+  the next value would begin.
+- A null payload (a tombstone) is skipped.
+- In every case the message is read, and the input's position moves past it.
+  The pipeline keeps running, and each is logged.
+
+**One connector per table, one topic per connector.** Offsets are counted per
+table and partition, so two topics feeding one table would both write a
+partition 0.
+
+**Reading pauses while rows wait.** A reader hands the circuit one batch at a
+time and waits for it to be taken. While `max_queued_records` rows are waiting
+for a transaction — a paused pipeline, or an open transaction — its partitions
+are paused, and resumed once a transaction consumes them.
+
+**The read position lives in the checkpoint.** The reader assigns its partitions
+itself, joins no consumer group and commits nothing to Kafka — Feldera's own
+reader does the same. Every checkpoint saves each input's position in
+`connectors.json`, taken at the same instant as the circuit's state, so
+`--resume-from` continues each partition exactly after the last message the
+restored state holds: nothing is replayed, and nothing is skipped. See
+[Resuming](#resuming) for what a resume refuses.
+
+Partitions added to a topic while the server runs are read after a restart, from
+their start — Feldera's rule too.
+
+`/stats` reports each input under `inputs`, in Feldera's shape, with
+`total_records`, `num_parse_errors`, `num_transport_errors` and `fatal_error`. A
+fatal librdkafka error stops that input and the pipeline carries on. `/metadata`
+lists each input's table and topic.
+
+### Kafka keys refused by name
+
+| keys | why not |
+|---|---|
+| `include_headers`, `include_timestamp`, `include_partition`, `include_offset`, `include_topic` | a program declares the columns the runtime fills, and has no timestamp, topic or header column |
+| `synchronize_partitions` | orders ingestion by Kafka timestamp, for Feldera's lateness; this language has no lateness |
+| `header_filter` | not implemented: every message is read |
+| `region`, `oauth_provider` | AWS MSK authentication is not implemented; SASL and SSL settings are passed to librdkafka as usual |
+| `poller_threads`, `group_join_timeout_secs` | tune Feldera's reader; this one reads each topic on one thread and joins no group |
+| `group.id`, `enable.auto.commit`, `enable.auto.offset.store`, `auto.offset.reset` | would hand the read position to Kafka; where reading starts is `start_from` |
+| `preprocessor`, `postprocessor`, `soft_delete`, `max_batch_size`, `max_worker_batch_size`, `paused`, `start_after`, `labels`, and the output connector keys | Feldera connector settings with no counterpart in this server's connectors |
+
+A transport other than `kafka_input`, or a format other than `json`, is refused.
+
+Kafka support is the server's `kafka` cargo feature, on by default. It compiles
+librdkafka from source, so a build needs `cmake` and a C compiler. Built without
+it, a configuration with `inputs` still validates, and `serve` refuses it.
+
 ## Checkpoints
 
 A checkpoint is the circuit's state written to `storage_config.path`, so that a
@@ -345,6 +453,20 @@ rows — captured between transactions, at the same instant as the circuit's
 state — and resuming reloads them. A view the configuration materializes that
 the checkpoint did not save is refused rather than started empty: remove it from
 `materialized`, or take a new checkpoint with it.
+
+**Kafka inputs resume where the checkpoint stopped.** Each input starts from the
+position its checkpoint saved, not from `start_from`. A resume is refused before
+the port is bound when:
+
+- a saved offset has since expired from its partition, since resuming would skip
+  the records between (unless `resume_earliest_if_data_expires` is set);
+- the checkpoint read a different topic than the configuration names;
+- the checkpoint numbered a table's records but saved no position for the input
+  now feeding it, because those rows came from somewhere else, and reading the
+  topic from `start_from` would reissue offsets its history holds.
+
+An input the checkpoint has no position for, feeding a table it never numbered,
+starts from `start_from`.
 
 ## Errors
 

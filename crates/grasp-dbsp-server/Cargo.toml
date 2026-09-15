@@ -37,6 +37,13 @@ uuid = { workspace = true }
 # `src/snapshot.rs` for why rkyv and not the JSON codec.
 rkyv = { workspace = true }
 xxhash-rust = { workspace = true }
+rdkafka = { workspace = true, optional = true }
+
+[features]
+# Kafka input connectors. Without it a configuration with `inputs` is still
+# validated, and `serve` refuses it.
+default = ["kafka"]
+kafka = ["dep:rdkafka"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

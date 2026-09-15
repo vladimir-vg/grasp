@@ -113,3 +113,9 @@ clap = { version = "4.6.6", features = ["derive"] }
 # same state machine — is strictly more code for the same behaviour. Already in
 # the lock file through `dbsp`.
 async-stream = "0.3.6"
+# Kafka input connectors, behind the server's `kafka` feature. The version
+# Feldera pins, so a setting its connector hands librdkafka means the same here.
+# `cmake-build` compiles librdkafka from the vendored source, because a system
+# librdkafka is not assumed; `libz` for compressed topics. No `tokio`: the
+# reader is a plain thread polling a `BaseConsumer`, like the circuit thread.
+rdkafka = { version = "0.39.0", default-features = false, features = ["cmake-build", "libz"] }

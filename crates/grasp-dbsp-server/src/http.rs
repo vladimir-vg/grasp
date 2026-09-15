@@ -14,11 +14,9 @@
 
 use crate::circuit::{self, Command, Fault, Handle};
 use crate::token::Token;
-use crate::wire::{ApiError, parse_error};
+use crate::wire::ApiError;
 use actix_web::{HttpResponse, Responder, web};
-use grasp_dbsp::json::{
-    Format, decode_delta, decode_delta_insert_delete, encode_delta, encode_delta_insert_delete,
-};
+use grasp_dbsp::json::{Format, encode_delta, encode_delta_insert_delete};
 use grasp_dbsp::lower::Delta;
 use grasp_dbsp::value::BatchType;
 use serde::Deserialize;
@@ -149,6 +147,15 @@ async fn ingress(
             name: table,
         });
     }
+    // A table has one source of rows. Over HTTP a connector-fed table's rows
+    // would take offsets that its topic's own records hold, or will.
+    if let Some(c) = state.handle.connectors.iter().find(|c| c.table == table) {
+        return Err(ApiError::Conflict(format!(
+            "`{table}` is fed by input `{}`, which reads Kafka topic `{}`. A table has one \
+             source of rows: produce them to the topic instead.",
+            c.endpoint, c.topic
+        )));
+    }
     // What a row carries. For a partitioned table that is its record less the
     // columns the runtime fills, so a row that supplies one is refused by the
     // decoder as an unknown field and needs no check here.
@@ -162,40 +169,9 @@ async fn ingress(
         })?;
     let row_type = &ingress.row_type;
 
-    // Feldera splits a body into values with a brace-depth scanner and accepts
-    // whitespace, newlines or nothing between them (`format/json/input.rs:426-
-    // 454`). `StreamDeserializer` accepts exactly the same shape, which is why
-    // `lines=single` and `lines=multiple` are both honoured by doing nothing
-    // differently.
     let text = std::str::from_utf8(&body)
         .map_err(|e| ApiError::InvalidParam(format!("the body is not UTF-8: {e}")))?;
-
-    let mut rows = Vec::new();
-    let mut errors = Vec::new();
-    let mut n = 0usize;
-    let push = |value: &J, n: usize, errors: &mut Vec<J>, rows: &mut Vec<_>| {
-        let decoded = match format {
-            Format::Weighted => decode_delta(value, row_type),
-            Format::InsertDelete => decode_delta_insert_delete(value, row_type),
-        };
-        match decoded {
-            Ok((row, weight)) => rows.push((row, weight)),
-            Err(e) => errors.push(parse_error(n, e.0, &value.to_string())),
-        }
-    };
-
-    for value in serde_json::Deserializer::from_str(text).into_iter::<J>() {
-        n += 1;
-        match value {
-            Ok(J::Array(items)) if args.array => {
-                for item in &items {
-                    push(item, n, &mut errors, &mut rows);
-                }
-            }
-            Ok(value) => push(&value, n, &mut errors, &mut rows),
-            Err(e) => errors.push(parse_error(n, e.to_string(), "")),
-        }
-    }
+    let (rows, errors) = crate::decode::rows(text, row_type, format, args.array);
 
     // The rows that parsed are pushed even when others did not — Feldera's
     // behaviour, and the one a retrying client depends on.
@@ -525,7 +501,13 @@ async fn stats(
             "total_initiated_steps": s.initiated_steps.load(Ordering::Relaxed),
             "total_completed_steps": completed,
             "pipeline_complete": s.buffered_input_records.load(Ordering::Relaxed) == 0,
-        }
+        },
+        "inputs": state
+            .handle
+            .connectors
+            .iter()
+            .map(|c| c.stats())
+            .collect::<Vec<J>>(),
     })))
 }
 
@@ -633,7 +615,17 @@ async fn metadata(
         "name": state.pipeline,
         "tables": state.handle.tables,
         "views": state.handle.views,
-                "materialized": state.handle.materialized,
+        "materialized": state.handle.materialized,
+        "inputs": state
+            .handle
+            .connectors
+            .iter()
+            .map(|c| (c.endpoint.clone(), json!({
+                "stream": c.table,
+                "transport": "kafka_input",
+                "topic": c.topic,
+            })))
+            .collect::<serde_json::Map<String, J>>(),
         "runtime_columns": state
             .handle
             .ingress

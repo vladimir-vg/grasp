@@ -30,6 +30,7 @@
 //! blocking `recv` on a tokio worker stalls every other connection that worker
 //! is multiplexing. Each library is on the side of the boundary it belongs to.
 
+use crate::connectors;
 use crossbeam_channel::{Receiver, Sender};
 use grasp_dbsp::lower::{Delta, Runner};
 use grasp_dbsp::value::{BatchType, DynValue, TypeDesc};
@@ -121,6 +122,21 @@ pub enum Command {
         rows: Vec<(DynValue, dbsp::ZWeight)>,
         reply: oneshot::Sender<Result<u64, Fault>>,
     },
+    /// A connector's read position as it starts, sent before any of its
+    /// messages, so that a checkpoint taken before the first one arrives still
+    /// saves where the connector stands.
+    Connect {
+        endpoint: String,
+        position: connectors::Position,
+        reply: oneshot::Sender<()>,
+    },
+    /// Messages a connector read, in the order it read them.
+    PushMessages {
+        endpoint: String,
+        table: String,
+        messages: Vec<Message>,
+        reply: oneshot::Sender<Result<Pushed, Fault>>,
+    },
     Subscribe {
         view: String,
         snapshot: bool,
@@ -150,6 +166,27 @@ pub enum Command {
     Shutdown {
         reply: oneshot::Sender<()>,
     },
+}
+
+/// One message a connector read: its rows, at the offset they share.
+///
+/// A message with no rows — a tombstone, or one whose every row failed to
+/// decode — is still sent, because reading it moved the connector's position.
+#[derive(Debug)]
+pub struct Message {
+    pub partition: i32,
+    pub offset: i64,
+    pub rows: Vec<(DynValue, dbsp::ZWeight)>,
+}
+
+/// What became of a connector's messages.
+#[derive(Debug)]
+pub struct Pushed {
+    /// Rows accepted, ever — the count a completion token names.
+    pub accepted: u64,
+    /// Messages the runner refused, one sentence each. Their rows were not
+    /// pushed, and the position did not move past them.
+    pub refused: Vec<String>,
 }
 
 /// State a handler may read without waiting for the circuit thread.
@@ -282,6 +319,10 @@ pub struct Handle {
     /// Per input table, what an ingress request's rows carry. For a
     /// partitioned table that is its record less the columns the runtime fills.
     pub ingress: Arc<HashMap<String, Ingress>>,
+    /// The running input connectors. Empty from [`start`]; the host sets it
+    /// before handing the handle to the HTTP layer, which refuses ingress into
+    /// a table a connector feeds and reports each one in `/stats`.
+    pub connectors: Arc<Vec<connectors::Connector>>,
 }
 
 /// The partition a row goes to when its ingress names none.
@@ -375,6 +416,9 @@ struct Circuit {
     /// is killed so that a shutdown right after `POST /checkpoint` still leaves
     /// the checkpoint it acknowledged.
     committing_checkpoint: Option<std::thread::JoinHandle<()>>,
+    /// Every connector's position, as of the messages this thread has pushed.
+    /// Saved with each checkpoint.
+    consumed: connectors::Positions,
 }
 
 /// Starts the circuit thread and returns the handle to it.
@@ -463,6 +507,7 @@ pub fn start_restored(
         pending: 0,
         next_transaction_id: 1,
         committing_checkpoint: None,
+        consumed: connectors::Positions::new(),
     };
 
     let thread = std::thread::Builder::new()
@@ -479,6 +524,7 @@ pub fn start_restored(
             materialized: materialized.to_vec(),
             shapes: shapes_for_handle,
             ingress: Arc::new(ingress),
+            connectors: Arc::new(Vec::new()),
         },
         thread,
     )
@@ -574,6 +620,25 @@ impl Circuit {
                     let _ = reply.send(answer);
                 }));
             }
+            Command::Connect {
+                endpoint,
+                position,
+                reply,
+            } => {
+                self.consumed.insert(endpoint, position);
+                let _ = reply.send(());
+            }
+            Command::PushMessages {
+                endpoint,
+                table,
+                messages,
+                reply,
+            } => {
+                let answer = self.push_messages(&endpoint, &table, messages);
+                deferred.push(Box::new(move || {
+                    let _ = reply.send(answer);
+                }));
+            }
             Command::Subscribe {
                 view,
                 snapshot,
@@ -653,6 +718,65 @@ impl Circuit {
                     })?;
             }
         }
+        Ok(self.accept(count))
+    }
+
+    /// Pushes a connector's messages, each at its own offset, and moves the
+    /// connector's position past every one that was pushed.
+    ///
+    /// A refused message does not stop the ones after it, and does not move the
+    /// position: the runner refuses an offset the partition has already passed,
+    /// so the position is already beyond it.
+    fn push_messages(
+        &mut self,
+        endpoint: &str,
+        table: &str,
+        messages: Vec<Message>,
+    ) -> Result<Pushed, Fault> {
+        let partitioned = self.runner.runtime_fields(table).is_some();
+        let mut count = 0;
+        let mut refused = Vec::new();
+        for Message {
+            partition,
+            offset,
+            rows,
+        } in messages
+        {
+            let n = rows.len() as u64;
+            let pushed = if partitioned {
+                self.runner
+                    .push_message(table, i64::from(partition), offset, rows)
+            } else {
+                // No partition column to fill: the rows are the table's as
+                // they stand, as `partition=` over HTTP is ignored on one.
+                rows.into_iter()
+                    .try_for_each(|(row, weight)| self.runner.push(table, row, weight))
+            };
+            match pushed {
+                Ok(()) => {
+                    count += n;
+                    let position = self.consumed.entry(endpoint.to_string()).or_default();
+                    let next = position.partitions.entry(partition).or_insert(0);
+                    *next = (*next).max(offset + 1);
+                }
+                Err(e) => refused.push(format!("partition {partition}, offset {offset}: {e}")),
+            }
+        }
+        Ok(Pushed {
+            accepted: self.accept(count),
+            refused,
+        })
+    }
+
+    /// Counts `count` rows in, and answers the accepted-rows count a completion
+    /// token names.
+    fn accept(&mut self, count: u64) -> u64 {
+        let mut progress = self.shared.progress.lock().expect("the progress lock");
+        // Nothing pushed is nothing in flight. Recording it anyway would make a
+        // token for rows already complete wait for a transaction nothing causes.
+        if count == 0 {
+            return progress.accepted;
+        }
 
         self.pending += count;
         self.shared
@@ -666,11 +790,10 @@ impl Circuit {
         // stepper, so there is no race: whatever is pushed now is consumed by
         // the next transaction, whose number is one past the last completed.
         let step = self.shared.completed_steps.load(Ordering::Relaxed) + 1;
-        let mut progress = self.shared.progress.lock().expect("the progress lock");
         progress.accepted += count;
         let accepted = progress.accepted;
         progress.in_flight.insert(accepted, step);
-        Ok(accepted)
+        accepted
     }
 
     /// Registers a subscriber, and takes its snapshot in the same turn.
@@ -766,6 +889,9 @@ impl Circuit {
             .map(|(name, rows)| (name.clone(), Arc::clone(rows)))
             .collect();
         views.sort_by(|a, b| a.0.cmp(&b.0));
+        // The same instant, for the connectors: exactly the messages whose rows
+        // the prepared state holds.
+        let positions = self.consumed.clone();
 
         let sequence = self
             .shared
@@ -780,7 +906,10 @@ impl Circuit {
         let committing = std::thread::Builder::new()
             .name("grasp-checkpoint".to_string())
             .spawn(move || {
-                let result = pending.commit_with(|dir| crate::snapshot::save(dir, &views));
+                let result = pending.commit_with(|dir| {
+                    crate::snapshot::save(dir, &views)?;
+                    connectors::save(dir, &positions)
+                });
                 if let Ok(mut outcome) = shared.checkpoint.lock() {
                     match result {
                         Ok(_) => {

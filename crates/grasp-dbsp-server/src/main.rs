@@ -108,10 +108,12 @@ fn serve(
         None => PipelineConfig::parse("{}").map_err(|d| render(&d))?,
     };
     config.check_against(&plan).map_err(|d| render(&d))?;
-    if !config.inputs.is_empty() {
+    let inputs = config.kafka_inputs().map_err(|d| render(&d))?;
+    #[cfg(not(feature = "kafka"))]
+    if !inputs.is_empty() {
         return Err(
-            "`inputs` is a valid configuration, and this build does not start input \
-             connectors yet. Remove `inputs`, or send rows over `POST /ingress`."
+            "`inputs` configures Kafka connectors, and this build has none: it was built \
+             without the `kafka` feature. Rebuild with it, or send rows over `POST /ingress`."
                 .to_string(),
         );
     }
@@ -150,7 +152,30 @@ fn serve(
         )?,
         _ => HashMap::new(),
     };
-    let (handle, thread) = circuit::start_restored(
+
+    // Before the port, like everything else that can fail: a topic that does
+    // not exist or a position the topic no longer holds is a diagnostic here.
+    #[cfg(feature = "kafka")]
+    let opened = {
+        let (saved, counters) = match (&resumed, &config.storage_config) {
+            (Some(uuid), Some(storage)) => {
+                let root = std::path::Path::new(&storage.path);
+                (
+                    grasp_dbsp_server::connectors::load(root, uuid)?,
+                    grasp_dbsp::checkpoint::Manifest::read(root, uuid)
+                        .map_err(|d| render(&d))?
+                        .offsets,
+                )
+            }
+            _ => (None, None),
+        };
+        grasp_dbsp_server::kafka::open_all(&inputs, saved.as_ref(), counters.as_ref())?
+    };
+    #[cfg(not(feature = "kafka"))]
+    let _ = inputs;
+
+    #[cfg_attr(not(feature = "kafka"), allow(unused_mut))]
+    let (mut handle, thread) = circuit::start_restored(
         runner,
         shapes,
         &config.materialized,
@@ -165,6 +190,17 @@ fn serve(
     if let Some(uuid) = &resumed {
         eprintln!("grasp-dbsp-server: restored checkpoint {uuid}");
     }
+    #[cfg(feature = "kafka")]
+    let readers = {
+        for o in &opened {
+            eprintln!(
+                "grasp-dbsp-server: reading Kafka topic `{}` from {:?}",
+                o.position().topic,
+                o.position().partitions
+            );
+        }
+        grasp_dbsp_server::kafka::start(opened, &mut handle)?
+    };
 
     let name = config.name.clone();
     eprintln!(
@@ -191,6 +227,10 @@ fn serve(
         .await
     });
 
+    // Readers first: each holds a handle, and the circuit thread exits only
+    // once every handle is gone.
+    #[cfg(feature = "kafka")]
+    readers.stop();
     // Joining is what releases the storage directory's lock. Skipping it — by
     // exiting the process here — would leave the next start waiting sixty
     // seconds for a pidlock nobody holds.

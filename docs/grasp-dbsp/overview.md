@@ -15,7 +15,8 @@ changes are emitted as they are produced.
   It shares a workspace with `grasp-compiler`, which compiles
   [grasp](../grasp/overview.md) down to this language; the two meet at
   [`language.md`](language.md) and nowhere else. Running a program as a
-  *service* — over HTTP, with configuration, transactions and pause — is a
+  *service* — over HTTP and from Kafka topics, with configuration,
+  checkpoints, transactions and pause — is a
   third crate, `grasp-dbsp-server`, specified in [`serving.md`](serving.md).
 - A **runtime interpreter**: the program is parsed at startup and the circuit
   is assembled at startup, through `dbsp`'s ordinary operator API instantiated
@@ -216,7 +217,8 @@ spill.
 - **A richer builtin set** — a fuller arithmetic/string/temporal library.
 - **The HTTP surface** — `grasp-dbsp-server` implements a subset of Feldera's
   pipeline API, and [`serving.md`](serving.md) says which. What is outside that
-  subset is refused in words rather than approximated.
+  subset is refused in words rather than approximated. Of Feldera's connectors
+  it has the Kafka input alone, JSON only; no output connectors.
 
 ## Relationship to other projects
 

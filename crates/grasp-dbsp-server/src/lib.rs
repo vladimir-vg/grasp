@@ -10,7 +10,11 @@
 
 pub mod circuit;
 pub mod config;
+pub mod connectors;
+pub mod decode;
 pub mod http;
+#[cfg(feature = "kafka")]
+pub mod kafka;
 pub mod snapshot;
 pub mod token;
 pub mod wire;
